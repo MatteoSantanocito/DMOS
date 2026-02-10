@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dmos-autoscaling-rules
+  namespace: monitoring
+  labels:
+    prometheus: none  # 🔧 Cambia in "none"
+    release: prometheus-central
+    app: kube-prometheus-stack
+spec:
+  groups:
+  - name: dmos_autoscaling
+    interval: 15s
+    rules:
+    - alert: HighTrafficFrontend
+      expr: |
+        rate(istio_requests_total{
+          destination_service_name="frontend",
+          destination_service_namespace="online-boutique"
+        }[1m]) > 30
+      for: 30s
+      labels:
+        severity: warning
+        service: frontend
+        action: scale_up
+      annotations:
+        summary: "High traffic on frontend"
+        description: "Frontend receiving >30 req/s"

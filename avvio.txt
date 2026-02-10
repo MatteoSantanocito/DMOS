@@ -1,0 +1,33 @@
+Workflow Test Completo
+Step 1: Setup (2 min)
+powershell# Terminal 1: DMOS
+python src/dmos_main.py
+
+# Terminal 2: Reset
+python -c "from src.k8s.client import KubernetesClient; k8s = KubernetesClient({'cluster1': {'kubeconfig_path': '.kube/cluster1.yaml', 'server': 'https://192.168.1.245:6443'}}); k8s.scale_deployment('cluster1', 'frontend', 1, 'online-boutique'); print('✅ Reset')"
+
+Step 2: Avvia Collector (15 min)
+powershell# Terminal 3
+python experiments/collect_metrics_simple.py 15
+
+Step 3: Avvia Locust (10 min)
+powershell# Terminal 4
+locust -f experiments/locustfile.py --host http://192.168.1.245:30007
+```
+
+**Browser:** `http://localhost:8089`
+```
+Users: 80
+Spawn rate: 4
+Run time: 10m
+Start → Attendi 10 min → Stop
+
+Step 4: Aspetta Scale-Down (5 min)
+Locust si ferma a t=10min, collector continua fino a t=15min per catturare scale-down.
+
+Step 5: Analisi
+powershell# Installa matplotlib se non hai
+pip install matplotlib
+
+# Analizza
+python experiments/analyze_test_complete.py

@@ -1,0 +1,135 @@
+# DMOS Cluster Estimator
+# Deploy ONE per cluster (like Karmada Resource Estimator)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dmos-cluster-estimator
+  namespace: dmos-system
+  labels:
+    app: dmos-cluster-estimator
+    component: estimator
+spec:
+  replicas: 1  # Single instance per cluster
+  selector:
+    matchLabels:
+      app: dmos-cluster-estimator
+  template:
+    metadata:
+      labels:
+        app: dmos-cluster-estimator
+    spec:
+      serviceAccountName: dmos-estimator
+      containers:
+      - name: estimator
+        image: dmos/cluster-estimator:latest  # TODO: Build this image
+        imagePullPolicy: IfNotPresent
+        
+        command:
+        - python
+        - -m
+        - src.level1.cluster_estimator
+        - "$(CLUSTER_NAME)"  # Passed as env var
+        - "8080"
+        
+        env:
+        - name: CLUSTER_NAME
+          value: "cluster1"  # CHANGE THIS for each cluster!
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+      
+      volumes:
+      - name: config
+        configMap:
+          name: dmos-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dmos-cluster-estimator
+  namespace: dmos-system
+  labels:
+    app: dmos-cluster-estimator
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080  # Accessible externally
+    protocol: TCP
+    name: http
+  selector:
+    app: dmos-cluster-estimator
+
+---
+# ServiceAccount for estimator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dmos-estimator
+  namespace: dmos-system
+
+---
+# ClusterRole for reading metrics
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dmos-estimator-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dmos-estimator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dmos-estimator-role
+subjects:
+- kind: ServiceAccount
+  name: dmos-estimator
+  namespace: dmos-system

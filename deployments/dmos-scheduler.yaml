@@ -1,0 +1,137 @@
+# DMOS Scheduler (Centralized)
+# Deploy in control plane cluster or dedicated management cluster
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dmos-scheduler
+  namespace: dmos-system
+  labels:
+    app: dmos-scheduler
+    component: scheduler
+spec:
+  replicas: 1  # Can be 3 for HA (with leader election)
+  selector:
+    matchLabels:
+      app: dmos-scheduler
+  template:
+    metadata:
+      labels:
+        app: dmos-scheduler
+    spec:
+      serviceAccountName: dmos-scheduler
+      containers:
+      - name: scheduler
+        image: dmos/scheduler:latest  # TODO: Build this image
+        imagePullPolicy: IfNotPresent
+        
+        command:
+        - python
+        - -m
+        - src.level1.dmos_scheduler
+        - "--interval"
+        - "30"  # Scheduling interval in seconds
+        
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: LOG_LEVEL
+          value: "INFO"
+        
+        ports:
+        - name: http
+          containerPort: 8081
+          protocol: TCP
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+      
+      volumes:
+      - name: config
+        configMap:
+          name: dmos-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dmos-scheduler
+  namespace: dmos-system
+  labels:
+    app: dmos-scheduler
+spec:
+  type: ClusterIP  # Internal only
+  ports:
+  - port: 8081
+    targetPort: 8081
+    protocol: TCP
+    name: http
+  selector:
+    app: dmos-scheduler
+
+---
+# ServiceAccount for scheduler
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dmos-scheduler
+  namespace: dmos-system
+
+---
+# ClusterRole for scheduler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dmos-scheduler-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dmos-scheduler-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dmos-scheduler-role
+subjects:
+- kind: ServiceAccount
+  name: dmos-scheduler
+  namespace: dmos-system

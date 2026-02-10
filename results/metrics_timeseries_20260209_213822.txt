@@ -1,0 +1,1467 @@
+
+======================================================================
+Timestamp: 2026-02-09T21:38:22.955577
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 197.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+
+
+======================================================================
+Timestamp: 2026-02-09T21:38:39.994454
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+
+
+======================================================================
+Timestamp: 2026-02-09T21:38:57.050077
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+
+
+======================================================================
+Timestamp: 2026-02-09T21:39:14.099993
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 1.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 4.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8045620457177384
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 93.54121931822966
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 93.54121931822966
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 1.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 0.3977797031402588
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:39:31.149958
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 1.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 4.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8045620457177384
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 93.54121931822966
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 93.54121931822966
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 1.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 0.3977797031402588
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:39:48.200729
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 17.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 1.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 1.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7976212488681496
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 857.7830605458443
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 130.2531948141499
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 2.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 2.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 0.8051071166992188
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:40:05.226340
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 1.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 8.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8324366920170432
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 562.7218935733542
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 136.55294416454322
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 3.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 1.2131595611572266
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:40:22.256428
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 1.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 8.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8324366920170432
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 562.7218935733542
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 136.55294416454322
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 3.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 3.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 1.2131595611572266
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:40:39.314450
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 2.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 8.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 7.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7800141743220892
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 375.1256679821486
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 130.56949158846027
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 4.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 1.622687578201294
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:40:56.357560
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 2.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 8.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 7.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7800141743220892
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 375.1256679821486
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 130.56949158846027
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 4.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 1.622687578201294
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:41:13.376963
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 3.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 7.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.727928929985137
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 351.28009891904577
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 136.8429365308973
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 5.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 2.1473259925842285
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:41:30.409134
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 198.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 3.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 7.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.727928929985137
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 351.28009891904577
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 136.8429365308973
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 4.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 5.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 2.1473259925842285
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:41:47.453179
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 4.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 5.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 4.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7460114972308806
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 270.33864014173594
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 129.16614541900825
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 5.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 6.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 2.5684854984283447
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:42:04.491693
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 4.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7810987710811386
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 227.1807321665687
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 124.60122371750407
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 7.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 2.9682459831237793
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:42:21.520133
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 4.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.7810987710811386
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 227.1807321665687
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 124.60122371750407
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 6.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 7.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 2.9682459831237793
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:42:38.561171
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8003171338888795
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 178.00962587988496
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 115.59103217346994
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 8.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 3.334005832672119
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:42:55.591595
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8003171338888795
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 178.00962587988496
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 115.59103217346994
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 7.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 8.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 3.334005832672119
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:43:12.628954
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8140231398857498
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 248.97885411450508
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 138.2507324078332
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 9.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 3.7401540279388428
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:43:29.666343
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 199.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8140231398857498
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 248.97885411450508
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 138.2507324078332
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 9.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 3.7401540279388428
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:43:46.706540
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 200.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8139626744466957
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 237.77690868798499
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 138.5925989527576
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 10.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 4.11978554725647
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:44:03.734487
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 200.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8139626744466957
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 237.77690868798499
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 138.5925989527576
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 9.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 10.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 4.11978554725647
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:44:20.781104
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 200.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8141246185345823
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 225.13642213976692
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 137.67763645669262
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 11.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 11.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 4.488492012023926
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+
+
+======================================================================
+Timestamp: 2026-02-09T21:44:37.815369
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 413.0
+python_gc_objects_collected_total{generation="1"} 98.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 200.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="frontend"} 5.0
+dmos_scaling_events_total{action="scale_up",cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="frontend"} 1.7706695438683536e+09
+dmos_scaling_events_created{action="scale_up",cluster="cluster1",service="frontend"} 1.7706695741460607e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster1",service="frontend"} 3.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster1",service="frontend"} 6.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster1",service="frontend"} 0.8147633958826073
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster1",service="frontend"} 141.685327898779
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 134.08890115866717
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 10.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 12.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 12.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 5.0345299243927
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7706695439084063e+09
+

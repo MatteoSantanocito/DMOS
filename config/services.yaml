@@ -1,0 +1,139 @@
+# Configurazione servizi Online Boutique
+services:
+  - name: frontend
+    namespace: online-boutique
+    deployment_name: frontend
+    
+    # Resource requests/limits
+    resources_per_replica:
+      requests:
+        cpu: "100m"       # 0.1 core
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+    
+    # Capacità stimata
+    capacity_req_per_sec: 50
+    
+    # SLA requirements
+    sla:
+      latency_p95_ms: 100
+      latency_p99_ms: 200
+      availability_percent: 99.9
+    
+    # Power consumption (stimato)
+    power_watts: 50
+    
+    # Autoscaling constraints
+    autoscaling:
+      min_replicas: 2      # HA minimo
+      max_replicas: 20
+      target_cpu_percent: 70
+  
+  - name: cartservice
+    namespace: online-boutique
+    deployment_name: cartservice
+    resources_per_replica:
+      requests:
+        cpu: "200m"
+        memory: "128Mi"
+      limits:
+        cpu: "300m"
+        memory: "256Mi"
+    capacity_req_per_sec: 100
+    sla:
+      latency_p95_ms: 50
+      latency_p99_ms: 100
+      availability_percent: 99.95
+    power_watts: 60
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 15
+      target_cpu_percent: 70
+  
+  - name: productcatalogservice
+    namespace: online-boutique
+    deployment_name: productcatalogservice
+    resources_per_replica:
+      requests:
+        cpu: "150m"
+        memory: "96Mi"
+      limits:
+        cpu: "250m"
+        memory: "192Mi"
+    capacity_req_per_sec: 80
+    sla:
+      latency_p95_ms: 75
+      latency_p99_ms: 150
+      availability_percent: 99.9
+    power_watts: 55
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 12
+      target_cpu_percent: 70
+  
+  - name: checkoutservice
+    namespace: online-boutique
+    deployment_name: checkoutservice
+    resources_per_replica:
+      requests:
+        cpu: "300m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    capacity_req_per_sec: 30
+    sla:
+      latency_p95_ms: 200
+      latency_p99_ms: 500
+      availability_percent: 99.95
+    power_watts: 70
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 10
+      target_cpu_percent: 70
+  
+  - name: recommendationservice
+    namespace: online-boutique
+    deployment_name: recommendationservice
+    resources_per_replica:
+      requests:
+        cpu: "200m"
+        memory: "220Mi"
+      limits:
+        cpu: "400m"
+        memory: "450Mi"
+    capacity_req_per_sec: 60
+    sla:
+      latency_p95_ms: 100
+      latency_p99_ms: 200
+      availability_percent: 99.5
+    power_watts: 65
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 10
+      target_cpu_percent: 70
+
+# Global autoscaling parameters
+global_autoscaling:
+  # Safety margin sopra predizione
+  safety_margin: 0.15  # 15%
+  
+  # Rate limiting
+  max_delta_per_cycle: 3  # Max ±3 repliche per ciclo (30s)
+  
+  # PD Controller parameters
+  pd_controller:
+    kp: 5.0
+    kd: 300.0
+    
+    # Anti-windup
+    output_min: -3
+    output_max: 3
+  
+  # Trend-based prediction
+  prediction:
+    window_seconds: 300       # 5 min per calcolare derivata
+    horizon_seconds: 600      # Predici 10 min avanti
+    smoothing_alpha: 0.3      # EMA smoothing (opzionale)

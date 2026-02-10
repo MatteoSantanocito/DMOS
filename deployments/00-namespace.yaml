@@ -1,0 +1,8 @@
+# Create DMOS namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dmos-system
+  labels:
+    name: dmos-system
+    app: dmos

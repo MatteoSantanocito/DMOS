@@ -1,0 +1,24 @@
+{
+  "test_info": {
+    "start": "2026-02-10T09:40:42.340909",
+    "end": "2026-02-10T10:03:08.115893",
+    "duration_minutes": 22.429583066666666,
+    "snapshots": 80
+  },
+  "traffic": {
+    "min": 40.50692693015725,
+    "max": 232.37665142477036,
+    "mean": 204.72999952761015,
+    "samples": 78
+  },
+  "replicas": {
+    "min": 0,
+    "max": 12,
+    "mean": 7.3875
+  },
+  "scaling_events": {
+    "scale_up": 32,
+    "scale_down": 29,
+    "total": 61
+  }
+}

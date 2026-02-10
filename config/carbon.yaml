@@ -1,0 +1,43 @@
+# Configurazione Carbon Intensity
+carbon_intensity:
+  # Provider API (ElectricityMaps o WattTime)
+  provider: "mock"  # Opzioni: "electricitymaps", "watttime", "mock"
+  
+  # ElectricityMaps API (se provider = "electricitymaps")
+  electricitymaps:
+    api_url: "https://api.electricitymap.org/v3/carbon-intensity/latest"
+    api_key: "YOUR_API_KEY_HERE"  # Ottieni da https://api-portal.electricitymap.org/
+    
+  # WattTime API (alternativa)
+  watttime:
+    api_url: "https://api2.watttime.org/v2/index"
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"
+  
+  # Mock values (per testing senza API key)
+  mock:
+    enabled: true
+    values:
+      DE: 350      # Germania (cluster1)
+      US-VA: 280   # Virginia (cluster2)
+      SG: 420      # Singapore (cluster3)
+    
+    # Simulazione variazione oraria (opzionale)
+    hourly_variation:
+      enabled: true
+      # Ore 0-23, fattore moltiplicativo
+      pattern:
+        0: 1.1   # Notte: più carbone
+        6: 1.0
+        12: 0.8  # Mezzogiorno: più solare
+        18: 0.9
+        22: 1.05
+  
+  # Cache settings
+  cache:
+    enabled: true
+    ttl_seconds: 300  # Richiedi nuovi dati ogni 5 minuti
+  
+  # Fallback se API non disponibile
+  fallback:
+    use_baseline: true  # Usa baseline da clusters.yaml

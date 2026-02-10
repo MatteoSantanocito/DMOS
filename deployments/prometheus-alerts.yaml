@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-dmos-alerts
+  namespace: monitoring
+data:
+  dmos-alerts.yml: |
+    groups:
+      - name: dmos_autoscaling
+        interval: 15s  # Check ogni 15s
+        rules:
+          # High traffic alert
+          - alert: HighTrafficFrontend
+            expr: |
+              rate(istio_requests_total{
+                destination_service_name="frontend",
+                destination_service_namespace="online-boutique"
+              }[1m]) > 100
+            for: 30s
+            labels:
+              severity: warning
+              service: frontend
+              action: scale_up
+            annotations:
+              summary: "High traffic on frontend"
+              description: "Frontend receiving >100 req/s"
+          
+          # Low traffic alert
+          - alert: LowTrafficFrontend
+            expr: |
+              rate(istio_requests_total{
+                destination_service_name="frontend",
+                destination_service_namespace="online-boutique"
+              }[5m]) < 20
+            for: 2m
+            labels:
+              severity: info
+              service: frontend
+              action: scale_down
+            annotations:
+              summary: "Low traffic on frontend"
+              description: "Frontend receiving <20 req/s"

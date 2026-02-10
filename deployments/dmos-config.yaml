@@ -1,0 +1,47 @@
+# ConfigMap with DMOS configuration
+# Mount this into both scheduler and estimator pods
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dmos-config
+  namespace: dmos-system
+data:
+  clusters.yaml: |
+    # Copy content from config/clusters.yaml
+    clusters:
+      - name: cluster1
+        display_name: "EU (ms01)"
+        region: EU
+        location: Frankfurt
+        ip: 192.168.1.245
+        # ... (rest of config)
+  
+  weights.yaml: |
+    # Copy content from config/weights.yaml
+    objectives:
+      balanced:
+        alpha: 0.35
+        beta: 0.25
+        gamma: 0.15
+        delta: 0.25
+    # ... (rest of config)
+  
+  services.yaml: |
+    # Copy content from config/services.yaml
+    services:
+      - name: frontend
+        namespace: online-boutique
+        # ... (rest of config)
+  
+  monitoring.yaml: |
+    # Copy content from config/monitoring.yaml
+    prometheus:
+      url: "http://192.168.1.245:30090"
+      # ... (rest of config)
+  
+  carbon.yaml: |
+    # Copy content from config/carbon.yaml
+    carbon_intensity:
+      provider: "mock"
+      # ... (rest of config)

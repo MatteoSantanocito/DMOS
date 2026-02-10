@@ -1,0 +1,101 @@
+clusters:
+  cluster1:
+    name: cluster1
+    display_name: "EU (ms01)"
+    region: EU
+    location: Frankfurt
+    ip: 192.168.1.245
+    kubeconfig_path: .kube/cluster1.yaml
+    server: https://192.168.1.245:6443
+    estimator_url: http://192.168.1.245:8080
+    
+    # Nidificato resources
+    resources:
+      cpu_cores: 4
+      memory_gb: 7.75
+      max_pods: 110
+      ephemeral_storage_gb: 46.9
+    
+    # Nidificato pricing
+    pricing:
+      cost_per_replica_hour: 0.12
+      cost_per_cpu_hour: 0.04
+      cost_per_gb_hour: 0.01
+    
+    # Nidificato carbon
+    carbon:
+      region_code: "DE"
+      baseline_gco2_kwh: 350
+    
+    # Nidificato latency
+    latency:
+      baseline_ms: 50
+      variance_ms: 15
+  
+  cluster2:
+    name: cluster2
+    display_name: "US (ms02)"
+    region: US
+    location: Virginia
+    ip: 192.168.1.246
+    kubeconfig_path: .kube/cluster2.yaml
+    server: https://192.168.1.246:6443
+    estimator_url: http://192.168.1.246:8080
+    
+    resources:
+      cpu_cores: 4
+      memory_gb: 7.75
+      max_pods: 110
+      ephemeral_storage_gb: 46.9
+    
+    pricing:
+      cost_per_replica_hour: 0.15
+      cost_per_cpu_hour: 0.05
+      cost_per_gb_hour: 0.012
+    
+    carbon:
+      region_code: "US-VA"
+      baseline_gco2_kwh: 280
+    
+    latency:
+      baseline_ms: 120
+      variance_ms: 25
+  
+  cluster3:
+    name: cluster3
+    display_name: "Asia (ms03)"
+    region: Asia
+    location: Singapore
+    ip: 192.168.1.247
+    kubeconfig_path: .kube/cluster3.yaml
+    server: https://192.168.1.247:6443
+    estimator_url: http://192.168.1.247:8080
+    
+    resources:
+      cpu_cores: 4
+      memory_gb: 7.75
+      max_pods: 110
+      ephemeral_storage_gb: 46.9
+    
+    pricing:
+      cost_per_replica_hour: 0.08
+      cost_per_cpu_hour: 0.03
+      cost_per_gb_hour: 0.008
+    
+    carbon:
+      region_code: "SG"
+      baseline_gco2_kwh: 420
+    
+    latency:
+      baseline_ms: 200
+      variance_ms: 40
+
+scheduling_scenario: balanced
+
+global:
+  prometheus_url: "http://192.168.1.245:30090"
+  grafana_url: "http://192.168.1.245:30091"
+  hubble_ui_url: "http://192.168.1.245:30093"
+  scheduling_interval_seconds: 30
+  score_request_timeout_seconds: 5
+  score_agent_port: 8080

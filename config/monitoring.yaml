@@ -1,0 +1,66 @@
+# Configurazione Prometheus queries
+prometheus:
+  url: "http://192.168.1.245:30090"
+  timeout_seconds: 5
+  
+  # Queries per metriche cluster
+  queries:
+    # CPU disponibile
+    cpu_available: |
+      sum(kube_node_status_capacity{resource="cpu"}) 
+      - sum(kube_pod_container_resource_requests{resource="cpu"})
+      by (node)
+    
+    # Memory disponibile
+    memory_available: |
+      sum(kube_node_status_capacity{resource="memory"}) 
+      - sum(kube_pod_container_resource_requests{resource="memory"})
+      by (node)
+    
+    # Request rate per servizio (da Istio/Envoy se disponibile)
+    request_rate: |
+      sum(rate(istio_requests_total{destination_service_name="{{service}}"}[5m]))
+    
+    # Latency p95 per servizio
+    latency_p95: |
+      histogram_quantile(0.95, 
+        sum(rate(istio_request_duration_milliseconds_bucket{destination_service_name="{{service}}"}[5m])) 
+        by (le)
+      )
+    
+    # CPU usage per deployment
+    cpu_usage: |
+      sum(rate(container_cpu_usage_seconds_total{
+        namespace="online-boutique",
+        pod=~"{{deployment}}-.*"
+      }[5m])) by (pod)
+    
+    # Memory usage per deployment
+    memory_usage: |
+      sum(container_memory_working_set_bytes{
+        namespace="online-boutique",
+        pod=~"{{deployment}}-.*"
+      }) by (pod)
+
+# Configurazione Hubble (Cilium)
+hubble:
+  ui_url: "http://192.168.1.245:30093"
+  
+  # Metriche cross-cluster latency
+  metrics:
+    - name: "cross_cluster_latency"
+      query: "hubble_flows_processed_total"
+      labels: ["source_cluster", "destination_cluster"]
+
+# Configurazione Grafana
+grafana:
+  url: "http://192.168.1.245:30091"
+  
+  # Dashboard IDs (da creare)
+  dashboards:
+    - name: "DMOS Overview"
+      uid: "dmos-overview"
+    - name: "Cluster Comparison"
+      uid: "cluster-comparison"
+    - name: "Service Performance"
+      uid: "service-performance"
