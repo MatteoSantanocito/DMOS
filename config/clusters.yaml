@@ -7,7 +7,7 @@ clusters:
     ip: 192.168.1.245
     kubeconfig_path: .kube/cluster1.yaml
     server: https://192.168.1.245:6443
-    estimator_url: http://192.168.1.245:8080
+    estimator_url: http://192.168.1.245:30080
     
     # Nidificato resources
     resources:
@@ -40,7 +40,7 @@ clusters:
     ip: 192.168.1.246
     kubeconfig_path: .kube/cluster2.yaml
     server: https://192.168.1.246:6443
-    estimator_url: http://192.168.1.246:8080
+    estimator_url: http://192.168.1.246:30080
     
     resources:
       cpu_cores: 4
@@ -69,7 +69,7 @@ clusters:
     ip: 192.168.1.247
     kubeconfig_path: .kube/cluster3.yaml
     server: https://192.168.1.247:6443
-    estimator_url: http://192.168.1.247:8080
+    estimator_url: http://192.168.1.247:30080
     
     resources:
       cpu_cores: 4
