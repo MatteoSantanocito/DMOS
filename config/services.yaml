@@ -1,6 +1,6 @@
 # Configurazione servizi Online Boutique
 services:
-  - name: frontend
+  frontend:
     namespace: online-boutique
     deployment_name: frontend
     
@@ -14,7 +14,7 @@ services:
         memory: "128Mi"
     
     # Capacità stimata
-    capacity_req_per_sec: 50
+    capacity_req_per_sec: 15
     
     # SLA requirements
     sla:
@@ -31,7 +31,7 @@ services:
       max_replicas: 20
       target_cpu_percent: 70
   
-  - name: cartservice
+  cartservice:
     namespace: online-boutique
     deployment_name: cartservice
     resources_per_replica:
@@ -41,7 +41,7 @@ services:
       limits:
         cpu: "300m"
         memory: "256Mi"
-    capacity_req_per_sec: 100
+    capacity_req_per_sec: 10
     sla:
       latency_p95_ms: 50
       latency_p99_ms: 100
@@ -52,7 +52,7 @@ services:
       max_replicas: 15
       target_cpu_percent: 70
   
-  - name: productcatalogservice
+  productcatalogservice:
     namespace: online-boutique
     deployment_name: productcatalogservice
     resources_per_replica:
@@ -62,7 +62,7 @@ services:
       limits:
         cpu: "250m"
         memory: "192Mi"
-    capacity_req_per_sec: 80
+    capacity_req_per_sec: 15
     sla:
       latency_p95_ms: 75
       latency_p99_ms: 150
@@ -70,10 +70,10 @@ services:
     power_watts: 55
     autoscaling:
       min_replicas: 1
-      max_replicas: 12
+      max_replicas: 15
       target_cpu_percent: 70
   
-  - name: checkoutservice
+  checkoutservice:
     namespace: online-boutique
     deployment_name: checkoutservice
     resources_per_replica:
@@ -83,7 +83,7 @@ services:
       limits:
         cpu: "500m"
         memory: "512Mi"
-    capacity_req_per_sec: 30
+    capacity_req_per_sec: 5
     sla:
       latency_p95_ms: 200
       latency_p99_ms: 500
@@ -94,7 +94,7 @@ services:
       max_replicas: 10
       target_cpu_percent: 70
   
-  - name: recommendationservice
+  recommendationservice:
     namespace: online-boutique
     deployment_name: recommendationservice
     resources_per_replica:
@@ -104,7 +104,7 @@ services:
       limits:
         cpu: "400m"
         memory: "450Mi"
-    capacity_req_per_sec: 60
+    capacity_req_per_sec: 10
     sla:
       latency_p95_ms: 100
       latency_p99_ms: 200
@@ -121,7 +121,7 @@ global_autoscaling:
   safety_margin: 0.15  # 15%
   
   # Rate limiting
-  max_delta_per_cycle: 3  # Max ±3 repliche per ciclo (30s)
+  max_delta_per_cycle: 10  # Max ±3 repliche per ciclo (30s)
   
   # PD Controller parameters
   pd_controller:
@@ -129,8 +129,8 @@ global_autoscaling:
     kd: 300.0
     
     # Anti-windup
-    output_min: -3
-    output_max: 3
+    output_min: -5
+    output_max: 5
   
   # Trend-based prediction
   prediction:

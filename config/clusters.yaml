@@ -98,4 +98,4 @@ global:
   hubble_ui_url: "http://192.168.1.245:30093"
   scheduling_interval_seconds: 30
   score_request_timeout_seconds: 5
-  score_agent_port: 8080
+  score_agent_port: 30080

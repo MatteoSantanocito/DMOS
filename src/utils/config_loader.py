@@ -211,6 +211,20 @@ class ConfigLoader:
         
         services_data = self.services_raw.get('services', {})
         
+        if isinstance(services_data, list):
+            logger.debug("Converting services list to dictionary format")
+            temp_dict = {}
+            for s in services_data:
+                if isinstance(s, dict) and 'name' in s:
+                    temp_dict[s['name']] = s
+            services_data = temp_dict
+            
+        for service_name, service_data in services_data.items():
+            if 'name' not in service_data:
+                service_data['name'] = service_name
+            service = ServiceConfig(**service_data)
+            self.services[service.name] = service
+            
         if isinstance(services_data, dict):
             # Formato dict
             for service_name, service_data in services_data.items():

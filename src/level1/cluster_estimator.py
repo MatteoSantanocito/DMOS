@@ -10,6 +10,8 @@ from flask import Flask, request, jsonify
 import threading
 import time
 
+# Assicurati che i percorsi di import siano corretti per il tuo progetto
+# Se dmos_src è la root sulla VM, questi import relativi vanno bene
 from ..utils.logger import get_logger
 from ..utils.config_loader import ConfigLoader
 from ..metrics.prometheus_client import PrometheusClient
@@ -23,35 +25,37 @@ logger = get_logger("ClusterEstimator")
 class ClusterEstimator:
     """
     Cluster Estimator (deployed in each cluster)
-    
-    Responsibilities:
-    1. Monitor local cluster metrics (Prometheus, K8s API)
-    2. Query carbon intensity for cluster region
-    3. Compute multi-objective score when requested
-    4. Return score + capacity to scheduler
-    
-    Similar to Karmada Resource Estimator but with multi-objective scoring
     """
     
     def __init__(self, cluster_name: str, config_path: str = "config"):
         """
         Initialize cluster estimator
-        
-        Args:
-            cluster_name: Name of this cluster (e.g., "cluster1")
-            config_path: Path to config directory
         """
         self.cluster_name = cluster_name
         
         # Load configuration
         self.config = ConfigLoader(config_path)
+        
+        # --- FIX DI EMERGENZA PER IL BUG 'list object has no attribute get' ---
+        # Se ConfigLoader ha caricato i servizi come lista, li convertiamo in Dict
+        if isinstance(self.config.services, list):
+            logger.warning("⚠️ Rilevata lista servizi invece di dizionario. Applicazione patch automatica...")
+            services_dict = {}
+            for s in self.config.services:
+                # Gestiamo sia oggetti ServiceConfig che dizionari raw
+                s_name = s.name if hasattr(s, 'name') else s.get('name')
+                services_dict[s_name] = s
+            self.config.services = services_dict
+            logger.info("✅ Patch applicata: servizi convertiti in dizionario.")
+        # ---------------------------------------------------------------------
+
         self.cluster_config = self.config.get_cluster(cluster_name)
         
         if not self.cluster_config:
             raise ValueError(f"Cluster {cluster_name} not found in config")
         
         logger.info(f"Initializing Cluster Estimator for {cluster_name} "
-                   f"({self.cluster_config.region} - {self.cluster_config.location})")
+                    f"({self.cluster_config.region} - {self.cluster_config.location})")
         
         # Initialize clients
         self.prometheus = PrometheusClient(
@@ -60,7 +64,7 @@ class ClusterEstimator:
         )
         
         self.carbon_client = CarbonClient(
-            self.config.carbon_raw['carbon_intensity']
+            self.config.carbon_raw.get('carbon_intensity', {})
         )
         
         self.latency_calc = LatencyCalculator()
@@ -103,9 +107,6 @@ class ClusterEstimator:
     def _collect_metrics(self) -> ClusterMetrics:
         """
         Collect current cluster metrics
-        
-        Returns:
-            ClusterMetrics object
         """
         # CPU metrics
         cpu_available = self.prometheus.get_cpu_available() or 0.0
@@ -116,7 +117,6 @@ class ClusterEstimator:
         memory_total = self.cluster_config.memory_gb
         
         # Traffic metrics (for now, use placeholder)
-        # TODO: Implement per-service traffic aggregation
         request_rate = 100.0  # Placeholder
         request_rate_max = cpu_total * 100.0  # Estimate: 100 req/s per core
         
@@ -145,28 +145,16 @@ class ClusterEstimator:
         )
         
         logger.debug(f"Collected metrics: cpu={cpu_available:.1f}/{cpu_total}, "
-                    f"mem={memory_available:.1f}/{memory_total}GB, "
-                    f"CI={carbon_intensity:.0f}gCO2/kWh")
+                     f"mem={memory_available:.1f}/{memory_total}GB, "
+                     f"CI={carbon_intensity:.0f}gCO2/kWh")
         
         return metrics
     
     def get_metrics(self, use_cache: bool = True) -> ClusterMetrics:
-        """
-        Get cluster metrics
-        
-        Args:
-            use_cache: If True, return cached metrics if fresh enough
-        
-        Returns:
-            ClusterMetrics
-        """
         if use_cache and self.cached_metrics:
             age = time.time() - self.cache_timestamp
             if age < self.cache_ttl:
-                logger.debug(f"Using cached metrics (age={age:.1f}s)")
                 return self.cached_metrics
-        
-        # Collect fresh metrics
         return self._collect_metrics()
     
     def compute_score(
@@ -174,16 +162,6 @@ class ClusterEstimator:
         service_name: Optional[str] = None,
         predicted_load: Optional[float] = None
     ) -> Dict:
-        """
-        Compute multi-objective score for this cluster
-        
-        Args:
-            service_name: Service to score for (optional)
-            predicted_load: Optional predicted load for scoring
-        
-        Returns:
-            Dict with score breakdown and capacity
-        """
         metrics = self.get_metrics(use_cache=True)
         
         # Compute score breakdown
@@ -192,106 +170,61 @@ class ClusterEstimator:
             predicted_load=predicted_load
         )
         
-        # Calculate available capacity (in replicas)
-        # Conservative estimate: use minimum of CPU and memory constraints
+        # Calculate available capacity
         service_config = self.config.get_service(service_name) if service_name else None
         
         if service_config:
-            # Parse CPU request (e.g., "100m" -> 0.1 cores)
-            cpu_req_str = service_config.cpu_request
+            # Parse CPU request
+            cpu_req_str = str(service_config.resources_per_replica.get('requests', {}).get('cpu', '100m'))
             if cpu_req_str.endswith('m'):
                 cpu_req = float(cpu_req_str[:-1]) / 1000.0
             else:
                 cpu_req = float(cpu_req_str)
             
-            # Parse memory request (e.g., "64Mi" -> 0.0625 GB)
-            mem_req_str = service_config.memory_request
+            # Parse Memory request
+            mem_req_str = str(service_config.resources_per_replica.get('requests', {}).get('memory', '64Mi'))
             if mem_req_str.endswith('Mi'):
                 mem_req_gb = float(mem_req_str[:-2]) / 1024.0
             elif mem_req_str.endswith('Gi'):
                 mem_req_gb = float(mem_req_str[:-2])
             else:
-                mem_req_gb = float(mem_req_str)
-            
-            capacity_cpu = int(metrics.cpu_available_cores / cpu_req)
-            capacity_mem = int(metrics.memory_available_gb / mem_req_gb)
+                try:
+                    mem_req_gb = float(mem_req_str)
+                except ValueError:
+                    mem_req_gb = 0.064 # Default fallback
+
+            capacity_cpu = int(metrics.cpu_available_cores / cpu_req) if cpu_req > 0 else 100
+            capacity_mem = int(metrics.memory_available_gb / mem_req_gb) if mem_req_gb > 0 else 100
             capacity = min(capacity_cpu, capacity_mem)
+            
+            # Max replicas constraint
+            max_replicas = service_config.autoscaling.get('max_replicas', 20)
+            capacity = min(capacity, max_replicas)
         else:
-            # Generic estimate
-            capacity = int(metrics.cpu_available_cores * 2)  # 2 replicas per core
-        
-        # Apply max replicas constraint
-        max_replicas = service_config.max_replicas if service_config else 20
-        capacity = min(capacity, max_replicas)
+            capacity = int(metrics.cpu_available_cores * 2)
         
         result = {
             'cluster_name': self.cluster_name,
             'score': breakdown['total_score'],
-            'score_breakdown': {
-                'phi_latency': breakdown['phi_latency'],
-                'phi_capacity': breakdown['phi_capacity'],
-                'phi_load': breakdown['phi_load'],
-                'phi_carbon': breakdown['phi_carbon']
-            },
+            'score_breakdown': breakdown,
             'capacity': max(0, capacity),
-            'metrics': {
-                'cpu_available_cores': metrics.cpu_available_cores,
-                'cpu_total_cores': metrics.cpu_total_cores,
-                'memory_available_gb': metrics.memory_available_gb,
-                'memory_total_gb': metrics.memory_total_gb,
-                'carbon_intensity_gco2_kwh': metrics.carbon_intensity_gco2_kwh,
-                'latency_mean_ms': metrics.latency_mean_ms
-            }
+            'metrics': asdict(metrics)
         }
         
         logger.info(f"Score computed: {breakdown['total_score']:.3f}, capacity={capacity}")
-        
         return result
 
 
-# ============================================================================
-# HTTP API (Flask) - Karmada Estimator exposes gRPC, we use REST for simplicity
-# ============================================================================
-
 def create_estimator_api(cluster_name: str, config_path: str = "config") -> Flask:
-    """
-    Create Flask API for cluster estimator
-    
-    Args:
-        cluster_name: This cluster's name
-        config_path: Path to config
-    
-    Returns:
-        Flask app
-    """
     app = Flask(f"cluster-estimator-{cluster_name}")
     estimator = ClusterEstimator(cluster_name, config_path)
     
     @app.route('/health', methods=['GET'])
     def health():
-        """Health check endpoint"""
         return jsonify({'status': 'healthy', 'cluster': cluster_name}), 200
     
     @app.route('/estimate', methods=['POST'])
     def estimate():
-        """
-        Score estimation endpoint
-        
-        Request body:
-        {
-            "service_name": "frontend",
-            "predicted_load": 150.0  // optional
-        }
-        
-        Response:
-        {
-            "cluster_name": "cluster1",
-            "score": 0.708,
-            "capacity": 12,
-            "score_breakdown": {...},
-            "metrics": {...}
-        }
-        """
         data = request.json or {}
         service_name = data.get('service_name')
         predicted_load = data.get('predicted_load')
@@ -304,11 +237,12 @@ def create_estimator_api(cluster_name: str, config_path: str = "config") -> Flas
             return jsonify(result), 200
         except Exception as e:
             logger.error(f"Error computing score: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({'error': str(e)}), 500
     
     @app.route('/metrics', methods=['GET'])
     def get_metrics():
-        """Get current cluster metrics"""
         try:
             metrics = estimator.get_metrics(use_cache=False)
             return jsonify(asdict(metrics)), 200
@@ -320,28 +254,16 @@ def create_estimator_api(cluster_name: str, config_path: str = "config") -> Flas
 
 
 def run_estimator(cluster_name: str, port: int = 8080, config_path: str = "config"):
-    """
-    Run cluster estimator as HTTP server
-    
-    Args:
-        cluster_name: This cluster's name
-        port: HTTP port
-        config_path: Path to config
-    """
     app = create_estimator_api(cluster_name, config_path)
-    
     logger.info(f"Starting Cluster Estimator for {cluster_name} on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
 
-
 if __name__ == "__main__":
     import sys
-    
     if len(sys.argv) < 2:
         print("Usage: python -m src.level1.cluster_estimator <cluster_name> [port]")
         sys.exit(1)
     
     cluster_name = sys.argv[1]
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
-    
     run_estimator(cluster_name, port)

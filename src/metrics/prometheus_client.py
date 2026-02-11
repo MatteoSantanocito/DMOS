@@ -39,7 +39,7 @@ class PrometheusClient:
             logger.error(f"Prometheus connection failed: {e}")
             return False
     
-    def query(self, query_str: str) -> Optional[list]:
+    def query(self, query_str: str) -> Optional[Dict]:
         """
         Execute Prometheus query
         
@@ -47,7 +47,7 @@ class PrometheusClient:
             query_str: PromQL query
         
         Returns:
-            List of result items or None
+            Dictionary containing 'result' list or None
         """
         try:
             response = requests.get(
@@ -66,12 +66,22 @@ class PrometheusClient:
                 logger.error(f"Prometheus query error: {data.get('error', 'unknown')}")
                 return None
             
-            # ✅ FIX: Restituisci data['data']['result'], NON data['data']
-            return data['data']['result']
+            # --- FIX CRITICO: Normalizzazione dell'output ---
+            # Restituiamo un dizionario che ha SEMPRE la chiave 'result'
+            # Così chi chiama questa funzione può fare .get('result') senza crashare
+            result_data = data.get('data', {})
+            
+            # Se result_data è già una lista (caso strano di alcune API), lo avvolgiamo
+            if isinstance(result_data, list):
+                return {'result': result_data}
+            
+            # Se è un dict (standard), ritorniamo quello
+            return result_data
             
         except Exception as e:
             logger.error(f"Prometheus query exception: {e}")
             return None
+
     def query_range(
         self, 
         query: str, 
@@ -79,18 +89,7 @@ class PrometheusClient:
         end: datetime, 
         step: str = '30s'
     ) -> Optional[Dict[str, Any]]:
-        """
-        Execute range query
-        
-        Args:
-            query: PromQL query
-            start: Start time
-            end: End time
-            step: Query resolution (e.g., '30s', '1m')
-        
-        Returns:
-            Query result or None
-        """
+        """Execute range query"""
         params = {
             'query': query,
             'start': start.timestamp(),
@@ -118,15 +117,7 @@ class PrometheusClient:
             return None
     
     def get_cpu_available(self, cluster_label: Optional[str] = None) -> Optional[float]:
-        """
-        Get available CPU cores
-        
-        Args:
-            cluster_label: Optional cluster label for filtering
-        
-        Returns:
-            Available CPU cores or None
-        """
+        """Get available CPU cores"""
         query = 'sum(kube_node_status_capacity{resource="cpu"})'
         if cluster_label:
             query = f'sum(kube_node_status_capacity{{resource="cpu", cluster="{cluster_label}"}})'
@@ -134,20 +125,13 @@ class PrometheusClient:
         query += ' - sum(kube_pod_container_resource_requests{resource="cpu"})'
         
         result = self.query(query)
+        # Ora result è sempre un dizionario grazie al fix in query()
         if result and result.get('result'):
             return float(result['result'][0]['value'][1])
-        return None
+        return 0.0 # Default a 0 se fallisce
     
     def get_memory_available_gb(self, cluster_label: Optional[str] = None) -> Optional[float]:
-        """
-        Get available memory in GB
-        
-        Args:
-            cluster_label: Optional cluster label
-        
-        Returns:
-            Available memory in GB or None
-        """
+        """Get available memory in GB"""
         query = 'sum(kube_node_status_capacity{resource="memory"})'
         if cluster_label:
             query = f'sum(kube_node_status_capacity{{resource="memory", cluster="{cluster_label}"}})'
@@ -158,8 +142,7 @@ class PrometheusClient:
         if result and result.get('result'):
             memory_bytes = float(result['result'][0]['value'][1])
             return memory_bytes / (1024**3)  # Convert to GB
-        return None
-    
+        return 0.0
     
     def get_request_rate(self, service: str, namespace: str = "default") -> Optional[float]:
         """Get request rate for service"""
@@ -174,26 +157,26 @@ class PrometheusClient:
         
         try:
             result = self.query(query)
-            if result and len(result) > 0 and 'value' in result[0]:
-                rps = float(result[0]['value'][1])
+            if result and result.get('result') and len(result['result']) > 0:
+                rps = float(result['result'][0]['value'][1])
                 logger.info(f"✅ Traffic from Istio: {rps:.1f} req/s")
                 return rps
-        except Exception as e:
-            logger.info(f"Istio query failed (expected): {e}")  # ← Cambiato da debug
+        except Exception:
+            pass # Silent fail
         
         # Try 2: HTTP metrics
         query = f'sum(rate(http_requests_total{{service="{service}",namespace="{namespace}"}}[1m]))'
         
         try:
             result = self.query(query)
-            if result and len(result) > 0 and 'value' in result[0]:
-                rps = float(result[0]['value'][1])
+            if result and result.get('result') and len(result['result']) > 0:
+                rps = float(result['result'][0]['value'][1])
                 logger.info(f"✅ Traffic from HTTP: {rps:.1f} req/s")
                 return rps
-        except Exception as e:
-            logger.info(f"HTTP query failed (expected): {e}")  # ← Cambiato da debug
-        
-        # Try 3: Container network bytes
+        except Exception:
+            pass
+
+        # Try 3: Container network bytes (Fallback)
         query = f'''
         sum(rate(container_network_receive_bytes_total{{
             namespace="{namespace}",
@@ -203,35 +186,18 @@ class PrometheusClient:
         
         try:
             result = self.query(query)
-            logger.info(f"Network query result: {result}")  # ← DEBUG: vedi cosa torna
-            
-            if result and len(result) > 0 and 'value' in result[0]:
-                bytes_per_sec = float(result[0]['value'][1])
-                
-                # Stima: 4KB per request
+            if result and result.get('result') and len(result['result']) > 0:
+                bytes_per_sec = float(result['result'][0]['value'][1])
                 estimated_rps = bytes_per_sec / 4000
-                
                 logger.info(f"✅ Traffic from network: {bytes_per_sec:.0f} bytes/s → {estimated_rps:.1f} req/s")
                 return max(0, estimated_rps)
-            else:
-                logger.warning(f"Network query returned empty: {result}")  # ← DEBUG
         except Exception as e:
-            logger.error(f"Network query exception: {e}", exc_info=True)  # ← Full traceback
+            logger.error(f"Network query exception: {e}")
         
-        logger.warning(f"No metrics found for {service}")
-        return None
+        return 0.0
 
     def get_latency_p95(self, service: str, namespace: str = "online-boutique") -> Optional[float]:
-        """
-        Get p95 latency for a service in milliseconds
-        
-        Args:
-            service: Service name
-            namespace: Namespace
-        
-        Returns:
-            p95 latency in ms or None
-        """
+        """Get p95 latency for a service in milliseconds"""
         query = f'''
         histogram_quantile(0.95, 
           sum(rate(istio_request_duration_milliseconds_bucket{{
@@ -245,20 +211,10 @@ class PrometheusClient:
         if result and result.get('result'):
             return float(result['result'][0]['value'][1])
         
-        logger.warning(f"No latency metrics found for service {service}")
-        return None
+        return 0.0 # Default
     
     def get_pod_count(self, deployment: str, namespace: str = "online-boutique") -> int:
-        """
-        Get current number of running pods for a deployment
-        
-        Args:
-            deployment: Deployment name
-            namespace: Namespace
-        
-        Returns:
-            Number of running pods
-        """
+        """Get current number of running pods"""
         query = f'count(kube_pod_info{{namespace="{namespace}", created_by_name=~"{deployment}-.*"}})'
         
         result = self.query(query)
@@ -267,16 +223,7 @@ class PrometheusClient:
         return 0
     
     def get_cpu_usage_percent(self, deployment: str, namespace: str = "online-boutique") -> Optional[float]:
-        """
-        Get CPU usage percentage for a deployment
-        
-        Args:
-            deployment: Deployment name
-            namespace: Namespace
-        
-        Returns:
-            CPU usage percentage (0-100) or None
-        """
+        """Get CPU usage percentage"""
         query = f'''
         100 * sum(rate(container_cpu_usage_seconds_total{{
           namespace="{namespace}",
@@ -293,4 +240,4 @@ class PrometheusClient:
         result = self.query(query)
         if result and result.get('result'):
             return float(result['result'][0]['value'][1])
-        return None
+        return 0.0
