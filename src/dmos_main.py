@@ -1,5 +1,16 @@
 """
 DMOS Event-Driven + Periodic Polling Orchestrator
+
+Changes vs previous version:
+  1. Clusters NOT in allocations are now scaled down to min_replicas
+  2. All configured services are now monitored and scheduled
+  3. [NEW] Anti-oscillation fixes:
+     A. debounce_seconds: 15 → 30
+     B. max_delta_per_cycle: 3 → 2
+     C. Dead zone: skip scaling if |Δ| ≤ 1 and traffic change < 15%
+     D. Asymmetric cooldown: scale-down waits 60s, scale-up waits 30s
+  4. [NEW] Co-location: proportional backend distribution across clusters
+  5. [NEW] Proactive scaling: uses predictor to trigger before threshold crossing
 """
 
 import time
@@ -7,7 +18,7 @@ import threading
 from queue import PriorityQueue
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Set
 from flask import Flask, request, jsonify
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
@@ -31,7 +42,7 @@ class SchedulingEvent:
 
 
 class DMOSOrchestrator:
-    """DMOS with Event-Driven + Periodic Polling"""
+    """DMOS with Event-Driven + Periodic Polling + Anti-Oscillation"""
     
     # Prometheus metrics
     scaling_events = Counter(
@@ -91,6 +102,7 @@ class DMOSOrchestrator:
             }
         self.k8s = KubernetesClient(k8s_configs)
         
+        # [ANTI-OSC FIX B] Create scalers with reduced max_delta
         self.scalers: Dict[str, ReplicaScaler] = {}
         for svc_name, svc_cfg in self.config.services.items():
             self.scalers[svc_name] = ReplicaScaler(
@@ -98,30 +110,201 @@ class DMOSOrchestrator:
                 min_replicas=svc_cfg.min_replicas,
                 max_replicas=svc_cfg.max_replicas,
                 safety_margin=0.15,
-                max_delta_per_cycle=3
+                max_delta_per_cycle=2  # [FIX B] Was 3, now 2
             )
+        
+        # All cluster names for scale-down of non-allocated clusters
+        self.all_cluster_names: list = list(self.config.clusters.keys())
         
         self.event_queue: PriorityQueue[SchedulingEvent] = PriorityQueue()
         self.num_workers = num_workers
         self.running = False
         
         self.last_processed: Dict[str, datetime] = {}
-        self.debounce_seconds = 15
+        self.debounce_seconds = 30  # [FIX A] Was 15
         
         # Polling config
         self.polling_interval = 30  # secondi
         self.high_threshold = 30    # req/s
         self.low_threshold = 10     # req/s
         
+        # [FIX D] Asymmetric cooldown tracking
+        self.last_scale_down: Dict[str, datetime] = {}
+        self.scale_down_cooldown = 60  # seconds — scale-down slower
+        
+        # [FIX C] Dead zone: track previous traffic for stability check
+        self.previous_traffic: Dict[str, float] = {}
+        self.dead_zone_pct = 0.15  # 15% traffic change threshold
+        
+        # List of services to monitor
+        self.monitored_services = list(self.config.services.keys())
+        
+        # ── Co-location: service dependency map ──────────────────────────
+        # If a cluster has replicas of a "parent" service, it must also have
+        # at least min_replicas of each dependent "child" service.
+        # This avoids cross-cluster gRPC calls that add latency.
+        #
+        # Online Boutique dependency tree:
+        #   frontend → cartservice, productcatalogservice, currencyservice,
+        #              recommendationservice, checkoutservice, shippingservice, adservice
+        #   checkoutservice → cartservice, currencyservice, shippingservice,
+        #                     paymentservice, emailservice
+        #
+        # We only enforce co-location for services DMOS manages (in services.yaml).
+        # Services not in services.yaml (currencyservice, shippingservice, etc.)
+        # are assumed to already have 1 replica per cluster from initial deploy.
+        self.service_dependencies: Dict[str, list] = {
+            'frontend': [
+                'cartservice',
+                'productcatalogservice',
+                'checkoutservice',
+                'recommendationservice',
+            ],
+            # checkoutservice depends on cartservice, but cart is already
+            # a frontend dependency — no need to duplicate
+        }
+        self.colocation_enabled = True
+        
         start_http_server(9090)
         logger.info("📊 Metrics server started on :9090/metrics")
-        logger.info("✅ Orchestrator initialized (3 workers)")
+        logger.info(f"✅ Orchestrator initialized ({num_workers} workers)")
+        logger.info(f"📋 Monitored services: {self.monitored_services}")
+        logger.info(f"🌐 Clusters: {self.all_cluster_names}")
+        logger.info(f"🔧 Anti-oscillation: debounce={self.debounce_seconds}s, "
+                     f"max_delta=2, dead_zone={self.dead_zone_pct*100:.0f}%, "
+                     f"scale_down_cooldown={self.scale_down_cooldown}s")
+        if self.colocation_enabled:
+            logger.info(f"🔗 Co-location: enabled — dependencies: {self.service_dependencies}")
+    
+    # ── Helpers ────────────────────────────────────────────────────────────
     
     def should_process(self, service: str) -> bool:
         if service not in self.last_processed:
             return True
         elapsed = (datetime.now() - self.last_processed[service]).total_seconds()
         return elapsed >= self.debounce_seconds
+    
+    def _is_traffic_stable(self, service_name: str, current_traffic: float) -> bool:
+        """[FIX C] Returns True if traffic changed < dead_zone_pct since last check."""
+        prev = self.previous_traffic.get(service_name)
+        if prev is None or prev <= 0:
+            return False
+        return abs(current_traffic - prev) / prev < self.dead_zone_pct
+    
+    def _can_scale_down(self, service_name: str) -> bool:
+        """[FIX D] Returns True if scale-down cooldown has elapsed."""
+        last = self.last_scale_down.get(service_name)
+        if last is None:
+            return True
+        return (datetime.now() - last).total_seconds() >= self.scale_down_cooldown
+    
+    def _enforce_colocation(self, parent_service: str):
+        """
+        Proportional co-location: for every cluster that has replicas of
+        parent_service, scale dependent backend services proportionally.
+        
+        Strategy:
+        - Collect frontend distribution across clusters (e.g. 3/3/3 = 33%/33%/33%)
+        - For each backend, determine its total replicas needed (from schedule_service)
+        - Distribute those replicas across clusters following the same proportion
+        - At minimum, every cluster with frontend > 0 gets min_replicas of each backend
+        
+        This ensures backend services are co-located and proportionally distributed,
+        avoiding cross-cluster gRPC calls.
+        """
+        if not self.colocation_enabled:
+            return
+        
+        deps = self.service_dependencies.get(parent_service, [])
+        if not deps:
+            return
+        
+        parent_cfg = self.config.get_service(parent_service)
+        
+        # Step 1: Get frontend distribution across clusters
+        cluster_parent_reps = {}
+        total_parent_reps = 0
+        for cluster_name in self.all_cluster_names:
+            reps = self.k8s.get_deployment_replicas(
+                cluster=cluster_name,
+                deployment=parent_cfg.deployment_name,
+                namespace=parent_cfg.namespace
+            ) or 0
+            cluster_parent_reps[cluster_name] = reps
+            total_parent_reps += reps
+        
+        if total_parent_reps == 0:
+            return
+        
+        active_clusters = [c for c, r in cluster_parent_reps.items() if r > 0]
+        
+        # Step 2: For each dependent service, distribute proportionally
+        for dep_svc_name in deps:
+            dep_cfg = self.config.get_service(dep_svc_name)
+            if dep_cfg is None:
+                continue
+            
+            # Get current total backend replicas across all clusters
+            total_dep_reps = 0
+            cluster_dep_current = {}
+            for cluster_name in self.all_cluster_names:
+                reps = self.k8s.get_deployment_replicas(
+                    cluster=cluster_name,
+                    deployment=dep_cfg.deployment_name,
+                    namespace=dep_cfg.namespace
+                ) or 0
+                cluster_dep_current[cluster_name] = reps
+                total_dep_reps += reps
+            
+            # Target: at least 1 per active cluster, total = max(current_total, len(active))
+            target_total = max(total_dep_reps, len(active_clusters))
+            
+            for cluster_name in self.all_cluster_names:
+                parent_reps = cluster_parent_reps[cluster_name]
+                current_dep = cluster_dep_current[cluster_name]
+                
+                if parent_reps == 0:
+                    # No frontend → backend at min_replicas (handled by schedule_service)
+                    continue
+                
+                # Proportional target: at least min_replicas, proportional to frontend share
+                frontend_share = parent_reps / total_parent_reps
+                proportional_target = max(
+                    dep_cfg.min_replicas,
+                    int(round(target_total * frontend_share))
+                )
+                
+                if current_dep < proportional_target:
+                    logger.info(
+                        f"🔗 Co-location: {cluster_name} — {dep_svc_name}: "
+                        f"{current_dep} → {proportional_target} "
+                        f"(frontend share: {frontend_share:.0%})"
+                    )
+                    
+                    self.k8s.scale_deployment(
+                        cluster=cluster_name,
+                        deployment=dep_cfg.deployment_name,
+                        replicas=proportional_target,
+                        namespace=dep_cfg.namespace
+                    )
+                    
+                    self.scaling_events.labels(
+                        cluster=cluster_name,
+                        service=dep_svc_name,
+                        action='scale_up_colocation'
+                    ).inc()
+                    
+                    self.current_replicas.labels(
+                        cluster=cluster_name,
+                        service=dep_svc_name
+                    ).set(current_dep)
+                    
+                    self.target_replicas.labels(
+                        cluster=cluster_name,
+                        service=dep_svc_name
+                    ).set(proportional_target)
+    
+    # ── Core Scheduling ───────────────────────────────────────────────────
     
     def schedule_service(self, service_name: str, reason: str = "event"):
         start_time = time.time()
@@ -136,11 +319,24 @@ class DMOSOrchestrator:
         )
         
         if current_traffic is None:
-            logger.warning(f"No metrics for {service_name}, using default 100 req/s")
-            current_traffic = 100.0
+            # No metrics available — use conservative estimate based on capacity
+            # This avoids phantom scaling: assume each existing replica handles
+            # half its capacity (light load, not zero)
+            svc_cfg_temp = self.config.get_service(service_name)
+            current_traffic = svc_cfg_temp.capacity_req_per_sec * svc_cfg_temp.min_replicas * 0.5
+            logger.warning(f"No metrics for {service_name}, using conservative fallback: "
+                          f"{current_traffic:.1f} req/s "
+                          f"(min_replicas={svc_cfg_temp.min_replicas} × "
+                          f"capacity={svc_cfg_temp.capacity_req_per_sec} × 0.5)")
         
         self.actual_traffic.labels(service=service_name).set(current_traffic)
-        logger.info(f"Current traffic: {current_traffic:.1f} req/s")
+        
+        traffic_stable = self._is_traffic_stable(service_name, current_traffic)
+        prev_t = self.previous_traffic.get(service_name, 0)
+        logger.info(f"Current traffic: {current_traffic:.1f} req/s "
+                     f"(prev={prev_t:.1f}, stable={traffic_stable})")
+        
+        self.previous_traffic[service_name] = current_traffic
         
         svc_cfg = self.config.get_service(service_name)
         total_replicas = max(
@@ -160,8 +356,12 @@ class DMOSOrchestrator:
             logger.error(f"❌ Scheduling failed")
             return
         
+        allocated_cluster_names: Set[str] = set()
+        any_scale_down = False
+        
         for allocation in allocations:
             cluster_name = allocation.cluster_name
+            allocated_cluster_names.add(cluster_name)
             
             self.cluster_score.labels(
                 cluster=cluster_name,
@@ -196,10 +396,29 @@ class DMOSOrchestrator:
                 service=service_name
             ).set(decision.predicted_traffic)
             
-            logger.info(f"{cluster_name}: {current_reps} → {decision.target_replicas} (Δ={decision.delta_replicas:+d})")
+            delta = decision.delta_replicas
             
-            if decision.delta_replicas != 0:
-                action = 'scale_up' if decision.delta_replicas > 0 else 'scale_down'
+            # [FIX C] Dead zone: skip ±1 changes when traffic is stable
+            if (abs(delta) <= 1
+                    and traffic_stable
+                    and current_reps >= svc_cfg.min_replicas):
+                logger.info(f"  🔇 {cluster_name}: Δ={delta:+d} in dead zone — skipping")
+                continue
+            
+            # [FIX D] Asymmetric cooldown: block rapid scale-downs
+            if delta < 0 and not self._can_scale_down(service_name):
+                elapsed = (datetime.now() - self.last_scale_down.get(
+                    service_name, datetime.now())).total_seconds()
+                remaining = self.scale_down_cooldown - elapsed
+                logger.info(f"  ⏳ {cluster_name}: scale-down Δ={delta:+d} "
+                            f"blocked by cooldown ({remaining:.0f}s left)")
+                continue
+            
+            logger.info(f"{cluster_name}: {current_reps} → {decision.target_replicas} "
+                        f"(Δ={delta:+d})")
+            
+            if delta != 0:
+                action = 'scale_up' if delta > 0 else 'scale_down'
                 self.scaling_events.labels(
                     cluster=cluster_name,
                     service=service_name,
@@ -212,10 +431,74 @@ class DMOSOrchestrator:
                     replicas=decision.target_replicas,
                     namespace=svc_cfg.namespace
                 )
+                
+                if delta < 0:
+                    any_scale_down = True
+        
+        if any_scale_down:
+            self.last_scale_down[service_name] = datetime.now()
+        
+        # Scale down clusters NOT in allocations
+        for cluster_name in self.all_cluster_names:
+            if cluster_name not in allocated_cluster_names:
+                current_reps = self.k8s.get_deployment_replicas(
+                    cluster=cluster_name,
+                    deployment=svc_cfg.deployment_name,
+                    namespace=svc_cfg.namespace
+                ) or 0
+                
+                target = svc_cfg.min_replicas
+                
+                if current_reps > target:
+                    if self._can_scale_down(service_name):
+                        logger.info(
+                            f"📉 {cluster_name}: not in allocation → "
+                            f"scaling {current_reps} → {target} (min_replicas)"
+                        )
+                        
+                        self.scaling_events.labels(
+                            cluster=cluster_name,
+                            service=service_name,
+                            action='scale_down'
+                        ).inc()
+                        
+                        self.k8s.scale_deployment(
+                            cluster=cluster_name,
+                            deployment=svc_cfg.deployment_name,
+                            replicas=target,
+                            namespace=svc_cfg.namespace
+                        )
+                        
+                        self.last_scale_down[service_name] = datetime.now()
+                    else:
+                        logger.debug(f"  ⏳ {cluster_name}: non-alloc scale-down blocked by cooldown")
+                else:
+                    logger.debug(
+                        f"✓ {cluster_name}: not in allocation, "
+                        f"already at {current_reps} ≤ {target}"
+                    )
+                
+                # Always update gauges so collector sees real values
+                self.current_replicas.labels(
+                    cluster=cluster_name,
+                    service=service_name
+                ).set(current_reps)
+                
+                self.target_replicas.labels(
+                    cluster=cluster_name,
+                    service=service_name
+                ).set(min(current_reps, target))
+        
+        # ── Co-location enforcement ──────────────────────────────────────
+        # After scheduling parent service, ensure dependent backends exist
+        # on every cluster that has the parent.
+        self._enforce_colocation(service_name)
         
         duration = time.time() - start_time
         self.scheduling_duration.labels(service=service_name).observe(duration)
         logger.info(f"Scheduling completed in {duration:.2f}s")
+    
+    # ── Event Processing ──────────────────────────────────────────────────
     
     def process_event(self, event: SchedulingEvent):
         if not self.should_process(event.service):
@@ -230,24 +513,25 @@ class DMOSOrchestrator:
         except Exception as e:
             logger.error(f"Error processing {event.service}: {e}")
     
+    # ── Periodic Traffic Monitor ──────────────────────────────────────────
     
     def periodic_check_thread(self):
-        """Polling periodico per traffico"""
+        """Polling periodico per traffico con scaling proattivo"""
         logger.info(f"🔄 Starting periodic traffic checker ({self.polling_interval}s interval)...")
         logger.info(f"   High threshold: {self.high_threshold} req/s")
         logger.info(f"   Low threshold: {self.low_threshold} req/s")
+        logger.info(f"   Monitored services: {self.monitored_services}")
+        logger.info(f"   Proactive scaling: enabled (uses predictor for early trigger)")
         
         while self.running:
             try:
-                for service_name in ['frontend']:
+                for service_name in self.monitored_services:
                     
-                    # Leggi traffico da Prometheus
                     current_traffic = self.prometheus.get_request_rate(
                         service=service_name,
                         namespace="online-boutique"
                     )
                     
-                    # Leggi repliche correnti (sempre, per fallback se serve)
                     svc_cfg = self.config.get_service(service_name)
                     current_replicas = self.k8s.get_deployment_replicas(
                         cluster='cluster1',
@@ -256,53 +540,74 @@ class DMOSOrchestrator:
                     )
                     
                     if current_replicas is None:
-                        current_replicas = 1  # Fallback safe
+                        current_replicas = 1
                     
-                    # Se metriche non disponibili, usa fallback
                     if current_traffic is None or current_traffic == 0:
                         logger.warning(f"No Prometheus metrics for {service_name}, using fallback estimation")
                         
-                        # Stima euristica basata su repliche
+                        # Fallback values must stay BELOW high_threshold (30 rps)
+                        # to avoid phantom scaling without real traffic
                         if current_replicas == 1:
-                            current_traffic = 50.0  # Forza scaling up per test
-                            logger.info(f"  Fallback: {current_replicas} replica → assume HIGH load ({current_traffic} req/s)")
+                            current_traffic = 15.0  # Conservative: under threshold
+                            logger.info(f"  Fallback: {current_replicas} replica → assume MODERATE load ({current_traffic} req/s)")
                         elif current_replicas > 3:
-                            current_traffic = 8.0  # Forza scaling down
+                            current_traffic = 5.0   # Many replicas but no metrics → scale down
                             logger.info(f"  Fallback: {current_replicas} replicas → assume LOW load ({current_traffic} req/s)")
                         else:
-                            current_traffic = 25.0  # Mantieni
-                            logger.info(f"  Fallback: {current_replicas} replicas → assume MEDIUM load ({current_traffic} req/s)")
+                            current_traffic = 15.0  # Under threshold, maintain
+                            logger.info(f"  Fallback: {current_replicas} replicas → assume MODERATE load ({current_traffic} req/s)")
                     
-                    logger.info(f"📊 {service_name}: {current_traffic:.1f} req/s | Replicas: {current_replicas}")
+                    # ── Proactive check: use predictor to look ahead ──────────
+                    # Feed current traffic to the predictor and get prediction
+                    predicted_traffic = current_traffic  # default: same as current
+                    if service_name in self.scalers:
+                        pred_result, _ = self.scalers[service_name].predictor.predict(
+                            current_rate=current_traffic,
+                            timestamp=datetime.now()
+                        )
+                        predicted_traffic = pred_result
                     
-                    # Check threshold
-                    if current_traffic > self.high_threshold:
-                        logger.info(f"⚠️  {service_name} HIGH traffic ({current_traffic:.1f} > {self.high_threshold})")
+                    logger.info(f"📊 {service_name}: {current_traffic:.1f} req/s "
+                               f"(predicted: {predicted_traffic:.1f}) | "
+                               f"Replicas: {current_replicas}")
+                    
+                    # Decision: trigger based on EITHER current OR predicted traffic
+                    # This is the key to proactive scaling
+                    effective_traffic = max(current_traffic, predicted_traffic)
+                    
+                    if effective_traffic > self.high_threshold:
+                        reason_suffix = ""
+                        if predicted_traffic > current_traffic and current_traffic <= self.high_threshold:
+                            reason_suffix = "_proactive"
+                            logger.info(f"🔮 {service_name} PROACTIVE: current={current_traffic:.1f} "
+                                       f"< threshold={self.high_threshold}, but predicted="
+                                       f"{predicted_traffic:.1f} > threshold → pre-scaling!")
+                        else:
+                            logger.info(f"⚠️  {service_name} HIGH traffic ({effective_traffic:.1f} > {self.high_threshold})")
                         
                         event = SchedulingEvent(
-                            priority=1,
+                            priority=0 if reason_suffix == "_proactive" else 1,
                             timestamp=datetime.now(),
                             service=service_name,
                             action='scale_up',
-                            reason=f'traffic_high_{current_traffic:.0f}rps'
+                            reason=f'traffic_high_{effective_traffic:.0f}rps{reason_suffix}'
                         )
                         self.event_queue.put(event)
                     
-                    elif current_traffic < self.low_threshold:
-                        logger.info(f"ℹ️  {service_name} LOW traffic ({current_traffic:.1f} < {self.low_threshold})")
+                    elif effective_traffic < self.low_threshold:
+                        logger.info(f"ℹ️  {service_name} LOW traffic ({effective_traffic:.1f} < {self.low_threshold})")
                         
                         event = SchedulingEvent(
                             priority=2,
                             timestamp=datetime.now(),
                             service=service_name,
                             action='scale_down',
-                            reason=f'traffic_low_{current_traffic:.0f}rps'
+                            reason=f'traffic_low_{effective_traffic:.0f}rps'
                         )
                         self.event_queue.put(event)
                     else:
-                        logger.debug(f"✓ {service_name} traffic OK ({current_traffic:.1f} req/s)")
+                        logger.debug(f"✓ {service_name} traffic OK ({effective_traffic:.1f} req/s)")
                 
-                # Sleep tra iterazioni
                 time.sleep(self.polling_interval)
                 
             except Exception as e:
@@ -310,6 +615,8 @@ class DMOSOrchestrator:
                 logger.error(f"Error in periodic check: {e}")
                 logger.error(traceback.format_exc())
                 time.sleep(self.polling_interval)
+    
+    # ── Webhook Server ────────────────────────────────────────────────────
                     
     def webhook_server(self):
         app = Flask("dmos-webhook")
@@ -400,7 +707,6 @@ class DMOSOrchestrator:
         threads.append(t)
         logger.info("✅ Webhook server started")
         
-        # 🆕 Periodic checker
         t = threading.Thread(target=self.periodic_check_thread, daemon=True)
         t.start()
         threads.append(t)
@@ -417,6 +723,8 @@ class DMOSOrchestrator:
         logger.info("Webhook: http://localhost:8081/webhook/alert")
         logger.info("Metrics: http://localhost:9090/metrics")
         logger.info(f"Polling: Every {self.polling_interval}s")
+        logger.info(f"Services: {self.monitored_services}")
+        logger.info(f"Anti-oscillation: ON")
         logger.info("="*70 + "\n")
         
         try:
