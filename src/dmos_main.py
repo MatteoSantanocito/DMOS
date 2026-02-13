@@ -545,17 +545,30 @@ class DMOSOrchestrator:
                     if current_traffic is None or current_traffic == 0:
                         logger.warning(f"No Prometheus metrics for {service_name}, using fallback estimation")
                         
-                        # Fallback values must stay BELOW high_threshold (30 rps)
-                        # to avoid phantom scaling without real traffic
-                        if current_replicas == 1:
-                            current_traffic = 15.0  # Conservative: under threshold
-                            logger.info(f"  Fallback: {current_replicas} replica → assume MODERATE load ({current_traffic} req/s)")
-                        elif current_replicas > 3:
-                            current_traffic = 5.0   # Many replicas but no metrics → scale down
-                            logger.info(f"  Fallback: {current_replicas} replicas → assume LOW load ({current_traffic} req/s)")
+                        # Stima euristica basata su rapporto con frontend
+                        # Se non abbiamo metriche Prometheus, stimiamo il carico
+                        # del backend in base allo stato del frontend
+                        fe_reps = 0
+                        fe_cfg = self.config.get_service('frontend')
+                        for cn in self.config.clusters:
+                            r = self.k8s.get_deployment_replicas(
+                                cluster=cn,
+                                deployment=fe_cfg.deployment_name,
+                                namespace=fe_cfg.namespace
+                            ) or 0
+                            fe_reps += r
+                        
+                        if fe_reps <= fe_cfg.min_replicas:
+                            # Frontend al minimo → backend dovrebbe scalare giù
+                            current_traffic = 5.0
+                            logger.info(f"  Fallback: frontend at min ({fe_reps}) → backend LOW ({current_traffic} req/s)")
+                        elif current_replicas > fe_reps:
+                            # Backend ha più repliche del frontend → probabilmente over-scaled
+                            current_traffic = 8.0
+                            logger.info(f"  Fallback: backend({current_replicas}) > frontend({fe_reps}) → LOW ({current_traffic} req/s)")
                         else:
-                            current_traffic = 15.0  # Under threshold, maintain
-                            logger.info(f"  Fallback: {current_replicas} replicas → assume MODERATE load ({current_traffic} req/s)")
+                            current_traffic = 25.0
+                            logger.info(f"  Fallback: backend OK ({current_replicas} vs fe={fe_reps}) → MEDIUM ({current_traffic} req/s)")
                     
                     # ── Proactive check: use predictor to look ahead ──────────
                     # Feed current traffic to the predictor and get prediction
@@ -607,7 +620,70 @@ class DMOSOrchestrator:
                         self.event_queue.put(event)
                     else:
                         logger.debug(f"✓ {service_name} traffic OK ({effective_traffic:.1f} req/s)")
+                        
+                # === BACKEND RESET ===
+                # Quando il frontend è al minimo, resetta i backend ai loro minimi
+                # bypassando il rate limiter per evitare scale-down lento
+                fe_cfg = self.config.get_service('frontend')
+                fe_total = 0
+                for cluster_name in self.config.clusters:
+                    reps = self.k8s.get_deployment_replicas(
+                        cluster=cluster_name,
+                        deployment=fe_cfg.deployment_name,
+                        namespace=fe_cfg.namespace
+                    ) or 0
+                    fe_total += reps
                 
+                fe_at_minimum = (fe_total <= fe_cfg.min_replicas)
+                
+                backend_services = ['cartservice', 'productcatalogservice', 
+                                    'checkoutservice', 'recommendationservice']
+                
+                for backend_name in backend_services:
+                    be_cfg = self.config.get_service(backend_name)
+                    be_total = 0
+                    for cluster_name in self.config.clusters:
+                        be_reps = self.k8s.get_deployment_replicas(
+                            cluster=cluster_name,
+                            deployment=be_cfg.deployment_name,
+                            namespace=be_cfg.namespace
+                        ) or 0
+                        be_total += be_reps
+                    
+                    if fe_at_minimum and be_total > be_cfg.min_replicas * len(self.config.clusters):
+                        # Frontend al minimo ma backend ancora alto → reset aggressivo
+                        logger.info(f"🔄 Backend reset: {backend_name} has {be_total} replicas "
+                                   f"but frontend at minimum ({fe_total}) → resetting to min")
+                        
+                        # Distribuisci min_replicas uniformemente
+                        min_per_cluster = max(1, be_cfg.min_replicas)
+                        for cluster_name in self.config.clusters:
+                            self.k8s.scale_deployment(
+                                cluster=cluster_name,
+                                deployment=be_cfg.deployment_name,
+                                replicas=min_per_cluster,
+                                namespace=be_cfg.namespace
+                            )
+                        logger.info(f"  ✅ {backend_name} reset to {min_per_cluster} per cluster")
+                    
+                    elif not fe_at_minimum and be_total > fe_total * 2:
+                        # Frontend non al minimo ma backend è >2x frontend → scale-down graduale
+                        # Usa max_delta=4 per scale-down backend (più aggressivo del frontend)
+                        target_total = max(be_cfg.min_replicas * len(self.config.clusters),
+                                          fe_total)  # Almeno tanti quanti il frontend
+                        if be_total > target_total + 2:
+                            logger.info(f"📉 Backend gradual scale-down: {backend_name} "
+                                       f"{be_total} → target ~{target_total}")
+                            # Genera evento di scale-down per il backend
+                            event = SchedulingEvent(
+                                priority=2,
+                                timestamp=datetime.now(),
+                                service=backend_name,
+                                action='scale_down',
+                                reason=f'backend_overscaled_{be_total}_vs_fe_{fe_total}'
+                            )
+                            self.event_queue.put(event)
+                            
                 time.sleep(self.polling_interval)
                 
             except Exception as e:

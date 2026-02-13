@@ -99,7 +99,7 @@ autoscaling:
   # Trend-based prediction
   prediction:
     window_seconds: 300     # 5 minuti per calcolare derivata
-    horizon_seconds: 600    # Predici 10 minuti avanti
+    horizon_seconds: 120    # Predici 10 minuti avanti
     smoothing_alpha: 0.3    # Exponential Moving Average smoothing (opzionale)
     
     # Fallback se non ci sono dati storici

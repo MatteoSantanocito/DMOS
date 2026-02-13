@@ -305,38 +305,60 @@ def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
 # ─── Console Summary ─────────────────────────────────────────────────────────
 
 def print_summary(snap: dict, iteration: int, total: int):
-    """Print a compact one-line summary."""
+    """Print a detailed multi-line summary with per-cluster info."""
     ts = snap["timestamp"]
-    fe = snap["dmos"]["services"].get("frontend", {})
-    traffic = fe.get("actual_traffic", 0)
-    replicas = fe.get("total_replicas", 0)
-
-    # Per cluster short
-    parts = []
+    services = snap["dmos"]["services"]
+    
+    fe = services.get("frontend", {})
+    fe_traffic = fe.get("actual_traffic", 0)
+    fe_predicted = fe.get("predicted_traffic_total", 0)
+    fe_total = fe.get("total_replicas", 0)
+    
+    # Frontend per-cluster
+    fe_parts = []
     for c in KNOWN_CLUSTERS:
         cd = fe.get("clusters", {}).get(c, {})
-        parts.append(f"{cd.get('current_replicas', 0)}")
-    cluster_str = "/".join(parts)
-
+        r = cd.get("current_replicas", 0)
+        fe_parts.append(str(r))
+    fe_cluster_str = "/".join(fe_parts)
+    
+    # Locust data
     loc = snap.get("locust", {})
     if loc.get("available"):
         p95 = loc.get("p95_response_time_ms", 0)
         rps = loc.get("total_rps", 0)
         users = loc.get("current_users", 0)
-        locust_str = f"p95={p95:.0f}ms rps={rps:.1f} users={users}"
+        fail = loc.get("failure_ratio", 0)
+        locust_str = f"p95={p95:.0f}ms rps={rps:.1f} users={users} fail={fail:.1%}"
     else:
-        locust_str = "locust:off"
-
-    # Count services with replicas > 0
-    active_svcs = sum(
-        1 for s in snap["dmos"]["services"].values() if s.get("total_replicas", 0) > 0
-    )
-
+        locust_str = "locust: waiting..."
+    
+    # Backend services summary: name(total: c1/c2/c3)
+    backend_parts = []
+    for svc_name in KNOWN_SERVICES:
+        if svc_name == "frontend":
+            continue
+        svc = services.get(svc_name, {})
+        svc_total = svc.get("total_replicas", 0)
+        parts = []
+        for c in KNOWN_CLUSTERS:
+            cd = svc.get("clusters", {}).get(c, {})
+            parts.append(str(cd.get("current_replicas", 0)))
+        # Short name: cartservice → cart, productcatalogservice → catalog, etc.
+        short = svc_name.replace("service", "").replace("productcatalog", "catalog")
+        backend_parts.append(f"{short}={svc_total}({'/'.join(parts)})")
+    backend_str = " ".join(backend_parts)
+    
+    # Print
     print(
         f"  [{iteration:3d}/{total}] {ts[11:19]} | "
-        f"FE traffic={traffic:6.1f} rps replicas={replicas} ({cluster_str}) | "
-        f"svcs_active={active_svcs} | {locust_str}"
+        f"FE: {fe_traffic:5.1f}rps→{fe_predicted:5.1f}pred "
+        f"replicas={fe_total}(c1/c2/c3={fe_cluster_str}) | "
+        f"{locust_str}"
     )
+    if iteration == 1 or iteration % 5 == 0:
+        # Show backend detail every 5 snapshots
+        print(f"           backends: {backend_str}")
 
 
 # ─── Main Collector Loop ─────────────────────────────────────────────────────
@@ -366,6 +388,14 @@ def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL):
     print(f"  Locust URL:   {locust_url}")
     print(f"  Output JSONL: {jsonl_file}")
     print(f"  Output TXT:   {legacy_file}")
+    print("-" * 80)
+    print("  Legend:")
+    print("    FE: X rps → Y pred   = Prometheus traffic (actual → DMOS predicted)")
+    print("    replicas=N(c1/c2/c3) = frontend replicas total (per cluster)")
+    print("    rps=X                = Locust measured throughput (actual end-user)")
+    print("    backends: svc=N(x/y/z) = backend replicas total (per cluster)")
+    print("    FE traffic ≠ Locust rps: FE is from Prometheus (network bytes estimate),")
+    print("                             Locust rps is actual HTTP requests measured")
     print("=" * 80)
     print()
 

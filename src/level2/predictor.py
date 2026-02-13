@@ -34,7 +34,7 @@ class TrafficPredictor:
     def __init__(
         self,
         window_seconds: int = 300,    # 5 minutes for derivative
-        horizon_seconds: int = 300,   # 5 minutes prediction
+        horizon_seconds: int = 120,   # 5 minutes prediction
         smoothing_alpha: float = 0.3  # EMA smoothing (optional)
     ):
         """
@@ -144,24 +144,24 @@ class TrafficPredictor:
                 'horizon_seconds': 0
             }
         
-        # Linear extrapolation
-        predicted_rate = current_rate + derivative * self.horizon_seconds
-            # Damping factor per trend
+        # Damping asimmetrico: reattivo in scale-up, conservativo in scale-down
         if derivative > 0:
-            # Scale-up: dampen positive trends
-            trend_factor = 0.3  # ← Solo 30% del trend
+            # Scale-up: usa 50% del trend positivo (proattività)
+            trend_factor = 0.5
         else:
-            # Scale-down: più reattivo
-            trend_factor = 0.7  # ← 70% del trend negativo
+            # Scale-down: usa solo 30% del trend negativo (conservativo)
+            trend_factor = 0.3
         
-        
+        # Linear extrapolation con damping
         predicted_rate = current_rate + (derivative * self.horizon_seconds * trend_factor)
-    
-        # Cap prediction a 2x current
+        
+        # Cap prediction a 2x current (evita overshoot)
         predicted_rate = min(predicted_rate, current_rate * 2.0)
-    
-        # Ensure non-negative
-        predicted_rate = max(0.0, predicted_rate)
+        
+        # FLOOR: la predizione non scende mai sotto il traffico corrente
+        # Quando il trend è negativo, manteniamo almeno il livello attuale.
+        # Questo evita scale-down prematuro basato su estrapolazioni aggressive.
+        predicted_rate = max(predicted_rate, current_rate)
         
         logger.info(f"Prediction: current={current_rate:.1f} req/s, "
                    f"derivative={derivative:.4f}, "
