@@ -32299,3 +32299,481 @@ Shutdown requested
 
 Shutdown requested
 2026-02-13 01:23:05 | INFO     | __main__:run:814 | Stopped
+2026-02-16 09:47:02 | INFO     | __main__:__init__:91 | Initializing DMOS Orchestrator...
+2026-02-16 09:47:02 | INFO     | src.utils.config_loader:__init__:140 | Loading configuration from: config
+2026-02-16 09:47:02 | INFO     | src.utils.config_loader:__init__:152 | Loaded 3 clusters, 5 services
+2026-02-16 09:47:02 | INFO     | src.utils.config_loader:__init__:140 | Loading configuration from: config
+2026-02-16 09:47:02 | INFO     | src.utils.config_loader:__init__:152 | Loaded 3 clusters, 5 services
+2026-02-16 09:47:02 | INFO     | src.level1.dmos_scheduler:__init__:54 | DMOS Scheduler initialized with 3 clusters
+2026-02-16 09:47:02 | INFO     | src.k8s.client:__init__:42 | ✅ Initialized K8s client for cluster1
+2026-02-16 09:47:02 | INFO     | src.k8s.client:__init__:42 | ✅ Initialized K8s client for cluster2
+2026-02-16 09:47:02 | INFO     | src.k8s.client:__init__:42 | ✅ Initialized K8s client for cluster3
+2026-02-16 09:47:02 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 09:47:02 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 09:47:02 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=15 req/s, replicas=[2, 20], safety=15.0%, max_delta=2
+2026-02-16 09:47:02 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 09:47:02 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 09:47:02 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=10 req/s, replicas=[1, 15], safety=15.0%, max_delta=2
+2026-02-16 09:47:02 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 09:47:02 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 09:47:02 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=15 req/s, replicas=[1, 15], safety=15.0%, max_delta=2
+2026-02-16 09:47:02 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 09:47:02 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 09:47:02 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=5 req/s, replicas=[1, 10], safety=15.0%, max_delta=2
+2026-02-16 09:47:02 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 09:47:02 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 09:47:02 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=10 req/s, replicas=[1, 10], safety=15.0%, max_delta=2
+2026-02-16 09:47:03 | INFO     | __main__:__init__:169 | 📊 Metrics server started on :9090/metrics
+2026-02-16 09:47:03 | INFO     | __main__:__init__:170 | ✅ Orchestrator initialized (3 workers)
+2026-02-16 09:47:03 | INFO     | __main__:__init__:171 | 📋 Monitored services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 09:47:03 | INFO     | __main__:__init__:172 | 🌐 Clusters: ['cluster1', 'cluster2', 'cluster3']
+2026-02-16 09:47:03 | INFO     | __main__:__init__:173 | 🔧 Anti-oscillation: debounce=30s, max_delta=2, dead_zone=15%, scale_down_cooldown=60s
+2026-02-16 09:47:03 | INFO     | __main__:__init__:177 | 🔗 Co-location: enabled — dependencies: {'frontend': ['cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']}
+2026-02-16 09:47:03 | INFO     | __main__:run:784 | ✅ Webhook server started
+2026-02-16 09:47:03 | INFO     | __main__:periodic_check_thread:520 | 🔄 Starting periodic traffic checker (30s interval)...
+2026-02-16 09:47:03 | INFO     | __main__:run:789 | ✅ Periodic traffic checker started
+2026-02-16 09:47:03 | INFO     | __main__:periodic_check_thread:521 |    High threshold: 30 req/s
+2026-02-16 09:47:03 | INFO     | __main__:worker_thread:765 | 👷 Worker 0 started
+2026-02-16 09:47:03 | INFO     | __main__:periodic_check_thread:522 |    Low threshold: 10 req/s
+2026-02-16 09:47:03 | INFO     | __main__:worker_thread:765 | 👷 Worker 1 started
+2026-02-16 09:47:03 | INFO     | __main__:worker_thread:765 | 👷 Worker 2 started
+2026-02-16 09:47:03 | INFO     | __main__:run:795 | ✅ 3 workers started
+2026-02-16 09:47:03 | INFO     | __main__:periodic_check_thread:523 |    Monitored services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 09:47:03 | INFO     | __main__:run:797 | 
+======================================================================
+2026-02-16 09:47:03 | INFO     | __main__:periodic_check_thread:524 |    Proactive scaling: enabled (uses predictor for early trigger)
+2026-02-16 09:47:03 | INFO     | __main__:webhook_server:761 | 🌐 Starting webhook server on :8081...
+2026-02-16 09:47:03 | INFO     | __main__:run:798 | DMOS Orchestrator Running (Event-Driven + Polling)
+2026-02-16 09:47:03 | INFO     | __main__:run:799 | Webhook: http://localhost:8081/webhook/alert
+2026-02-16 09:47:03 | INFO     | __main__:run:800 | Metrics: http://localhost:9090/metrics
+2026-02-16 09:47:03 | INFO     | __main__:run:801 | Polling: Every 30s
+2026-02-16 09:47:03 | INFO     | __main__:run:802 | Services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 09:47:03 | INFO     | __main__:run:803 | Anti-oscillation: ON
+2026-02-16 09:47:03 | INFO     | __main__:run:804 | ======================================================================
+
+2026-02-16 09:47:04 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 7443 bytes/s → 1.9 req/s
+2026-02-16 09:47:04 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 09:47:04 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 09:47:04 | INFO     | __main__:periodic_check_thread:583 | 📊 frontend: 1.9 req/s (predicted: 1.9) | Replicas: 2
+2026-02-16 09:47:04 | INFO     | __main__:periodic_check_thread:611 | ℹ️  frontend LOW traffic (1.9 < 10)
+2026-02-16 09:47:04 | INFO     | __main__:worker_thread:770 | 👷 Worker 0: frontend
+2026-02-16 09:47:04 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down frontend
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:313 | Scheduling frontend (reason: traffic_low_2rps)
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 09:47:04 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1246 bytes/s → 0.3 req/s
+2026-02-16 09:47:04 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 9820 bytes/s → 2.5 req/s
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:336 | Current traffic: 2.5 req/s (prev=0.0, stable=False)
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:347 | Total replicas needed: 2
+2026-02-16 09:47:04 | INFO     | src.level1.dmos_scheduler:schedule_service:198 | Scheduling service 'frontend' with 2 replicas
+2026-02-16 09:47:04 | INFO     | src.level1.dmos_scheduler:collect_scores:139 | Collecting scores for service 'frontend' from all clusters...
+2026-02-16 09:47:04 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 09:47:04 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 09:47:04 | INFO     | __main__:periodic_check_thread:583 | 📊 cartservice: 0.3 req/s (predicted: 0.3) | Replicas: 1
+2026-02-16 09:47:04 | INFO     | __main__:periodic_check_thread:611 | ℹ️  cartservice LOW traffic (0.3 < 10)
+2026-02-16 09:47:04 | INFO     | __main__:worker_thread:770 | 👷 Worker 1: cartservice
+2026-02-16 09:47:04 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down cartservice
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:313 | Scheduling cartservice (reason: traffic_low_0rps)
+2026-02-16 09:47:04 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 09:47:04 | INFO     | src.level1.dmos_scheduler:_query_estimator:112 | Query cluster1: score=0.332, capacity=20, latency=116ms
+2026-02-16 09:47:05 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1246 bytes/s → 0.3 req/s
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:336 | Current traffic: 0.3 req/s (prev=0.0, stable=False)
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:schedule_service:198 | Scheduling service 'cartservice' with 1 replicas
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:collect_scores:139 | Collecting scores for service 'cartservice' from all clusters...
+2026-02-16 09:47:05 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3826 bytes/s → 1.0 req/s
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:583 | 📊 productcatalogservice: 1.0 req/s (predicted: 1.0) | Replicas: 1
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:611 | ℹ️  productcatalogservice LOW traffic (1.0 < 10)
+2026-02-16 09:47:05 | INFO     | __main__:worker_thread:770 | 👷 Worker 2: productcatalogservice
+2026-02-16 09:47:05 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down productcatalogservice
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:313 | Scheduling productcatalogservice (reason: traffic_low_1rps)
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:_query_estimator:112 | Query cluster1: score=0.333, capacity=10, latency=117ms
+2026-02-16 09:47:05 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3826 bytes/s → 1.0 req/s
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:336 | Current traffic: 1.0 req/s (prev=0.0, stable=False)
+2026-02-16 09:47:05 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:schedule_service:198 | Scheduling service 'productcatalogservice' with 1 replicas
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:collect_scores:139 | Collecting scores for service 'productcatalogservice' from all clusters...
+2026-02-16 09:47:05 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 365 bytes/s → 0.1 req/s
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:583 | 📊 checkoutservice: 0.1 req/s (predicted: 0.1) | Replicas: 1
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:611 | ℹ️  checkoutservice LOW traffic (0.1 < 10)
+2026-02-16 09:47:05 | INFO     | src.level1.dmos_scheduler:_query_estimator:112 | Query cluster1: score=0.333, capacity=14, latency=118ms
+2026-02-16 09:47:05 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3510 bytes/s → 0.9 req/s
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 09:47:05 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:583 | 📊 recommendationservice: 0.9 req/s (predicted: 0.9) | Replicas: 1
+2026-02-16 09:47:05 | INFO     | __main__:periodic_check_thread:611 | ℹ️  recommendationservice LOW traffic (0.9 < 10)
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster3: HTTPConnectionPool(host='192.168.1.247', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.247', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster2: HTTPConnectionPool(host='192.168.1.246', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.246', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster3
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster2
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:collect_scores:177 | Collected 1/3 bids
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 2 replicas among 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 2 replicas to cluster1 (quota=100.0%, score=0.332)
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 2 replicas across 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:215 | Scheduling completed in 2309ms (collection=2309ms, winner_det=0ms)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:220 | ✅ Allocated 2 replicas across 1 clusters:
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:222 |    Allocation(cluster1, replicas=2, quota=100.00%, score=0.332)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:226 |    Jain fairness index: 1.000
+2026-02-16 09:47:07 | INFO     | src.level2.predictor:predict:166 | Prediction: current=2.5 req/s, derivative=0.2196, predicted=4.9 req/s (+120s)
+2026-02-16 09:47:07 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=-0.500, P=-1.00, D=0.00, output=-1.00, delta=-1
+2026-02-16 09:47:07 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 2 → 2 (Δ=+0) | traffic: current=2.5, predicted=4.9 | base=1, PD=-1, constrained=True
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:417 | cluster1: 2 → 2 (Δ=+0)
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster2: HTTPConnectionPool(host='192.168.1.246', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.246', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster2
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster3: HTTPConnectionPool(host='192.168.1.247', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.247', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster3
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:collect_scores:177 | Collected 1/3 bids
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster1 (quota=100.0%, score=0.333)
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:215 | Scheduling completed in 2314ms (collection=2314ms, winner_det=0ms)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:220 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:222 |    Allocation(cluster1, replicas=1, quota=100.00%, score=0.333)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:226 |    Jain fairness index: 1.000
+2026-02-16 09:47:07 | INFO     | src.level2.predictor:predict:166 | Prediction: current=0.3 req/s, derivative=0.0000, predicted=0.3 req/s (+120s)
+2026-02-16 09:47:07 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 09:47:07 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 1 → 1 (Δ=+0) | traffic: current=0.3, predicted=0.3 | base=1, PD=+0, constrained=False
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:417 | cluster1: 1 → 1 (Δ=+0)
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.91s
+2026-02-16 09:47:07 | INFO     | __main__:worker_thread:770 | 👷 Worker 1: checkoutservice
+2026-02-16 09:47:07 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down checkoutservice
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:313 | Scheduling checkoutservice (reason: traffic_low_0rps)
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster3: HTTPConnectionPool(host='192.168.1.247', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.247', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster2: HTTPConnectionPool(host='192.168.1.246', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.246', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster3
+2026-02-16 09:47:07 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster2
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:collect_scores:177 | Collected 1/3 bids
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster1 (quota=100.0%, score=0.333)
+2026-02-16 09:47:07 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:215 | Scheduling completed in 2309ms (collection=2306ms, winner_det=3ms)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:220 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:222 |    Allocation(cluster1, replicas=1, quota=100.00%, score=0.333)
+2026-02-16 09:47:07 | INFO     | src.level1.dmos_scheduler:schedule_service:226 |    Jain fairness index: 1.000
+2026-02-16 09:47:07 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.0 req/s, derivative=0.0000, predicted=1.0 req/s (+120s)
+2026-02-16 09:47:07 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 09:47:07 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 1 → 1 (Δ=+0) | traffic: current=1.0, predicted=1.0 | base=1, PD=+0, constrained=False
+2026-02-16 09:47:07 | INFO     | __main__:schedule_service:417 | cluster1: 1 → 1 (Δ=+0)
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.81s
+2026-02-16 09:47:08 | INFO     | __main__:worker_thread:770 | 👷 Worker 2: recommendationservice
+2026-02-16 09:47:08 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down recommendationservice
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:313 | Scheduling recommendationservice (reason: traffic_low_1rps)
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 09:47:08 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 412 bytes/s → 0.1 req/s
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:336 | Current traffic: 0.1 req/s (prev=0.0, stable=False)
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:schedule_service:198 | Scheduling service 'checkoutservice' with 1 replicas
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:collect_scores:139 | Collecting scores for service 'checkoutservice' from all clusters...
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:_query_estimator:112 | Query cluster1: score=0.333, capacity=7, latency=116ms
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:499 | Scheduling completed in 3.91s
+2026-02-16 09:47:08 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4089 bytes/s → 1.0 req/s
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:336 | Current traffic: 1.0 req/s (prev=0.0, stable=False)
+2026-02-16 09:47:08 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:schedule_service:198 | Scheduling service 'recommendationservice' with 1 replicas
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:collect_scores:139 | Collecting scores for service 'recommendationservice' from all clusters...
+2026-02-16 09:47:08 | INFO     | src.level1.dmos_scheduler:_query_estimator:112 | Query cluster1: score=0.333, capacity=10, latency=111ms
+2026-02-16 09:47:10 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster2: HTTPConnectionPool(host='192.168.1.246', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.246', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:10 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster2
+2026-02-16 09:47:10 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster3: HTTPConnectionPool(host='192.168.1.247', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.247', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:10 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster3
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:collect_scores:177 | Collected 1/3 bids
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 1 clusters
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster1 (quota=100.0%, score=0.333)
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:215 | Scheduling completed in 2322ms (collection=2322ms, winner_det=0ms)
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:220 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:222 |    Allocation(cluster1, replicas=1, quota=100.00%, score=0.333)
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:226 |    Jain fairness index: 1.000
+2026-02-16 09:47:10 | INFO     | src.level2.predictor:predict:166 | Prediction: current=0.1 req/s, derivative=0.0025, predicted=0.2 req/s (+120s)
+2026-02-16 09:47:10 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=-0.500, P=-1.00, D=0.00, output=-1.00, delta=-1
+2026-02-16 09:47:10 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 1 → 1 (Δ=+0) | traffic: current=0.1, predicted=0.2 | base=1, PD=-1, constrained=True
+2026-02-16 09:47:10 | INFO     | __main__:schedule_service:417 | cluster1: 1 → 1 (Δ=+0)
+2026-02-16 09:47:10 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.82s
+2026-02-16 09:47:10 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster2: HTTPConnectionPool(host='192.168.1.246', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.246', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:10 | ERROR    | src.level1.dmos_scheduler:_query_estimator:121 | Error querying cluster3: HTTPConnectionPool(host='192.168.1.247', port=30080): Max retries exceeded with url: /estimate (Caused by NewConnectionError("HTTPConnection(host='192.168.1.247', port=30080): Failed to establish a new connection: [WinError 10061] Impossibile stabilire la connessione. Rifiuto persistente del computer di destinazione"))
+2026-02-16 09:47:10 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster2
+2026-02-16 09:47:10 | WARNING  | src.level1.dmos_scheduler:collect_scores:172 | No response from cluster3
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:collect_scores:177 | Collected 1/3 bids
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 1 clusters
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster1 (quota=100.0%, score=0.333)
+2026-02-16 09:47:10 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:215 | Scheduling completed in 2296ms (collection=2288ms, winner_det=8ms)
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:220 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:222 |    Allocation(cluster1, replicas=1, quota=100.00%, score=0.333)
+2026-02-16 09:47:10 | INFO     | src.level1.dmos_scheduler:schedule_service:226 |    Jain fairness index: 1.000
+2026-02-16 09:47:10 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.0 req/s, derivative=0.0306, predicted=2.0 req/s (+120s)
+2026-02-16 09:47:10 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=-0.500, P=-1.00, D=0.00, output=-1.00, delta=-1
+2026-02-16 09:47:10 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 1 → 1 (Δ=+0) | traffic: current=1.0, predicted=2.0 | base=1, PD=-1, constrained=True
+2026-02-16 09:47:10 | INFO     | __main__:schedule_service:417 | cluster1: 1 → 1 (Δ=+0)
+2026-02-16 09:47:10 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.80s
+2026-02-16 09:47:29 | INFO     | __main__:run:810 | 
+
+Shutdown requested
+2026-02-16 09:47:37 | INFO     | __main__:run:814 | Stopped
+2026-02-16 10:06:50 | INFO     | __main__:__init__:91 | Initializing DMOS Orchestrator...
+2026-02-16 10:06:50 | INFO     | src.utils.config_loader:__init__:140 | Loading configuration from: config
+2026-02-16 10:06:50 | INFO     | src.utils.config_loader:__init__:152 | Loaded 3 clusters, 5 services
+2026-02-16 10:06:50 | INFO     | src.utils.config_loader:__init__:140 | Loading configuration from: config
+2026-02-16 10:06:50 | INFO     | src.utils.config_loader:__init__:152 | Loaded 3 clusters, 5 services
+2026-02-16 10:06:50 | INFO     | src.metrics.carbon_client:__init__:162 | Carbon client initialized with provider: realistic
+2026-02-16 10:06:50 | INFO     | src.metrics.carbon_client:__init__:165 | Realistic profiles available: ['DE', 'US-VA', 'SG', 'IT-NO', 'FR', 'NO', 'PL']
+2026-02-16 10:06:50 | INFO     | src.level1.score_functions:__init__:114 | Score weights: lat=0.4, cap=0.3, load=0.1, carbon=0.2
+2026-02-16 10:06:50 | INFO     | src.level1.dmos_scheduler:__init__:74 | DMOS Scheduler initialized (local mode) with 3 clusters
+2026-02-16 10:06:50 | INFO     | src.level1.dmos_scheduler:__init__:77 |   cluster1: DE (192.168.1.245)
+2026-02-16 10:06:50 | INFO     | src.level1.dmos_scheduler:__init__:77 |   cluster2: FR (192.168.1.246)
+2026-02-16 10:06:50 | INFO     | src.level1.dmos_scheduler:__init__:77 |   cluster3: PL (192.168.1.247)
+2026-02-16 10:06:50 | ERROR    | src.k8s.client:__init__:44 | ❌ Failed to init cluster1: [Errno 2] No such file or directory: '~/.kube/config-cluster1'
+2026-02-16 10:06:50 | ERROR    | src.k8s.client:__init__:44 | ❌ Failed to init cluster2: [Errno 2] No such file or directory: '~/.kube/config-cluster2'
+2026-02-16 10:06:50 | ERROR    | src.k8s.client:__init__:44 | ❌ Failed to init cluster3: [Errno 2] No such file or directory: '~/.kube/config-cluster3'
+2026-02-16 10:06:50 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 10:06:50 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 10:06:50 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=15 req/s, replicas=[2, 20], safety=15.0%, max_delta=2
+2026-02-16 10:06:50 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 10:06:50 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 10:06:50 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=10 req/s, replicas=[1, 15], safety=15.0%, max_delta=2
+2026-02-16 10:06:50 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 10:06:50 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 10:06:50 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=15 req/s, replicas=[1, 15], safety=15.0%, max_delta=2
+2026-02-16 10:06:50 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 10:06:50 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 10:06:50 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=5 req/s, replicas=[1, 10], safety=15.0%, max_delta=2
+2026-02-16 10:06:50 | INFO     | src.level2.predictor:__init__:55 | Traffic predictor initialized: window=300s, horizon=120s
+2026-02-16 10:06:50 | INFO     | src.level2.pd_controller:__init__:58 | PD Controller initialized: Kp=2.0, Kd=150.0, output=[-3.0, 3.0]
+2026-02-16 10:06:50 | INFO     | src.level2.scaler:__init__:75 | Replica scaler initialized: capacity=10 req/s, replicas=[1, 10], safety=15.0%, max_delta=2
+2026-02-16 10:06:52 | INFO     | __main__:__init__:169 | 📊 Metrics server started on :9090/metrics
+2026-02-16 10:06:52 | INFO     | __main__:__init__:170 | ✅ Orchestrator initialized (3 workers)
+2026-02-16 10:06:52 | INFO     | __main__:__init__:171 | 📋 Monitored services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 10:06:52 | INFO     | __main__:__init__:172 | 🌐 Clusters: ['cluster1', 'cluster2', 'cluster3']
+2026-02-16 10:06:52 | INFO     | __main__:__init__:173 | 🔧 Anti-oscillation: debounce=30s, max_delta=2, dead_zone=15%, scale_down_cooldown=60s
+2026-02-16 10:06:52 | INFO     | __main__:__init__:177 | 🔗 Co-location: enabled — dependencies: {'frontend': ['cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']}
+2026-02-16 10:06:52 | INFO     | __main__:run:784 | ✅ Webhook server started
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:520 | 🔄 Starting periodic traffic checker (30s interval)...
+2026-02-16 10:06:52 | INFO     | __main__:run:789 | ✅ Periodic traffic checker started
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:521 |    High threshold: 30 req/s
+2026-02-16 10:06:52 | INFO     | __main__:worker_thread:765 | 👷 Worker 0 started
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:522 |    Low threshold: 10 req/s
+2026-02-16 10:06:52 | INFO     | __main__:worker_thread:765 | 👷 Worker 1 started
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:523 |    Monitored services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 10:06:52 | INFO     | __main__:worker_thread:765 | 👷 Worker 2 started
+2026-02-16 10:06:52 | INFO     | __main__:run:795 | ✅ 3 workers started
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:524 |    Proactive scaling: enabled (uses predictor for early trigger)
+2026-02-16 10:06:52 | INFO     | __main__:run:797 | 
+======================================================================
+2026-02-16 10:06:52 | INFO     | __main__:webhook_server:761 | 🌐 Starting webhook server on :8081...
+2026-02-16 10:06:52 | INFO     | __main__:run:798 | DMOS Orchestrator Running (Event-Driven + Polling)
+2026-02-16 10:06:52 | INFO     | __main__:run:799 | Webhook: http://localhost:8081/webhook/alert
+2026-02-16 10:06:52 | INFO     | __main__:run:800 | Metrics: http://localhost:9090/metrics
+2026-02-16 10:06:52 | INFO     | __main__:run:801 | Polling: Every 30s
+2026-02-16 10:06:52 | INFO     | __main__:run:802 | Services: ['frontend', 'cartservice', 'productcatalogservice', 'checkoutservice', 'recommendationservice']
+2026-02-16 10:06:52 | INFO     | __main__:run:803 | Anti-oscillation: ON
+2026-02-16 10:06:52 | INFO     | __main__:run:804 | ======================================================================
+
+2026-02-16 10:06:52 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 11149 bytes/s → 2.8 req/s
+2026-02-16 10:06:52 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 10:06:52 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:583 | 📊 frontend: 2.8 req/s (predicted: 2.8) | Replicas: 1
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:611 | ℹ️  frontend LOW traffic (2.8 < 10)
+2026-02-16 10:06:52 | INFO     | __main__:worker_thread:770 | 👷 Worker 0: frontend
+2026-02-16 10:06:52 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down frontend
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:313 | Scheduling frontend (reason: traffic_low_3rps)
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 10:06:52 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1143 bytes/s → 0.3 req/s
+2026-02-16 10:06:52 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 10:06:52 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:583 | 📊 cartservice: 0.3 req/s (predicted: 0.3) | Replicas: 1
+2026-02-16 10:06:52 | INFO     | __main__:periodic_check_thread:611 | ℹ️  cartservice LOW traffic (0.3 < 10)
+2026-02-16 10:06:52 | INFO     | __main__:worker_thread:770 | 👷 Worker 1: cartservice
+2026-02-16 10:06:52 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down cartservice
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:313 | Scheduling cartservice (reason: traffic_low_0rps)
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 10:06:52 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 11148 bytes/s → 2.8 req/s
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:336 | Current traffic: 2.8 req/s (prev=0.0, stable=False)
+2026-02-16 10:06:52 | INFO     | __main__:schedule_service:347 | Total replicas needed: 2
+2026-02-16 10:06:52 | INFO     | src.level1.dmos_scheduler:schedule_service:358 | Scheduling 'frontend' with 2 replicas
+2026-02-16 10:06:52 | INFO     | src.level1.dmos_scheduler:collect_scores:315 | Computing scores for 'frontend' across all clusters...
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3982 bytes/s → 1.0 req/s
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:583 | 📊 productcatalogservice: 1.0 req/s (predicted: 1.0) | Replicas: 1
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:611 | ℹ️  productcatalogservice LOW traffic (1.0 < 10)
+2026-02-16 10:06:53 | INFO     | __main__:worker_thread:770 | 👷 Worker 2: productcatalogservice
+2026-02-16 10:06:53 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down productcatalogservice
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:313 | Scheduling productcatalogservice (reason: traffic_low_1rps)
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1140 bytes/s → 0.3 req/s
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:336 | Current traffic: 0.3 req/s (prev=0.0, stable=False)
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:schedule_service:358 | Scheduling 'cartservice' with 1 replicas
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:collect_scores:315 | Computing scores for 'cartservice' across all clusters...
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 11147 bytes/s → 2.8 req/s
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 619 bytes/s → 0.2 req/s
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:583 | 📊 checkoutservice: 0.2 req/s (predicted: 0.2) | Replicas: 1
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:611 | ℹ️  checkoutservice LOW traffic (0.2 < 10)
+2026-02-16 10:06:53 | INFO     | src.metrics.carbon_client:_get_realistic_value:244 | Realistic CI for DE: 328.4 gCO2/kWh (hour=10, season=1.10, profile=Germany: coal/gas heavy, solar dip midday)
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster1: 0.362 (lat=0.103, cap=0.270, load=0.955, carbon=0.720) capacity=20, cpu=47%, CI=328gCO2
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3982 bytes/s → 1.0 req/s
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:336 | Current traffic: 1.0 req/s (prev=0.0, stable=False)
+2026-02-16 10:06:53 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:schedule_service:358 | Scheduling 'productcatalogservice' with 1 replicas
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:collect_scores:315 | Computing scores for 'productcatalogservice' across all clusters...
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1128 bytes/s → 0.3 req/s
+2026-02-16 10:06:53 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster1: 0.369 (lat=0.103, cap=0.282, load=0.993, carbon=0.720) capacity=10, cpu=47%, CI=328gCO2
+2026-02-16 10:06:53 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4410 bytes/s → 1.1 req/s
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:_compute_derivative:89 | Insufficient history for derivative
+2026-02-16 10:06:53 | WARNING  | src.level2.predictor:predict:140 | No derivative, using current rate as prediction
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:583 | 📊 recommendationservice: 1.1 req/s (predicted: 1.1) | Replicas: 1
+2026-02-16 10:06:53 | INFO     | __main__:periodic_check_thread:611 | ℹ️  recommendationservice LOW traffic (1.1 < 10)
+2026-02-16 10:06:54 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 11146 bytes/s → 2.8 req/s
+2026-02-16 10:06:54 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3982 bytes/s → 1.0 req/s
+2026-02-16 10:06:54 | INFO     | src.metrics.carbon_client:_get_realistic_value:244 | Realistic CI for FR: 82.1 gCO2/kWh (hour=10, season=1.10, profile=France: nuclear dominated, very low carbon)
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster2: 0.402 (lat=0.103, cap=0.270, load=0.955, carbon=0.921) capacity=20, cpu=47%, CI=82gCO2
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster1: 0.367 (lat=0.103, cap=0.279, load=0.984, carbon=0.720) capacity=14, cpu=47%, CI=328gCO2
+2026-02-16 10:06:54 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1330 bytes/s → 0.3 req/s
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster2: 0.409 (lat=0.103, cap=0.281, load=0.993, carbon=0.921) capacity=10, cpu=47%, CI=82gCO2
+2026-02-16 10:06:54 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 11178 bytes/s → 2.8 req/s
+2026-02-16 10:06:54 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3982 bytes/s → 1.0 req/s
+2026-02-16 10:06:54 | INFO     | src.metrics.carbon_client:_get_realistic_value:244 | Realistic CI for PL: 733.3 gCO2/kWh (hour=10, season=1.10, profile=Poland: coal dominated, high carbon)
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster3: 0.314 (lat=0.103, cap=0.270, load=0.955, carbon=0.480) capacity=20, cpu=47%, CI=733gCO2
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:collect_scores:344 | Collected 3/3 bids (0 excluded)
+2026-02-16 10:06:54 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 2 replicas among 3 clusters
+2026-02-16 10:06:54 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster2 (quota=50.0%, score=0.402)
+2026-02-16 10:06:54 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster1 (quota=50.0%, score=0.362)
+2026-02-16 10:06:54 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 2 replicas across 2 clusters
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:schedule_service:375 | Scheduling completed in 1911ms (collection=1909ms, winner_det=2ms)
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:schedule_service:380 | ✅ Allocated 2 replicas across 2 clusters:
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster2, replicas=1, quota=50.00%, score=0.402)
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster1, replicas=1, quota=50.00%, score=0.362)
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:schedule_service:386 |    Jain fairness index: 1.000
+2026-02-16 10:06:54 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.4 req/s, derivative=-0.6194, predicted=1.4 req/s (+120s)
+2026-02-16 10:06:54 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 10:06:54 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 2 (Δ=+2) | traffic: current=1.4, predicted=1.4 | base=1, PD=+0, constrained=True
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:417 | cluster2: 0 → 2 (Δ=+2)
+2026-02-16 10:06:54 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster2 not configured
+2026-02-16 10:06:54 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.4 req/s, derivative=-0.6194, predicted=1.4 req/s (+120s)
+2026-02-16 10:06:54 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 10:06:54 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 2 (Δ=+2) | traffic: current=1.4, predicted=1.4 | base=1, PD=+0, constrained=True
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:417 | cluster1: 0 → 2 (Δ=+2)
+2026-02-16 10:06:54 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster1 not configured
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.25s
+2026-02-16 10:06:54 | INFO     | __main__:worker_thread:770 | 👷 Worker 0: checkoutservice
+2026-02-16 10:06:54 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down checkoutservice
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:313 | Scheduling checkoutservice (reason: traffic_low_0rps)
+2026-02-16 10:06:54 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 10:06:54 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster2: 0.408 (lat=0.103, cap=0.279, load=0.984, carbon=0.921) capacity=14, cpu=47%, CI=82gCO2
+2026-02-16 10:06:55 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 1330 bytes/s → 0.3 req/s
+2026-02-16 10:06:55 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 655 bytes/s → 0.2 req/s
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:336 | Current traffic: 0.2 req/s (prev=0.0, stable=False)
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:358 | Scheduling 'checkoutservice' with 1 replicas
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:collect_scores:315 | Computing scores for 'checkoutservice' across all clusters...
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster3: 0.321 (lat=0.103, cap=0.281, load=0.993, carbon=0.480) capacity=10, cpu=47%, CI=733gCO2
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:collect_scores:344 | Collected 3/3 bids (0 excluded)
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 3 clusters
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster2 (quota=100.0%, score=0.409)
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:375 | Scheduling completed in 1936ms (collection=1936ms, winner_det=0ms)
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:380 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster2, replicas=1, quota=100.00%, score=0.409)
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:386 |    Jain fairness index: 1.000
+2026-02-16 10:06:55 | INFO     | src.level2.predictor:predict:166 | Prediction: current=0.3 req/s, derivative=-0.0003, predicted=0.3 req/s (+120s)
+2026-02-16 10:06:55 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 10:06:55 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 1 (Δ=+1) | traffic: current=0.3, predicted=0.3 | base=1, PD=+0, constrained=False
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:417 | cluster2: 0 → 1 (Δ=+1)
+2026-02-16 10:06:55 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster2 not configured
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.26s
+2026-02-16 10:06:55 | INFO     | __main__:worker_thread:770 | 👷 Worker 1: recommendationservice
+2026-02-16 10:06:55 | INFO     | __main__:process_event:508 | 🔄 Processing: scale_down recommendationservice
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:312 | 
+======================================================================
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:313 | Scheduling recommendationservice (reason: traffic_low_1rps)
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:314 | ======================================================================
+2026-02-16 10:06:55 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 3982 bytes/s → 1.0 req/s
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster3: 0.319 (lat=0.103, cap=0.279, load=0.984, carbon=0.480) capacity=14, cpu=47%, CI=733gCO2
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:collect_scores:344 | Collected 3/3 bids (0 excluded)
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 3 clusters
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster2 (quota=100.0%, score=0.408)
+2026-02-16 10:06:55 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:375 | Scheduling completed in 1926ms (collection=1926ms, winner_det=0ms)
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:380 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster2, replicas=1, quota=100.00%, score=0.408)
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:386 |    Jain fairness index: 1.000
+2026-02-16 10:06:55 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.0 req/s, derivative=0.0000, predicted=1.0 req/s (+120s)
+2026-02-16 10:06:55 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 10:06:55 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 1 (Δ=+1) | traffic: current=1.0, predicted=1.0 | base=1, PD=+0, constrained=False
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:417 | cluster2: 0 → 1 (Δ=+1)
+2026-02-16 10:06:55 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster2 not configured
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.27s
+2026-02-16 10:06:55 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4130 bytes/s → 1.0 req/s
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:336 | Current traffic: 1.0 req/s (prev=0.0, stable=False)
+2026-02-16 10:06:55 | INFO     | __main__:schedule_service:347 | Total replicas needed: 1
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:schedule_service:358 | Scheduling 'recommendationservice' with 1 replicas
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:collect_scores:315 | Computing scores for 'recommendationservice' across all clusters...
+2026-02-16 10:06:55 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 655 bytes/s → 0.2 req/s
+2026-02-16 10:06:55 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster1: 0.369 (lat=0.103, cap=0.281, load=0.992, carbon=0.720) capacity=7, cpu=47%, CI=328gCO2
+2026-02-16 10:06:56 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4130 bytes/s → 1.0 req/s
+2026-02-16 10:06:56 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster1: 0.366 (lat=0.103, cap=0.276, load=0.975, carbon=0.720) capacity=10, cpu=47%, CI=328gCO2
+2026-02-16 10:06:56 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 655 bytes/s → 0.2 req/s
+2026-02-16 10:06:56 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster2: 0.409 (lat=0.103, cap=0.281, load=0.992, carbon=0.921) capacity=7, cpu=47%, CI=82gCO2
+2026-02-16 10:06:56 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4130 bytes/s → 1.0 req/s
+2026-02-16 10:06:56 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster2: 0.406 (lat=0.103, cap=0.276, load=0.975, carbon=0.921) capacity=10, cpu=47%, CI=82gCO2
+2026-02-16 10:06:56 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 655 bytes/s → 0.2 req/s
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster3: 0.321 (lat=0.103, cap=0.281, load=0.992, carbon=0.480) capacity=7, cpu=47%, CI=733gCO2
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:collect_scores:344 | Collected 3/3 bids (0 excluded)
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 3 clusters
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster2 (quota=100.0%, score=0.409)
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:375 | Scheduling completed in 1906ms (collection=1906ms, winner_det=0ms)
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:380 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster2, replicas=1, quota=100.00%, score=0.409)
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:386 |    Jain fairness index: 1.000
+2026-02-16 10:06:57 | INFO     | src.level2.predictor:predict:166 | Prediction: current=0.2 req/s, derivative=0.0026, predicted=0.3 req/s (+120s)
+2026-02-16 10:06:57 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=-0.486, P=-0.97, D=0.00, output=-0.97, delta=-1
+2026-02-16 10:06:57 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 1 (Δ=+1) | traffic: current=0.2, predicted=0.3 | base=1, PD=-1, constrained=True
+2026-02-16 10:06:57 | INFO     | __main__:schedule_service:417 | cluster2: 0 → 1 (Δ=+1)
+2026-02-16 10:06:57 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster2 not configured
+2026-02-16 10:06:57 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.22s
+2026-02-16 10:06:57 | INFO     | src.metrics.prometheus_client:get_request_rate:192 | ✅ Traffic from network: 4130 bytes/s → 1.0 req/s
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:_compute_cluster_score:277 | Score cluster3: 0.318 (lat=0.103, cap=0.276, load=0.975, carbon=0.480) capacity=10, cpu=47%, CI=733gCO2
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:collect_scores:344 | Collected 3/3 bids (0 excluded)
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:60 | Allocating 1 replicas among 3 clusters
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:103 |   Allocated 1 replicas to cluster2 (quota=100.0%, score=0.406)
+2026-02-16 10:06:57 | INFO     | src.level1.winner_determination:allocate:109 | ✅ Successfully allocated all 1 replicas across 1 clusters
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:375 | Scheduling completed in 1903ms (collection=1901ms, winner_det=2ms)
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:380 | ✅ Allocated 1 replicas across 1 clusters:
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:383 |    Allocation(cluster2, replicas=1, quota=100.00%, score=0.406)
+2026-02-16 10:06:57 | INFO     | src.level1.dmos_scheduler:schedule_service:386 |    Jain fairness index: 1.000
+2026-02-16 10:06:57 | INFO     | src.level2.predictor:predict:166 | Prediction: current=1.0 req/s, derivative=-0.0200, predicted=1.0 req/s (+120s)
+2026-02-16 10:06:57 | INFO     | src.level2.pd_controller:compute:107 | PD control: error=0.000, P=0.00, D=0.00, output=0.00, delta=0
+2026-02-16 10:06:57 | INFO     | src.level2.scaler:compute_target_replicas:145 | Scaling decision: 0 → 1 (Δ=+1) | traffic: current=1.0, predicted=1.0 | base=1, PD=+0, constrained=False
+2026-02-16 10:06:57 | INFO     | __main__:schedule_service:417 | cluster2: 0 → 1 (Δ=+1)
+2026-02-16 10:06:57 | ERROR    | src.k8s.client:scale_deployment:146 | Cluster cluster2 not configured
+2026-02-16 10:06:57 | INFO     | __main__:schedule_service:499 | Scheduling completed in 2.24s
+2026-02-16 10:07:15 | INFO     | __main__:run:810 | 
+
+Shutdown requested
+2026-02-16 10:07:23 | INFO     | __main__:run:814 | Stopped
