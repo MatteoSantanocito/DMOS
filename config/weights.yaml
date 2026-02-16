@@ -1,126 +1,62 @@
-# Pesi funzione obiettivo multi-dimensionale
-# α + β + γ + δ = 1
+# ============================================================================
+# DMOS Score Weights Configuration
+# ============================================================================
+#
+# Score formula: score_i = ω₁·Φ_lat + ω₂·Φ_cap + ω₃·Φ_load + ω₄·Φ_carbon
+# All weights must sum to 1.0
+#
+# For the thesis, run experiments with BOTH profiles to show carbon impact:
+#   1. "carbon_agnostic" - ω_carbon = 0.0 (baseline, no carbon consideration)
+#   2. "balanced"        - ω_carbon = 0.2 (default, moderate carbon awareness)
+#   3. "carbon_priority" - ω_carbon = 0.4 (aggressive carbon optimization)
+# ============================================================================
+
+# ── Score function weights (Level 1 - Cluster Selection) ──────────────────
+
+score_weights:
+  # Profile 1: Carbon-agnostic (for baseline comparison)
+  carbon_agnostic:
+    omega_latency: 0.45
+    omega_capacity: 0.35
+    omega_load: 0.20
+    omega_carbon: 0.00      # <-- No carbon consideration
+  
+  # Profile 2: Balanced (default - moderate carbon awareness)
+  balanced:
+    omega_latency: 0.35
+    omega_capacity: 0.25
+    omega_load: 0.15
+    omega_carbon: 0.25      # <-- 25% weight on carbon
+    
+  # Profile 3: Carbon-priority (aggressive green scheduling)
+  carbon_priority:
+    omega_latency: 0.25
+    omega_capacity: 0.20
+    omega_load: 0.15
+    omega_carbon: 0.40      # <-- 40% weight on carbon
+  
+  # Profile 4: Latency-priority (for latency-critical SLOs)
+  latency_priority:
+    omega_latency: 0.50
+    omega_capacity: 0.25
+    omega_load: 0.15
+    omega_carbon: 0.10
+
+  # Active profile (change this to switch between experiments)
+  active: "balanced"
+
+# ── Objective weights (Level 2 - Autoscaling decisions) ───────────────────
 
 objectives:
-  # Scenario 1: Latency-Critical (Gaming, Streaming, Real-time)
-  latency_critical:
-    alpha: 0.50   # Latenza (priorità massima)
-    beta: 0.20    # Costo
-    gamma: 0.10   # Equità
-    delta: 0.20   # Carbon
-    description: "Ottimizza per bassa latenza, adatto per applicazioni real-time"
-    
-  # Scenario 2: Cost-Optimized (Batch Processing, Background Jobs)
-  cost_optimized:
-    alpha: 0.20   # Latenza
-    beta: 0.50    # Costo (priorità massima)
-    gamma: 0.15   # Equità
-    delta: 0.15   # Carbon
-    description: "Minimizza costi operativi, tollera latenza più alta"
-    
-  # Scenario 3: Green Computing (Sustainability Focus)
-  green_computing:
-    alpha: 0.25   # Latenza
-    beta: 0.15    # Costo
-    gamma: 0.15   # Equità
-    delta: 0.45   # Carbon (priorità massima)
-    description: "Minimizza carbon footprint, usa energia pulita quando disponibile"
-    
-  # Scenario 4: Balanced (Default - Uso Generale)
   balanced:
-    alpha: 0.35   # Latenza
-    beta: 0.25    # Costo
-    gamma: 0.15   # Equità
-    delta: 0.25   # Carbon
-    description: "Bilanciamento equilibrato tra tutti gli obiettivi"
-    
-  # Scenario 5: High Availability (Resilienza e Distribuzione)
-  high_availability:
-    alpha: 0.30   # Latenza
-    beta: 0.15   # Costo
-    gamma: 0.40   # Equità (distribuzione uniforme tra cluster)
-    delta: 0.15   # Carbon
-    description: "Massimizza distribuzione per resilienza e fault tolerance"
+    alpha: 0.35    # Latency
+    beta: 0.25     # Cost
+    gamma: 0.15    # Fairness
+    delta: 0.25    # Carbon/sustainability
 
-# Pesi score function del Livello 1
-# ω_1 + ω_2 + ω_3 + ω_4 = 1
-score_weights:
-  omega_latency: 0.40   # Peso componente latenza
-  omega_capacity: 0.30  # Peso componente capacità
-  omega_load: 0.10      # Peso componente carico predetto
-  omega_carbon: 0.20    # Peso componente carbon intensity
+# ── Carbon score parameters ───────────────────────────────────────────────
 
-# Parametri delle score functions
-parameters:
-  # Φ_lat: Latency component
-  latency:
-    eta: 0.01               # Sensitivity parameter (controllo severità penalità)
-    sigma_squared: 100.0    # Variance threshold (ms²)
-    description: "Parametri per score latenza: preferisce bassa latenza media e bassa varianza"
-    
-  # Φ_cap: Capacity component
-  capacity:
-    kappa: 2.0              # Quadratic penalty exponent
-    description: "Esponente quadratico penalizza fortemente cluster near-saturation"
-    
-  # Φ_load: Load prediction component
-  load:
-    mu: 1.0                 # Load penalty coefficient
-    horizon_seconds: 600    # Prediction horizon (10 minuti)
-    description: "Predice carico futuro per evitare assegnare a cluster che si satureranno"
-    
-  # Φ_carbon: Carbon intensity component
-  carbon:
-    nu: 0.5                 # Carbon penalty coefficient
-    ci_max: 500.0           # Maximum CI for normalization (gCO2/kWh)
-    description: "Penalizza cluster con alta carbon intensity"
-
-# Parametri Livello 2: Autoscaling
-autoscaling:
-  # Safety margin sopra la predizione
-  safety_margin: 0.15       # 15% buffer
-  
-  # Vincoli di scaling
-  min_replicas: 1           # Minimo globale (può essere overridden per service)
-  max_replicas: 20          # Massimo globale
-  max_delta_per_cycle: 3    # Max ±3 repliche per ciclo (30s)
-  
-  # PD Controller parameters
-  pd_controller:
-    kp: 5.0                 # Proportional gain
-    kd: 300.0               # Derivative gain
-    
-    # Anti-windup limits
-    output_min: -3          # Max riduzione repliche per ciclo
-    output_max: 3           # Max aumento repliche per ciclo
-    
-    description: "Controllo PD per correggere errori di predizione"
-  
-  # Trend-based prediction
-  prediction:
-    window_seconds: 300     # 5 minuti per calcolare derivata
-    horizon_seconds: 120    # Predici 10 minuti avanti
-    smoothing_alpha: 0.3    # Exponential Moving Average smoothing (opzionale)
-    
-    # Fallback se non ci sono dati storici
-    fallback_replicas: 2
-    
-    description: "Predizione trend-based del traffico futuro"
-
-# Configurazione scenario attivo (default)
-active_scenario: "balanced"
-
-# Override per servizi specifici (opzionale)
-service_overrides:
-  frontend:
-    scenario: "latency_critical"
-    reason: "Frontend deve avere latenza minima per UX"
-    
-  checkoutservice:
-    scenario: "high_availability"
-    reason: "Checkout critico, preferisce distribuzione per resilienza"
-    
-  # Puoi aggiungere altri override qui
-  # recommendationservice:
-  #   scenario: "cost_optimized"
-  #   reason: "Recommendation non è critico, ottimizza per costo"
+carbon_parameters:
+  nu: 0.5          # Carbon penalty coefficient in Φ_carbon = exp(-ν·CI/CI_max)
+  ci_max: 800.0    # Max carbon intensity for normalization (gCO2/kWh)
+                   # Raised to 800 to accommodate Poland's high CI (~650)

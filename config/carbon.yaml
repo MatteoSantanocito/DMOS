@@ -1,43 +1,66 @@
-# Configurazione Carbon Intensity
+# ============================================================================
+# DMOS Carbon Intensity Configuration
+# ============================================================================
+#
+# Provider options:
+#   - "realistic"      : Simulated data based on real Electricity Maps patterns
+#                         Best for thesis experiments (reproducible + realistic)
+#   - "electricitymaps" : Live API data (requires free API key)
+#   - "mock"            : Simple static values (original, for basic testing)
+#
+# For the thesis, recommended approach:
+#   1. Use "realistic" for reproducible experiments  
+#   2. Run one demo with "electricitymaps" to show live API integration
+#
+# ============================================================================
+
 carbon_intensity:
-  # Provider API (ElectricityMaps o WattTime)
-  provider: "mock"  # Opzioni: "electricitymaps", "watttime", "mock"
+  # ── Active provider ──────────────────────────────────────────────────────
+  provider: "realistic"  # <-- CHANGE THIS: "realistic", "electricitymaps", or "mock"
   
-  # ElectricityMaps API (se provider = "electricitymaps")
+  # ── ElectricityMaps API (live data) ──────────────────────────────────────
+  # Free tier: https://api-portal.electricitymap.org/
+  # Limitation: free tier = 1 zone only
+  # For thesis: use for IT-NO (Italy North) as live demo
   electricitymaps:
     api_url: "https://api.electricitymap.org/v3/carbon-intensity/latest"
-    api_key: "YOUR_API_KEY_HERE"  # Ottieni da https://api-portal.electricitymap.org/
+    api_key: "YOUR_API_KEY_HERE"  # Get from https://api-portal.electricitymap.org/
     
-  # WattTime API (alternativa)
+  # ── WattTime API (alternative) ──────────────────────────────────────────
   watttime:
     api_url: "https://api2.watttime.org/v2/index"
     username: "YOUR_USERNAME"
     password: "YOUR_PASSWORD"
   
-  # Mock values (per testing senza API key)
+  # ── Realistic profiles (recommended for experiments) ─────────────────────
+  # Based on Electricity Maps 2024-2025 historical averages
+  # Includes: hourly variation, seasonal adjustment, optional noise
+  # Available zones: DE, US-VA, SG, IT-NO, FR, NO, PL
+  realistic:
+    noise_enabled: true      # Add small random variation for realism
+    noise_percent: 5         # ±5% noise around hourly profile values
+
+  # ── Mock values (original simple mock) ───────────────────────────────────
   mock:
     enabled: true
     values:
       DE: 350      # Germania (cluster1)
       US-VA: 280   # Virginia (cluster2)
       SG: 420      # Singapore (cluster3)
-    
-    # Simulazione variazione oraria (opzionale)
     hourly_variation:
       enabled: true
-      # Ore 0-23, fattore moltiplicativo
       pattern:
-        0: 1.1   # Notte: più carbone
+        0: 1.1
         6: 1.0
-        12: 0.8  # Mezzogiorno: più solare
+        12: 0.8
         18: 0.9
         22: 1.05
   
-  # Cache settings
+  # ── Cache settings ───────────────────────────────────────────────────────
   cache:
     enabled: true
-    ttl_seconds: 300  # Richiedi nuovi dati ogni 5 minuti
+    ttl_seconds: 300  # Refresh every 5 minutes
   
-  # Fallback se API non disponibile
+  # ── Fallback ─────────────────────────────────────────────────────────────
   fallback:
-    use_baseline: true  # Usa baseline da clusters.yaml
+    use_baseline: true  # Use cluster baseline from clusters.yaml if API fails

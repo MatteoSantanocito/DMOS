@@ -1,101 +1,85 @@
+# ============================================================================
+# DMOS Clusters Configuration - Carbon-Aware Version
+# ============================================================================
+# 
+# Per la tesi: i cluster sono fisicamente tutti in LAN (192.168.1.x)
+# ma SIMULANO deployment multi-regione per dimostrare carbon-awareness.
+#
+# Mapping regioni:
+#   cluster1 (ms01) → DE  (Germania, ~350 gCO2/kWh, coal+gas+solar)
+#   cluster2 (ms02) → FR  (Francia, ~80 gCO2/kWh, nuclear dominated)  
+#   cluster3 (ms03) → PL  (Polonia, ~650 gCO2/kWh, coal dominated)
+#
+# Questo crea un range ampio di carbon intensity che rende visibile
+# l'effetto della carbon-awareness sulle decisioni di scheduling.
+# ============================================================================
+
 clusters:
-  cluster1:
-    name: cluster1
-    display_name: "EU (ms01)"
-    region: EU
+  - name: cluster1
+    display_name: "EU-DE (ms01)"
+    region: DE                    # <-- Region code per Electricity Maps
     location: Frankfurt
     ip: 192.168.1.245
-    kubeconfig_path: .kube/cluster1.yaml
-    server: https://192.168.1.245:6443
-    estimator_url: http://192.168.1.245:30080
+    kubeconfig_path: "~/.kube/config-cluster1"
     
-    # Nidificato resources
     resources:
       cpu_cores: 4
-      memory_gb: 7.75
-      max_pods: 110
-      ephemeral_storage_gb: 46.9
+      memory_gb: 8
     
-    # Nidificato pricing
     pricing:
-      cost_per_replica_hour: 0.12
-      cost_per_cpu_hour: 0.04
-      cost_per_gb_hour: 0.01
+      cost_per_replica_hour: 0.12   # €/replica/hour (DE pricing)
     
-    # Nidificato carbon
     carbon:
-      region_code: "DE"
-      baseline_gco2_kwh: 350
+      region_code: "DE"             # Electricity Maps zone code
+      baseline_gco2_kwh: 350        # Fallback if API unavailable
     
-    # Nidificato latency
     latency:
-      baseline_ms: 50
-      variance_ms: 15
-  
-  cluster2:
-    name: cluster2
-    display_name: "US (ms02)"
-    region: US
-    location: Virginia
+      baseline_ms: 2.0              # LAN latency (simulated)
+      
+  - name: cluster2
+    display_name: "EU-FR (ms02)"
+    region: FR                    # <-- Francia = molto green (nucleare)
+    location: Paris
     ip: 192.168.1.246
-    kubeconfig_path: .kube/cluster2.yaml
-    server: https://192.168.1.246:6443
-    estimator_url: http://192.168.1.246:30080
+    kubeconfig_path: "~/.kube/config-cluster2"
     
     resources:
       cpu_cores: 4
-      memory_gb: 7.75
-      max_pods: 110
-      ephemeral_storage_gb: 46.9
+      memory_gb: 8
     
     pricing:
-      cost_per_replica_hour: 0.15
-      cost_per_cpu_hour: 0.05
-      cost_per_gb_hour: 0.012
+      cost_per_replica_hour: 0.15   # €/replica/hour (FR pricing, slightly higher)
     
     carbon:
-      region_code: "US-VA"
-      baseline_gco2_kwh: 280
+      region_code: "FR"
+      baseline_gco2_kwh: 80         # Francia: nucleare = molto basso
     
     latency:
-      baseline_ms: 120
-      variance_ms: 25
-  
-  cluster3:
-    name: cluster3
-    display_name: "Asia (ms03)"
-    region: Asia
-    location: Singapore
+      baseline_ms: 2.0
+      
+  - name: cluster3
+    display_name: "EU-PL (ms03)"
+    region: PL                    # <-- Polonia = alto carbone (carbone fossile)
+    location: Warsaw
     ip: 192.168.1.247
-    kubeconfig_path: .kube/cluster3.yaml
-    server: https://192.168.1.247:6443
-    estimator_url: http://192.168.1.247:30080
+    kubeconfig_path: "~/.kube/config-cluster3"
     
     resources:
       cpu_cores: 4
-      memory_gb: 7.75
-      max_pods: 110
-      ephemeral_storage_gb: 46.9
+      memory_gb: 8
     
     pricing:
-      cost_per_replica_hour: 0.08
-      cost_per_cpu_hour: 0.03
-      cost_per_gb_hour: 0.008
+      cost_per_replica_hour: 0.08   # €/replica/hour (PL pricing, cheapest)
     
     carbon:
-      region_code: "SG"
-      baseline_gco2_kwh: 420
+      region_code: "PL"
+      baseline_gco2_kwh: 650        # Polonia: carbone fossile = molto alto
     
     latency:
-      baseline_ms: 200
-      variance_ms: 40
+      baseline_ms: 2.0
 
-scheduling_scenario: balanced
-
+  # ── Global settings ────────────────────────────────────────────────────
 global:
-  prometheus_url: "http://192.168.1.245:30090"
-  grafana_url: "http://192.168.1.245:30091"
-  hubble_ui_url: "http://192.168.1.245:30093"
-  scheduling_interval_seconds: 30
-  score_request_timeout_seconds: 5
-  score_agent_port: 30080
+    scheduling_interval_seconds: 30
+    score_request_timeout_seconds: 5
+    score_agent_port: 8080
