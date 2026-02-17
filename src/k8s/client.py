@@ -109,6 +109,8 @@ class KubernetesClient:
             kubeconfig_path: Path to kubeconfig
             server_url: Optional server URL override
         """
+        import os
+        kubeconfig_path = os.path.expanduser(kubeconfig_path)
         fixed_kubeconfig = self._fix_kubeconfig(
             kubeconfig_path, 
             cluster_name,

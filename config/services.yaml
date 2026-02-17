@@ -14,7 +14,7 @@ services:
         memory: "128Mi"
     
     # Capacità stimata
-    capacity_req_per_sec: 15
+    capacity_req_per_sec: 35
     
     # SLA requirements
     sla:
@@ -118,7 +118,7 @@ services:
 # Global autoscaling parameters
 global_autoscaling:
   # Safety margin sopra predizione
-  safety_margin: 0.15  # 15%
+  safety_margin: 0.10  # 15%
   
   # Rate limiting
   max_delta_per_cycle: 10  # Max ±3 repliche per ciclo (30s)

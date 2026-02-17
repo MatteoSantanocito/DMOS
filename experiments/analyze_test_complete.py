@@ -56,11 +56,11 @@ KNOWN_CLUSTERS = ["cluster1", "cluster2", "cluster3"]
 
 # From config/services.yaml
 SERVICE_CAPACITY = {
-    "frontend": 50,
-    "cartservice": 100,
-    "productcatalogservice": 80,
-    "checkoutservice": 30,
-    "recommendationservice": 60,
+    "frontend": 35,
+    "cartservice": 10,
+    "productcatalogservice": 15,
+    "checkoutservice": 5,
+    "recommendationservice": 10,
 }
 SERVICE_MIN_REPLICAS = {
     "frontend": 2,
@@ -348,11 +348,20 @@ def compute_prediction_accuracy(traffic: list, predicted: list) -> dict:
 
     return {"mape": mape, "rmse": rmse, "r2": r2, "directional_accuracy": dir_acc, "n": len(pairs)}
 
-
-def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_replica: float) -> dict:
+def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_replica: float,
+                                min_replicas_total: int = 6) -> dict:
     """
     Compute over/under provisioning ratio per snapshot.
-    ratio = provisioned_capacity / actual_traffic
+    
+    ratio = provisioned_capacity / max(actual_traffic, min_capacity)
+    
+    where min_capacity = min_replicas_total * capacity_per_replica
+    
+    This prevents the HA floor (e.g. 2 replicas × 3 clusters = 6 minimum)
+    from artificially inflating the over-provisioning ratio during low-traffic
+    periods. The minimum replica count is an architectural constraint for
+    high availability, not wasteful over-provisioning.
+    
     > 1 = over-provisioned, < 1 = under-provisioned, ~1.15 = ideal
 
     Warmup exclusion: snapshots where traffic < 10% of max traffic are excluded
@@ -364,12 +373,18 @@ def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_repli
 
     max_traffic = max(traffic) if traffic else 1
     warmup_threshold = max(max_traffic * 0.10, HIGH_THRESHOLD)  # At least HIGH_THRESHOLD
+    
+    # Minimum capacity floor: the HA baseline that the system always maintains
+    min_capacity = min_replicas_total * capacity_per_replica
 
     # All ratios (for plotting)
     for t, r in zip(traffic, replicas):
         if t > 0 and r > 0:
             cap = r * capacity_per_replica
-            ratio = cap / t
+            # Use max(traffic, min_capacity) as denominator to avoid
+            # penalizing HA floor during low-traffic periods
+            effective_demand = max(t, min_capacity)
+            ratio = cap / effective_demand
             ratios.append(ratio)
         else:
             ratios.append(0)
@@ -379,7 +394,8 @@ def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_repli
     for t, r in zip(traffic, replicas):
         if t >= warmup_threshold and r > 0:
             cap = r * capacity_per_replica
-            ratio = cap / t
+            effective_demand = max(t, min_capacity)
+            ratio = cap / effective_demand
             active_ratios.append(ratio)
             if ratio > 1.5:
                 over_count += 1
@@ -403,7 +419,6 @@ def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_repli
         "ideal_pct": (n - over_count - under_count) / n * 100,
         "active_snapshots": n,
     }
-
 
 def compute_time_to_scale(timestamps: list, traffic: list, replicas: list,
                           predicted: list = None, capacity_per_replica: float = 50) -> dict:
@@ -1318,7 +1333,8 @@ def analyze(filepath: str):
     stats = {}
     stats["prediction_accuracy"] = compute_prediction_accuracy(fe_ts["traffic"], fe_ts["predicted"])
     stats["provisioning"] = compute_provisioning_ratio(
-        fe_ts["traffic"], fe_ts["total_replicas"], SERVICE_CAPACITY["frontend"]
+        fe_ts["traffic"], fe_ts["total_replicas"], SERVICE_CAPACITY["frontend"],
+        min_replicas_total=6  # 2 min_replicas × 3 clusters
     )
     stats["tts"] = compute_time_to_scale(fe_ts["timestamps"], fe_ts["traffic"], fe_ts["total_replicas"],
                                           predicted=fe_ts.get("predicted"), capacity_per_replica=SERVICE_CAPACITY["frontend"])

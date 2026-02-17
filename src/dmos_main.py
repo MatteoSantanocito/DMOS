@@ -341,7 +341,7 @@ class DMOSOrchestrator:
         svc_cfg = self.config.get_service(service_name)
         total_replicas = max(
             svc_cfg.min_replicas,
-            int(current_traffic / svc_cfg.capacity_req_per_sec * 1.2)
+            int(current_traffic / svc_cfg.capacity_req_per_sec)
         )
         
         logger.info(f"Total replicas needed: {total_replicas}")

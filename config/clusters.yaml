@@ -20,7 +20,7 @@ clusters:
     region: DE                    # <-- Region code per Electricity Maps
     location: Frankfurt
     ip: 192.168.1.245
-    kubeconfig_path: "~/.kube/config-cluster1"
+    kubeconfig_path: ".kube/cluster1.yaml"
     
     resources:
       cpu_cores: 4
@@ -41,7 +41,7 @@ clusters:
     region: FR                    # <-- Francia = molto green (nucleare)
     location: Paris
     ip: 192.168.1.246
-    kubeconfig_path: "~/.kube/config-cluster2"
+    kubeconfig_path: ".kube/cluster2.yaml"
     
     resources:
       cpu_cores: 4
@@ -62,7 +62,7 @@ clusters:
     region: PL                    # <-- Polonia = alto carbone (carbone fossile)
     location: Warsaw
     ip: 192.168.1.247
-    kubeconfig_path: "~/.kube/config-cluster3"
+    kubeconfig_path: ".kube/cluster3.yaml"
     
     resources:
       cpu_cores: 4
