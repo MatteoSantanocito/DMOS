@@ -55,7 +55,7 @@ class PDController:
         
         self.state = ControlState()
         
-        logger.info(f"PD Controller initialized: Kp={kp}, Kd={kd}, "
+        logger.info(f"PD Controller inizializzato: Kp={kp}, Kd={kd}, "
                    f"output=[{output_min}, {output_max}]")
     
     def compute(

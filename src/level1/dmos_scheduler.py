@@ -312,7 +312,7 @@ class DMOSScheduler:
         """
         Collect scores from all clusters (locally, no HTTP)
         """
-        logger.info(f"Computing scores for '{service_name}' across all clusters...")
+        logger.info(f"Calcolo score per  '{service_name}' su tutti i cluster...")
         
         bids = []
         excluded = []
@@ -324,7 +324,7 @@ class DMOSScheduler:
             )
             
             if result is None:
-                logger.warning(f"No result for {cluster_name}")
+                logger.warning(f"Nessun risultato per  {cluster_name}")
                 continue
             
             if not result.get('eligible', True):
@@ -339,10 +339,10 @@ class DMOSScheduler:
                 ))
         
         if excluded:
-            logger.warning(f"⛔ Excluded clusters: {excluded}")
+            logger.warning(f"Cluster esclusi: {excluded}")
         
-        logger.info(f"Collected {len(bids)}/{len(self.cluster_configs)} bids "
-                    f"({len(excluded)} excluded)")
+        logger.info(f"Raccolte {len(bids)}/{len(self.cluster_configs)} offerte "
+                    f"({len(excluded)} esclusi)")
         
         return bids
     
@@ -355,7 +355,7 @@ class DMOSScheduler:
         """
         Schedule a service across clusters
         """
-        logger.info(f"Scheduling '{service_name}' with {total_replicas} replicas")
+        logger.info(f"Scheduling '{service_name}' con {total_replicas} repliche")
         
         # Step 1: Collect scores
         start_time = time.time()
@@ -363,7 +363,7 @@ class DMOSScheduler:
         collection_time = (time.time() - start_time) * 1000
         
         if not bids:
-            logger.error("No eligible clusters available!")
+            logger.error("Nessun cluster idoneo disponibile!")
             return [], False
         
         # Step 2: Winner determination
@@ -372,19 +372,19 @@ class DMOSScheduler:
         # Step 3: Log results
         total_time = (time.time() - start_time) * 1000
         
-        logger.info(f"Scheduling completed in {total_time:.0f}ms "
-                    f"(collection={collection_time:.0f}ms, "
+        logger.info(f"Scheduling completato in {total_time:.0f}ms "
+                    f"(raccolta={collection_time:.0f}ms, "
                     f"winner_det={(total_time - collection_time):.0f}ms)")
         
         if success:
-            logger.info(f"✅ Allocated {total_replicas} replicas across "
-                       f"{len(allocations)} clusters:")
+            logger.info(f"Allocate {total_replicas} repliche su "
+                       f"{len(allocations)} cluster:")
             for alloc in allocations:
                 logger.info(f"   {alloc}")
             
             jain = self.winner_det.compute_fairness_jain_index(allocations)
-            logger.info(f"   Jain fairness index: {jain:.3f}")
+            logger.info(f"   Indice di fairness di Jain: {jain:.3f}")
         else:
-            logger.error(f"❌ Failed to satisfy demand ({total_replicas} replicas)")
+            logger.error(f"  Impossibile soddisfare la domanda ({total_replicas} repliche)")
         
         return allocations, success

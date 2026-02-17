@@ -276,7 +276,7 @@ class DMOSOrchestrator:
                 
                 if current_dep < proportional_target:
                     logger.info(
-                        f"🔗 Co-location: {cluster_name} — {dep_svc_name}: "
+                        f"Co-location: {cluster_name} — {dep_svc_name}: "
                         f"{current_dep} → {proportional_target} "
                         f"(frontend share: {frontend_share:.0%})"
                     )
@@ -310,7 +310,7 @@ class DMOSOrchestrator:
         start_time = time.time()
         
         logger.info(f"\n{'='*70}")
-        logger.info(f"Scheduling {service_name} (reason: {reason})")
+        logger.info(f"Scheduling di {service_name} (motivo: {reason})")
         logger.info(f"{'='*70}")
         
         current_traffic = self.prometheus.get_request_rate(
@@ -353,7 +353,7 @@ class DMOSOrchestrator:
         )
         
         if not success:
-            logger.error(f"❌ Scheduling failed")
+            logger.error(f"❌ Scheduling fallito")
             return
         
         allocated_cluster_names: Set[str] = set()
@@ -402,7 +402,7 @@ class DMOSOrchestrator:
             if (abs(delta) <= 1
                     and traffic_stable
                     and current_reps >= svc_cfg.min_replicas):
-                logger.info(f"  🔇 {cluster_name}: Δ={delta:+d} in dead zone — skipping")
+                logger.info(f" {cluster_name}: Δ={delta:+d} in dead zone — skipping")
                 continue
             
             # [FIX D] Asymmetric cooldown: block rapid scale-downs
@@ -496,32 +496,32 @@ class DMOSOrchestrator:
         
         duration = time.time() - start_time
         self.scheduling_duration.labels(service=service_name).observe(duration)
-        logger.info(f"Scheduling completed in {duration:.2f}s")
+        logger.info(f"Scheduling completato in {duration:.2f}s")
     
     # ── Event Processing ──────────────────────────────────────────────────
     
     def process_event(self, event: SchedulingEvent):
         if not self.should_process(event.service):
-            logger.debug(f"⏭️  Skipping {event.service} (debounced)")
+            logger.debug(f"Skipping {event.service} (debounced)")
             return
         
-        logger.info(f"🔄 Processing: {event.action} {event.service}")
+        logger.info(f"Processing: {event.action} {event.service}")
         
         try:
             self.schedule_service(event.service, reason=event.reason)
             self.last_processed[event.service] = datetime.now()
         except Exception as e:
-            logger.error(f"Error processing {event.service}: {e}")
+            logger.error(f"Errore nell'elaborazione di {event.service}: {e}")
     
     # ── Periodic Traffic Monitor ──────────────────────────────────────────
     
     def periodic_check_thread(self):
         """Polling periodico per traffico con scaling proattivo"""
-        logger.info(f"🔄 Starting periodic traffic checker ({self.polling_interval}s interval)...")
+        logger.info(f"   Avvio controllo periodico traffico ({self.polling_interval}s interval)...")
         logger.info(f"   High threshold: {self.high_threshold} req/s")
         logger.info(f"   Low threshold: {self.low_threshold} req/s")
-        logger.info(f"   Monitored services: {self.monitored_services}")
-        logger.info(f"   Proactive scaling: enabled (uses predictor for early trigger)")
+        logger.info(f"   Servizi monitorati: {self.monitored_services}")
+        logger.info(f"   Scaling proattivo: abilitato (usa predittore per attivazione anticipata)")
         
         while self.running:
             try:
@@ -543,7 +543,7 @@ class DMOSOrchestrator:
                         current_replicas = 1
                     
                     if current_traffic is None or current_traffic == 0:
-                        logger.warning(f"No Prometheus metrics for {service_name}, using fallback estimation")
+                        logger.warning(f"Nessuna metrica Prometheus per {service_name}, uso stima di fallback")
                         
                         # Stima euristica basata su rapporto con frontend
                         # Se non abbiamo metriche Prometheus, stimiamo il carico
@@ -561,14 +561,14 @@ class DMOSOrchestrator:
                         if fe_reps <= fe_cfg.min_replicas:
                             # Frontend al minimo → backend dovrebbe scalare giù
                             current_traffic = 5.0
-                            logger.info(f"  Fallback: frontend at min ({fe_reps}) → backend LOW ({current_traffic} req/s)")
+                            logger.info(f"  Fallback: frontend al minimo ({fe_reps}) → backend BASSO ({current_traffic} req/s)")
                         elif current_replicas > fe_reps:
                             # Backend ha più repliche del frontend → probabilmente over-scaled
                             current_traffic = 8.0
-                            logger.info(f"  Fallback: backend({current_replicas}) > frontend({fe_reps}) → LOW ({current_traffic} req/s)")
+                            logger.info(f"  Fallback: backend({current_replicas}) > frontend({fe_reps}) → BASSO ({current_traffic} req/s)")
                         else:
                             current_traffic = 25.0
-                            logger.info(f"  Fallback: backend OK ({current_replicas} vs fe={fe_reps}) → MEDIUM ({current_traffic} req/s)")
+                            logger.info(f"  Fallback: backend OK ({current_replicas} vs fe={fe_reps}) → MEDIO ({current_traffic} req/s)")
                     
                     # ── Proactive check: use predictor to look ahead ──────────
                     # Feed current traffic to the predictor and get prediction
@@ -581,8 +581,8 @@ class DMOSOrchestrator:
                         predicted_traffic = pred_result
                     
                     logger.info(f"📊 {service_name}: {current_traffic:.1f} req/s "
-                               f"(predicted: {predicted_traffic:.1f}) | "
-                               f"Replicas: {current_replicas}")
+                               f"(Predetto: {predicted_traffic:.1f}) | "
+                               f"Repliche: {current_replicas}")
                     
                     # Decision: trigger based on EITHER current OR predicted traffic
                     # This is the key to proactive scaling
@@ -592,11 +592,11 @@ class DMOSOrchestrator:
                         reason_suffix = ""
                         if predicted_traffic > current_traffic and current_traffic <= self.high_threshold:
                             reason_suffix = "_proactive"
-                            logger.info(f"🔮 {service_name} PROACTIVE: current={current_traffic:.1f} "
-                                       f"< threshold={self.high_threshold}, but predicted="
+                            logger.info(f"{service_name} PROACTIVE: current={current_traffic:.1f} "
+                                       f"< threshold={self.high_threshold}, ma predetto="
                                        f"{predicted_traffic:.1f} > threshold → pre-scaling!")
                         else:
-                            logger.info(f"⚠️  {service_name} HIGH traffic ({effective_traffic:.1f} > {self.high_threshold})")
+                            logger.info(f" {service_name} HIGH traffic ({effective_traffic:.1f} > {self.high_threshold})")
                         
                         event = SchedulingEvent(
                             priority=0 if reason_suffix == "_proactive" else 1,
@@ -608,7 +608,7 @@ class DMOSOrchestrator:
                         self.event_queue.put(event)
                     
                     elif effective_traffic < self.low_threshold:
-                        logger.info(f"ℹ️  {service_name} LOW traffic ({effective_traffic:.1f} < {self.low_threshold})")
+                        logger.info(f"ℹ{service_name} LOW traffic ({effective_traffic:.1f} < {self.low_threshold})")
                         
                         event = SchedulingEvent(
                             priority=2,
@@ -619,7 +619,7 @@ class DMOSOrchestrator:
                         )
                         self.event_queue.put(event)
                     else:
-                        logger.debug(f"✓ {service_name} traffic OK ({effective_traffic:.1f} req/s)")
+                        logger.debug(f"{service_name} traffic OK ({effective_traffic:.1f} req/s)")
                         
                 # === BACKEND RESET ===
                 # Quando il frontend è al minimo, resetta i backend ai loro minimi
@@ -652,8 +652,8 @@ class DMOSOrchestrator:
                     
                     if fe_at_minimum and be_total > be_cfg.min_replicas * len(self.config.clusters):
                         # Frontend al minimo ma backend ancora alto → reset aggressivo
-                        logger.info(f"🔄 Backend reset: {backend_name} has {be_total} replicas "
-                                   f"but frontend at minimum ({fe_total}) → resetting to min")
+                        logger.info(f"Backend reset: {backend_name} ha {be_total} repliche "
+                                   f"ma frontend al minimo  ({fe_total}) → reset al minimo")
                         
                         # Distribuisci min_replicas uniformemente
                         min_per_cluster = max(1, be_cfg.min_replicas)
@@ -664,7 +664,7 @@ class DMOSOrchestrator:
                                 replicas=min_per_cluster,
                                 namespace=be_cfg.namespace
                             )
-                        logger.info(f"  ✅ {backend_name} reset to {min_per_cluster} per cluster")
+                        logger.info(f"  {backend_name} resettato a {min_per_cluster} per cluster")
                     
                     elif not fe_at_minimum and be_total > fe_total * 2:
                         # Frontend non al minimo ma backend è >2x frontend → scale-down graduale
@@ -672,7 +672,7 @@ class DMOSOrchestrator:
                         target_total = max(be_cfg.min_replicas * len(self.config.clusters),
                                           fe_total)  # Almeno tanti quanti il frontend
                         if be_total > target_total + 2:
-                            logger.info(f"📉 Backend gradual scale-down: {backend_name} "
+                            logger.info(f"Scale-down graduale backend: {backend_name} "
                                        f"{be_total} → target ~{target_total}")
                             # Genera evento di scale-down per il backend
                             event = SchedulingEvent(
@@ -688,7 +688,7 @@ class DMOSOrchestrator:
                 
             except Exception as e:
                 import traceback
-                logger.error(f"Error in periodic check: {e}")
+                logger.error(f"Errore nel controllo periodico: {e}")
                 logger.error(traceback.format_exc())
                 time.sleep(self.polling_interval)
     
@@ -700,7 +700,7 @@ class DMOSOrchestrator:
         @app.route('/webhook/alert', methods=['POST'])
         def alert_webhook():
             data = request.json
-            logger.info(f"📨 Received webhook: {len(data.get('alerts', []))} alerts")
+            logger.info(f"Received webhook: {len(data.get('alerts', []))} alerts")
             
             for alert in data.get('alerts', []):
                 labels = alert.get('labels', {})
@@ -715,7 +715,7 @@ class DMOSOrchestrator:
                 priority_map = {'critical': 0, 'warning': 1, 'info': 2}
                 priority = priority_map.get(severity, 2)
                 
-                logger.info(f"🚨 Alert: {alertname} - {service} ({severity})")
+                logger.info(f"Alert: {alertname} - {service} ({severity})")
                 
                 event = SchedulingEvent(
                     priority=priority,
@@ -745,7 +745,7 @@ class DMOSOrchestrator:
             if not service:
                 return jsonify({'error': 'service required'}), 400
             
-            logger.info(f"🔧 Manual trigger: {service} - {action}")
+            logger.info(f"Manual trigger: {service} - {action}")
             
             event = SchedulingEvent(
                 priority=1,
@@ -762,12 +762,12 @@ class DMOSOrchestrator:
         app.run(host='0.0.0.0', port=8081, debug=False)
     
     def worker_thread(self, worker_id: int):
-        logger.info(f"👷 Worker {worker_id} started")
+        logger.info(f"Worker {worker_id} started")
         
         while self.running:
             try:
                 event = self.event_queue.get(timeout=1)
-                logger.info(f"👷 Worker {worker_id}: {event.service}")
+                logger.info(f"Worker {worker_id}: {event.service}")
                 self.process_event(event)
                 self.event_queue.task_done()
             except:
@@ -781,21 +781,21 @@ class DMOSOrchestrator:
         t = threading.Thread(target=self.webhook_server, daemon=True)
         t.start()
         threads.append(t)
-        logger.info("✅ Webhook server started")
+        logger.info("Server webhook avviato")
         
         t = threading.Thread(target=self.periodic_check_thread, daemon=True)
         t.start()
         threads.append(t)
-        logger.info("✅ Periodic traffic checker started")
+        logger.info("Controllo periodico del traffico avviato")
         
         for i in range(self.num_workers):
             t = threading.Thread(target=self.worker_thread, args=(i,), daemon=True)
             t.start()
             threads.append(t)
-        logger.info(f"✅ {self.num_workers} workers started")
+        logger.info(f"{self.num_workers} worker avviati")
         
         logger.info("\n" + "="*70)
-        logger.info("DMOS Orchestrator Running (Event-Driven + Polling)")
+        logger.info("DMOS Orchestrator in esecuzione (Event-Driven + Polling)")
         logger.info("Webhook: http://localhost:8081/webhook/alert")
         logger.info("Metrics: http://localhost:9090/metrics")
         logger.info(f"Polling: Every {self.polling_interval}s")
@@ -807,11 +807,11 @@ class DMOSOrchestrator:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            logger.info("\n\nShutdown requested")
+            logger.info("\n\nArresto richiesto")
             self.running = False
             for t in threads:
                 t.join(timeout=5)
-            logger.info("Stopped")
+            logger.info("Arrestato")
 
 
 def main():

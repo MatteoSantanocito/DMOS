@@ -72,10 +72,10 @@ class ReplicaScaler:
         self.predictor = predictor or TrafficPredictor()
         self.controller = controller or PDController()
         
-        logger.info(f"Replica scaler initialized: "
-                   f"capacity={capacity_per_replica} req/s, "
-                   f"replicas=[{min_replicas}, {max_replicas}], "
-                   f"safety={safety_margin*100}%, "
+        logger.info(f"Replica scaler inizializzato: "
+                   f"capacità={capacity_per_replica} req/s, "
+                   f"repliche=[{min_replicas}, {max_replicas}], "
+                   f"margine di sicurezza={safety_margin*100}%, "
                    f"max_delta={max_delta_per_cycle}")
     
     def compute_target_replicas(
@@ -142,12 +142,12 @@ class ReplicaScaler:
         final_delta = target_replicas - current_replicas
         constrained = (target_replicas != target_replicas_raw)
         
-        logger.info(f"Scaling decision: {current_replicas} → {target_replicas} "
+        logger.info(f"Decisione di scaling: {current_replicas} → {target_replicas} "
                    f"(Δ={final_delta:+d}) | "
-                   f"traffic: current={current_traffic:.1f}, "
-                   f"predicted={predicted_traffic:.1f} | "
+                   f"traffico: corrente={current_traffic:.1f}, "
+                   f"predetto={predicted_traffic:.1f} | "
                    f"base={base_replicas}, PD={pd_adjustment:+d}, "
-                   f"constrained={constrained}")
+                   f"vincolato={constrained}")
         
         return ScalingDecision(
             current_replicas=current_replicas,
