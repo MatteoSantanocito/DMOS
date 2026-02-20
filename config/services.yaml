@@ -14,7 +14,7 @@ services:
         memory: "128Mi"
     
     # Capacità stimata
-    capacity_req_per_sec: 35
+    capacity_req_per_sec: 25
     
     # SLA requirements
     sla:
@@ -27,7 +27,7 @@ services:
     
     # Autoscaling constraints
     autoscaling:
-      min_replicas: 2      # HA minimo
+      min_replicas: 1      
       max_replicas: 20
       target_cpu_percent: 70
   

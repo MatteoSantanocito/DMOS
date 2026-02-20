@@ -63,7 +63,7 @@ SERVICE_CAPACITY = {
     "recommendationservice": 10,
 }
 SERVICE_MIN_REPLICAS = {
-    "frontend": 2,
+    "frontend": 1,
     "cartservice": 1,
     "productcatalogservice": 1,
     "checkoutservice": 1,
@@ -862,7 +862,7 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
 def _fmt_time(ax):
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
-def generate_page1_core(fe_ts: dict, output_dir: Path):
+def generate_page1_core(fe_ts: dict, output_dir: Path, prefix: str = "dmos"):
     """Page 1: Core metrics — Traffic, Replicas, Correlation, Distribution."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('DMOS Analysis — Core Metrics', fontsize=14, fontweight='bold')
@@ -916,13 +916,13 @@ def generate_page1_core(fe_ts: dict, output_dir: Path):
     _fmt_time(ax)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / "dmos_page1_core.png"
+    path = output_dir / f"{prefix}_page1_core.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
 
 
-def generate_page2_scaling(fe_ts: dict, stats: dict, output_dir: Path):
+def generate_page2_scaling(fe_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
     """Page 2: Scaling analysis — TtS, Oscillation, Provisioning, Events."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('DMOS Analysis — Scaling Quality', fontsize=14, fontweight='bold')
@@ -1019,13 +1019,13 @@ def generate_page2_scaling(fe_ts: dict, stats: dict, output_dir: Path):
     _fmt_time(ax)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / "dmos_page2_scaling.png"
+    path = output_dir / f"{prefix}_page2_scaling.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
 
 
-def generate_page3_quality(data: List[dict], fe_ts: dict, stats: dict, output_dir: Path):
+def generate_page3_quality(data: list, fe_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
     """Page 3: Quality metrics — Prediction scatter, Fairness, Scores, Duration."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('DMOS Analysis — Quality Metrics', fontsize=14, fontweight='bold')
@@ -1100,13 +1100,13 @@ def generate_page3_quality(data: List[dict], fe_ts: dict, stats: dict, output_di
     _fmt_time(ax)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / "dmos_page3_quality.png"
+    path = output_dir / f"{prefix}_page3_quality.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
 
 
-def generate_page4_response(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict, output_dir: Path):
+def generate_page4_response(data: list, fe_ts: dict, locust_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
     """Page 4: Response Time & Backend — Locust RT, RT vs Replicas, Backend svcs, KPI summary."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('DMOS Analysis — End-User & Backend Impact', fontsize=14, fontweight='bold')
@@ -1228,7 +1228,7 @@ def generate_page4_response(data: List[dict], fe_ts: dict, locust_ts: dict, stat
     ax.set_title('KPI Summary Dashboard', fontsize=12, fontweight='bold', pad=20)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / "dmos_page4_response.png"
+    path = output_dir / f"{prefix}_page4_response.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
@@ -1310,6 +1310,38 @@ def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
+def _build_output_paths(input_file: str) -> tuple:
+    """
+    Estrae scenario e prefix dal nome del file input.
+    Ritorna (output_dir, file_prefix).
+
+    Nuovo formato:  092224_20260217_flash_crowd.jsonl → ("results/flash_crowd", "092224_20260217")
+    Vecchio formato: metrics_20260217_092224.jsonl     → ("results/test", "092224_20260217")
+    """
+    input_path = Path(input_file)
+    stem = input_path.stem          # es: "092224_20260217_flash_crowd"
+    parent = input_path.parent      # es: "results"
+    parts = stem.split("_")
+
+    # Nuovo formato: HHMMSS_YYYYMMDD_scenario[_parts]
+    if len(parts) >= 3 and len(parts[0]) == 6 and parts[0].isdigit() and len(parts[1]) == 8 and parts[1].isdigit():
+        time_str = parts[0]
+        date_str = parts[1]
+        scenario = "_".join(parts[2:])
+        prefix = f"{time_str}_{date_str}"
+    # Vecchio formato: metrics_YYYYMMDD_HHMMSS
+    elif parts[0] in ("metrics", "metrics_timeseries") and len(parts) >= 3:
+        date_str = parts[-2] if len(parts[-2]) == 8 else parts[1]
+        time_str = parts[-1] if len(parts[-1]) == 6 else parts[2]
+        scenario = "test"
+        prefix = f"{time_str}_{date_str}"
+    else:
+        scenario = "test"
+        prefix = stem
+
+    output_dir = parent / scenario
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir, prefix
 
 def analyze(filepath: str):
     """Main analysis pipeline."""
@@ -1317,6 +1349,11 @@ def analyze(filepath: str):
     print("🔬 DMOS Comprehensive Test Analysis v2")
     print("=" * 78)
     print(f"\n  Input: {filepath}\n")
+
+    # Calcola output paths
+    output_dir, prefix = _build_output_paths(filepath)
+    print(f"  📁 Output: {output_dir}/")
+    print(f"  📝 Prefix: {prefix}\n")
 
     # Load
     data = load_data(filepath)
@@ -1334,7 +1371,7 @@ def analyze(filepath: str):
     stats["prediction_accuracy"] = compute_prediction_accuracy(fe_ts["traffic"], fe_ts["predicted"])
     stats["provisioning"] = compute_provisioning_ratio(
         fe_ts["traffic"], fe_ts["total_replicas"], SERVICE_CAPACITY["frontend"],
-        min_replicas_total=6  # 2 min_replicas × 3 clusters
+        min_replicas_total=6
     )
     stats["tts"] = compute_time_to_scale(fe_ts["timestamps"], fe_ts["traffic"], fe_ts["total_replicas"],
                                           predicted=fe_ts.get("predicted"), capacity_per_replica=SERVICE_CAPACITY["frontend"])
@@ -1344,32 +1381,34 @@ def analyze(filepath: str):
     # Console report
     print_report(data, fe_ts, locust_ts, stats)
 
-    # Generate plots
-    output_dir = Path("results/plots")
-    output_dir.mkdir(exist_ok=True, parents=True)
+    # Generate plots (passa prefix per i nomi file)
     print("  Generating plots...")
-    generate_page1_core(fe_ts, output_dir)
-    generate_page2_scaling(fe_ts, stats, output_dir)
-    generate_page3_quality(data, fe_ts, stats, output_dir)
-    generate_page4_response(data, fe_ts, locust_ts, stats, output_dir)
+    generate_page1_core(fe_ts, output_dir, prefix)
+    generate_page2_scaling(fe_ts, stats, output_dir, prefix)
+    generate_page3_quality(data, fe_ts, stats, output_dir, prefix)
+    generate_page4_response(data, fe_ts, locust_ts, stats, output_dir, prefix)
 
     # Export JSON
-    json_path = Path(filepath).with_suffix('.analysis.json')
+    json_path = output_dir / f"{prefix}_analysis.json"
     export_analysis_json(data, fe_ts, locust_ts, stats, json_path)
+
+    # Report testuale
+    report_path = output_dir / f"{prefix}_report.txt"
+    # (se vuoi salvare il report testuale su file, aggiungi qui la logica)
 
     print(f"\n{'=' * 78}")
     print(f"✅ Analysis complete!")
-    print(f"   Plots:    results/plots/dmos_page{{1..4}}_*.png")
-    print(f"   JSON:     {json_path}")
+    print(f"   Output:   {output_dir}/")
+    print(f"   Plots:    {prefix}_page{{1..4}}_*.png")
+    print(f"   JSON:     {json_path.name}")
     print(f"{'=' * 78}\n")
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         # Auto-find latest file
         results_dir = Path("results")
         # Prefer JSONL
-        files = list(results_dir.glob("metrics_*.jsonl"))
+        files = list(results_dir.glob("*.jsonl"))
         if not files:
             files = list(results_dir.glob("metrics_timeseries_*.txt"))
         if not files:

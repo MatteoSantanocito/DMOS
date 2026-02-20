@@ -1,33 +1,148 @@
-Workflow Test Completo
-Step 1: Setup (2 min)
-powershell# Terminal 1: DMOS
+# ══════════════════════════════════════════════════════════════════════════
+# DMOS — Comandi per tutti gli scenari di test
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Prerequisiti:
+#   - I 3 cluster K3s sono attivi e raggiungibili
+#   - Online Boutique è deployato su tutti i cluster
+#   - locustfile_scenarios.py è nella cartella experiments/
+#
+# Tra un test e l'altro:
+#   1. Ferma Locust (si ferma da solo a fine scenario)
+#   2. Aspetta che il collector finisca (ha ~3-5 min di margine)
+#   3. Stoppa DMOS (Ctrl+C) e riavvialo per pulire lo stato del predittore
+#   4. Opzionale: resetta le repliche a 1 per cluster prima del test
+#
+# ══════════════════════════════════════════════════════════════════════════
+
+
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 1: gradual_ramp (25 min) — Il tuo scenario originale     │
+# └──────────────────────────────────────────────────────────────────────┘
+
+# Terminal 1: DMOS
 python src/dmos_main.py
 
-# Terminal 2: Reset
-python -c "from src.k8s.client import KubernetesClient; k8s = KubernetesClient({'cluster1': {'kubeconfig_path': '.kube/cluster1.yaml', 'server': 'https://192.168.1.245:6443'}}); k8s.scale_deployment('cluster1', 'frontend', 1, 'online-boutique'); print('✅ Reset')"
+# Terminal 2: Collector (25 min scenario + 5 min margine = 30 min)
+python experiments/collect_metrics_simple.py 30 -s gradual_ramp
 
-Step 2: Avvia Collector (15 min)
-powershell# Terminal 3
-python experiments/collect_metrics_simple.py 15
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="gradual_ramp"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
 
-Step 3: Avvia Locust (10 min)
-powershell# Terminal 4
-locust -f experiments/locustfile.py --host http://192.168.1.245:30007
-```
+# Terminal 4: Analisi (dopo che collector finisce)
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_gradual_ramp.jsonl
 
-**Browser:** `http://localhost:8089`
-```
-Users: 80
-Spawn rate: 4
-Run time: 10m
-Start → Attendi 10 min → Stop
 
-Step 4: Aspetta Scale-Down (5 min)
-Locust si ferma a t=10min, collector continua fino a t=15min per catturare scale-down.
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 2: flash_crowd (17 min) — Spike improvviso               │
+# └──────────────────────────────────────────────────────────────────────┘
 
-Step 5: Analisi
-powershell# Installa matplotlib se non hai
-pip install matplotlib
+# Terminal 1: DMOS
+python src/dmos_main.py
 
-# Analizza
-python experiments/analyze_test_complete.py
+# Terminal 2: Collector (17 + 5 = 22 min)
+python experiments/collect_metrics_simple.py 22 -s flash_crowd
+
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="flash_crowd"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+
+# Analisi:
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_flash_crowd.jsonl
+
+
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 3: double_wave (26 min) — Doppia onda                    │
+# └──────────────────────────────────────────────────────────────────────┘
+
+# Terminal 1: DMOS
+python src/dmos_main.py
+
+# Terminal 2: Collector (26 + 5 = 31 min)
+python experiments/collect_metrics_simple.py 31 -s double_wave
+
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="double_wave"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+
+# Analisi:
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_double_wave.jsonl
+
+
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 4: sinusoidal (25 min) — Oscillante anti-flapping        │
+# └──────────────────────────────────────────────────────────────────────┘
+
+# Terminal 1: DMOS
+python src/dmos_main.py
+
+# Terminal 2: Collector (25 + 5 = 30 min)
+python experiments/collect_metrics_simple.py 30 -s sinusoidal
+
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="sinusoidal"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+
+# Analisi:
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_sinusoidal.jsonl
+
+
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 5: slow_ramp (33 min) — Rampa lenta + plateau lungo      │
+# └──────────────────────────────────────────────────────────────────────┘
+
+# Terminal 1: DMOS
+python src/dmos_main.py
+
+# Terminal 2: Collector (33 + 5 = 38 min)
+python experiments/collect_metrics_simple.py 38 -s slow_ramp
+
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="slow_ramp"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+
+# Analisi:
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_slow_ramp.jsonl
+
+
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  SCENARIO 6: sawtooth (25 min) — Dente di sega ripetuto            │
+# └──────────────────────────────────────────────────────────────────────┘
+
+# Terminal 1: DMOS
+python src/dmos_main.py
+
+# Terminal 2: Collector (25 + 5 = 30 min)
+python experiments/collect_metrics_simple.py 30 -s sawtooth
+
+# Terminal 3: Locust
+$env:DMOS_SCENARIO="sawtooth"
+locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+
+# Analisi:
+python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_sawtooth.jsonl
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# NOTA: Su Linux/Mac usa "export" invece di "$env:"
+#
+#   export DMOS_SCENARIO=flash_crowd
+#   locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+#
+# ══════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ORDINE CONSIGLIATO PER LA TESI (priorità decrescente)
+# ══════════════════════════════════════════════════════════════════════════
+#
+#  1. flash_crowd     — Il più diverso, testa il worst-case
+#  2. double_wave     — Confronto TtS tra due onde
+#  3. sinusoidal      — Prova anti-flapping
+#  4. gradual_ramp    — Già fatto, rifai solo se vuoi con i nuovi nomi file
+#  5. sawtooth        — Bonus se hai tempo
+#  6. slow_ramp       — Bonus, conferma efficienza stazionaria
+#
+# Con i primi 3 + il gradual_ramp che hai già, hai 4 scenari = validazione solida.
+# ══════════════════════════════════════════════════════════════════════════

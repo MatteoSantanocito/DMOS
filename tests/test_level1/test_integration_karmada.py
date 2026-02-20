@@ -5,8 +5,8 @@ Resource Estimators + Coordinator
 
 import asyncio
 from src.utils.config_loader import ConfigLoader
-from src.level1.resource_estimator import ResourceEstimator
-from src.level1.coordinator import Coordinator
+from src.level1.cluster_estimator import ResourceEstimator
+from src.level1.dmos_scheduler import Coordinator
 
 
 async def test_resource_estimator():

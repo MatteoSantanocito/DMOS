@@ -363,7 +363,7 @@ def print_summary(snap: dict, iteration: int, total: int):
 
 # ─── Main Collector Loop ─────────────────────────────────────────────────────
 
-def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL):
+def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL, scenario: str = "test"):
     """
     Main collection loop.
     Outputs:
@@ -372,9 +372,10 @@ def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL):
     """
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    test_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    jsonl_file = OUTPUT_DIR / f"metrics_{test_id}.jsonl"
-    legacy_file = OUTPUT_DIR / f"metrics_timeseries_{test_id}.txt"
+    time_str = datetime.now().strftime("%H%M%S")
+    date_str = datetime.now().strftime("%Y%m%d")
+    jsonl_file = OUTPUT_DIR / f"{time_str}_{date_str}_{scenario}.jsonl"
+    legacy_file = OUTPUT_DIR / f"{time_str}_{date_str}_{scenario}.txt"
 
     iterations = (duration_minutes * 60) // SCRAPE_INTERVAL
 
@@ -444,10 +445,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DMOS Metrics Collector v2")
     parser.add_argument("duration", nargs="?", type=int, default=20,
                         help="Collection duration in minutes (default: 20)")
+    parser.add_argument("--scenario", "-s", type=str, default="test",
+                        help="Nome scenario per il file output (es. flash_crowd, sinusoidal)")
     parser.add_argument("--locust-host", default=LOCUST_API_URL,
                         help="Locust web UI URL (default: http://localhost:8089)")
     args = parser.parse_args()
 
     print(f"\nStarting in 3 seconds...")
     time.sleep(3)
-    run_collector(duration_minutes=args.duration, locust_url=args.locust_host)
+    run_collector(duration_minutes=args.duration, locust_url=args.locust_host,
+                  scenario=args.scenario)
