@@ -14,7 +14,7 @@ services:
         memory: "128Mi"
     
     # Capacità stimata
-    capacity_req_per_sec: 25
+    capacity_req_per_sec: 50
     
     # SLA requirements
     sla:
@@ -49,7 +49,7 @@ services:
     power_watts: 60
     autoscaling:
       min_replicas: 1
-      max_replicas: 15
+      max_replicas: 20
       target_cpu_percent: 70
   
   productcatalogservice:
@@ -70,7 +70,7 @@ services:
     power_watts: 55
     autoscaling:
       min_replicas: 1
-      max_replicas: 15
+      max_replicas: 20
       target_cpu_percent: 70
   
   checkoutservice:
@@ -91,7 +91,7 @@ services:
     power_watts: 70
     autoscaling:
       min_replicas: 1
-      max_replicas: 10
+      max_replicas: 20
       target_cpu_percent: 70
   
   recommendationservice:
@@ -112,7 +112,7 @@ services:
     power_watts: 65
     autoscaling:
       min_replicas: 1
-      max_replicas: 10
+      max_replicas: 20
       target_cpu_percent: 70
 
 # Global autoscaling parameters
@@ -121,7 +121,7 @@ global_autoscaling:
   safety_margin: 0.10  # 15%
   
   # Rate limiting
-  max_delta_per_cycle: 10  # Max ±3 repliche per ciclo (30s)
+  max_delta_per_cycle: 4  # Max ±3 repliche per ciclo (30s)
   
   # PD Controller parameters
   pd_controller:

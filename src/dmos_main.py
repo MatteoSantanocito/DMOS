@@ -11,10 +11,16 @@ Changes vs previous version:
      D. Asymmetric cooldown: scale-down waits 60s, scale-up waits 30s
   4. [NEW] Co-location: proportional backend distribution across clusters
   5. [NEW] Proactive scaling: uses predictor to trigger before threshold crossing
+  6. [NEW] PROM_MAP: per-cluster Prometheus (approccio Romano)
+     - Locust API called ONCE for global traffic (not per-cluster)
+     - Fallback: sum network bytes from each cluster's Prometheus
+     - CPU/memory: each cluster_estimator queries its own Prometheus
 """
 
+import os
 import time
 import threading
+import requests as http_requests
 from queue import PriorityQueue
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -92,7 +98,19 @@ class DMOSOrchestrator:
         
         self.config = ConfigLoader(config_path)
         self.scheduler = DMOSScheduler(config_path)
-        self.prometheus = PrometheusClient(url=self.config.prometheus.url)
+        
+        # ── PROM_MAP: un client Prometheus per cluster (approccio Romano) ──
+        self.prom_map = {}
+        for name, cluster in self.config.clusters.items():
+            prom_url = f"http://{cluster.ip}:30090"
+            self.prom_map[name] = PrometheusClient(
+                url=prom_url,
+                cluster_name=name
+            )
+        
+        # ── Locust config (traffico globale, non per-cluster) ──
+        self.locust_url = os.environ.get("DMOS_LOCUST_URL", "http://localhost:8089")
+        self._locust_available = None  # None=not tested, True/False
         
         k8s_configs = {}
         for name, cluster in self.config.clusters.items():
@@ -110,7 +128,7 @@ class DMOSOrchestrator:
                 min_replicas=svc_cfg.min_replicas,
                 max_replicas=svc_cfg.max_replicas,
                 safety_margin=0.15,
-                max_delta_per_cycle=2  # [FIX B] Was 3, now 2
+                max_delta_per_cycle=4  
             )
         
         # All cluster names for scale-down of non-allocated clusters
@@ -140,19 +158,6 @@ class DMOSOrchestrator:
         self.monitored_services = list(self.config.services.keys())
         
         # ── Co-location: service dependency map ──────────────────────────
-        # If a cluster has replicas of a "parent" service, it must also have
-        # at least min_replicas of each dependent "child" service.
-        # This avoids cross-cluster gRPC calls that add latency.
-        #
-        # Online Boutique dependency tree:
-        #   frontend → cartservice, productcatalogservice, currencyservice,
-        #              recommendationservice, checkoutservice, shippingservice, adservice
-        #   checkoutservice → cartservice, currencyservice, shippingservice,
-        #                     paymentservice, emailservice
-        #
-        # We only enforce co-location for services DMOS manages (in services.yaml).
-        # Services not in services.yaml (currencyservice, shippingservice, etc.)
-        # are assumed to already have 1 replica per cluster from initial deploy.
         self.service_dependencies: Dict[str, list] = {
             'frontend': [
                 'cartservice',
@@ -160,8 +165,6 @@ class DMOSOrchestrator:
                 'checkoutservice',
                 'recommendationservice',
             ],
-            # checkoutservice depends on cartservice, but cart is already
-            # a frontend dependency — no need to duplicate
         }
         self.colocation_enabled = True
         
@@ -171,10 +174,68 @@ class DMOSOrchestrator:
         logger.info(f"📋 Monitored services: {self.monitored_services}")
         logger.info(f"🌐 Clusters: {self.all_cluster_names}")
         logger.info(f"🔧 Anti-oscillation: debounce={self.debounce_seconds}s, "
-                     f"max_delta=2, dead_zone={self.dead_zone_pct*100:.0f}%, "
+                     f"max_delta=4, dead_zone={self.dead_zone_pct*100:.0f}%, "
                      f"scale_down_cooldown={self.scale_down_cooldown}s")
         if self.colocation_enabled:
             logger.info(f"🔗 Co-location: enabled — dependencies: {self.service_dependencies}")
+    
+    # ── Traffic Helper ─────────────────────────────────────────────────────
+    
+    def _get_total_traffic(self, service_name: str) -> float:
+        """
+        Get total traffic across all clusters.
+        
+        Priority:
+          1. Locust API (dato GLOBALE, una sola chiamata)
+          2. Somma network bytes da ogni Prometheus locale (fallback)
+        
+        Locust misura il throughput end-to-end di tutto il sistema.
+        È un dato globale — NON va chiamato per-cluster.
+        """
+        # ── Try 1: Locust API (global, una sola chiamata) ────────────────
+        if self._locust_available is not False:
+            try:
+                resp = http_requests.get(
+                    f"{self.locust_url}/stats/requests",
+                    timeout=2
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._locust_available = True
+                    
+                    total_rps = data.get("total_rps", 0)
+                    if not total_rps:
+                        for stat in data.get("stats", []):
+                            if stat.get("name") == "Aggregated":
+                                total_rps = stat.get("current_rps", 0)
+                                break
+                    
+                    logger.info(f"✅ Traffic from Locust: {total_rps:.1f} req/s")
+                    # SEMPRE restituire il dato Locust, anche se 0
+                    # (significa che il test non è ancora partito)
+                    return float(total_rps)
+                    
+            except http_requests.exceptions.ConnectionError:
+                self._locust_available = False
+                logger.info("ℹ️ Locust non raggiungibile, uso fallback Prometheus")
+            except Exception as e:
+                logger.debug(f"Locust query failed: {e}")
+        
+        # ── Try 2: Somma da ogni Prometheus locale ───────────────────────
+        total = 0.0
+        for cname, prom in self.prom_map.items():
+            # Disabilita Locust nel client per evitare chiamate duplicate
+            prom._locust_available = False
+            rps = prom.get_request_rate(
+                service=service_name,
+                namespace="online-boutique"
+            )
+            if rps and rps > 0:
+                total += rps
+        
+        if total > 0:
+            logger.info(f"✅ Traffic from Prometheus (sum {len(self.prom_map)} clusters): {total:.1f} req/s")
+        return total
     
     # ── Helpers ────────────────────────────────────────────────────────────
     
@@ -202,15 +263,6 @@ class DMOSOrchestrator:
         """
         Proportional co-location: for every cluster that has replicas of
         parent_service, scale dependent backend services proportionally.
-        
-        Strategy:
-        - Collect frontend distribution across clusters (e.g. 3/3/3 = 33%/33%/33%)
-        - For each backend, determine its total replicas needed (from schedule_service)
-        - Distribute those replicas across clusters following the same proportion
-        - At minimum, every cluster with frontend > 0 gets min_replicas of each backend
-        
-        This ensures backend services are co-located and proportionally distributed,
-        avoiding cross-cluster gRPC calls.
         """
         if not self.colocation_enabled:
             return
@@ -244,7 +296,6 @@ class DMOSOrchestrator:
             if dep_cfg is None:
                 continue
             
-            # Get current total backend replicas across all clusters
             total_dep_reps = 0
             cluster_dep_current = {}
             for cluster_name in self.all_cluster_names:
@@ -256,7 +307,6 @@ class DMOSOrchestrator:
                 cluster_dep_current[cluster_name] = reps
                 total_dep_reps += reps
             
-            # Target: at least 1 per active cluster, total = max(current_total, len(active))
             target_total = max(total_dep_reps, len(active_clusters))
             
             for cluster_name in self.all_cluster_names:
@@ -264,10 +314,8 @@ class DMOSOrchestrator:
                 current_dep = cluster_dep_current[cluster_name]
                 
                 if parent_reps == 0:
-                    # No frontend → backend at min_replicas (handled by schedule_service)
                     continue
                 
-                # Proportional target: at least min_replicas, proportional to frontend share
                 frontend_share = parent_reps / total_parent_reps
                 proportional_target = max(
                     dep_cfg.min_replicas,
@@ -313,15 +361,10 @@ class DMOSOrchestrator:
         logger.info(f"Scheduling di {service_name} (motivo: {reason})")
         logger.info(f"{'='*70}")
         
-        current_traffic = self.prometheus.get_request_rate(
-            service=service_name,
-            namespace="online-boutique"
-        )
+        # ── Traffic: Locust (globale) o Prometheus (per-cluster sum) ──
+        current_traffic = self._get_total_traffic(service_name)
         
         if current_traffic is None:
-            # No metrics available — use conservative estimate based on capacity
-            # This avoids phantom scaling: assume each existing replica handles
-            # half its capacity (light load, not zero)
             svc_cfg_temp = self.config.get_service(service_name)
             current_traffic = svc_cfg_temp.capacity_req_per_sec * svc_cfg_temp.min_replicas * 0.5
             logger.warning(f"No metrics for {service_name}, using conservative fallback: "
@@ -490,8 +533,6 @@ class DMOSOrchestrator:
                 ).set(min(current_reps, target))
         
         # ── Co-location enforcement ──────────────────────────────────────
-        # After scheduling parent service, ensure dependent backends exist
-        # on every cluster that has the parent.
         self._enforce_colocation(service_name)
         
         duration = time.time() - start_time
@@ -527,10 +568,8 @@ class DMOSOrchestrator:
             try:
                 for service_name in self.monitored_services:
                     
-                    current_traffic = self.prometheus.get_request_rate(
-                        service=service_name,
-                        namespace="online-boutique"
-                    )
+                    # ── Traffic: Locust (globale) o Prometheus (per-cluster sum) ──
+                    current_traffic = self._get_total_traffic(service_name)
                     
                     svc_cfg = self.config.get_service(service_name)
                     current_replicas = self.k8s.get_deployment_replicas(
@@ -545,9 +584,6 @@ class DMOSOrchestrator:
                     if current_traffic is None or current_traffic == 0:
                         logger.warning(f"Nessuna metrica Prometheus per {service_name}, uso stima di fallback")
                         
-                        # Stima euristica basata su rapporto con frontend
-                        # Se non abbiamo metriche Prometheus, stimiamo il carico
-                        # del backend in base allo stato del frontend
                         fe_reps = 0
                         fe_cfg = self.config.get_service('frontend')
                         for cn in self.config.clusters:
@@ -559,11 +595,9 @@ class DMOSOrchestrator:
                             fe_reps += r
                         
                         if fe_reps <= fe_cfg.min_replicas:
-                            # Frontend al minimo → backend dovrebbe scalare giù
                             current_traffic = 5.0
                             logger.info(f"  Fallback: frontend al minimo ({fe_reps}) → backend BASSO ({current_traffic} req/s)")
                         elif current_replicas > fe_reps:
-                            # Backend ha più repliche del frontend → probabilmente over-scaled
                             current_traffic = 8.0
                             logger.info(f"  Fallback: backend({current_replicas}) > frontend({fe_reps}) → BASSO ({current_traffic} req/s)")
                         else:
@@ -571,8 +605,7 @@ class DMOSOrchestrator:
                             logger.info(f"  Fallback: backend OK ({current_replicas} vs fe={fe_reps}) → MEDIO ({current_traffic} req/s)")
                     
                     # ── Proactive check: use predictor to look ahead ──────────
-                    # Feed current traffic to the predictor and get prediction
-                    predicted_traffic = current_traffic  # default: same as current
+                    predicted_traffic = current_traffic
                     if service_name in self.scalers:
                         pred_result, _ = self.scalers[service_name].predictor.predict(
                             current_rate=current_traffic,
@@ -584,8 +617,6 @@ class DMOSOrchestrator:
                                f"(Predetto: {predicted_traffic:.1f}) | "
                                f"Repliche: {current_replicas}")
                     
-                    # Decision: trigger based on EITHER current OR predicted traffic
-                    # This is the key to proactive scaling
                     effective_traffic = max(current_traffic, predicted_traffic)
                     
                     if effective_traffic > self.high_threshold:
@@ -622,8 +653,6 @@ class DMOSOrchestrator:
                         logger.debug(f"{service_name} traffic OK ({effective_traffic:.1f} req/s)")
                         
                 # === BACKEND RESET ===
-                # Quando il frontend è al minimo, resetta i backend ai loro minimi
-                # bypassando il rate limiter per evitare scale-down lento
                 fe_cfg = self.config.get_service('frontend')
                 fe_total = 0
                 for cluster_name in self.config.clusters:
@@ -651,11 +680,9 @@ class DMOSOrchestrator:
                         be_total += be_reps
                     
                     if fe_at_minimum and be_total > be_cfg.min_replicas * len(self.config.clusters):
-                        # Frontend al minimo ma backend ancora alto → reset aggressivo
                         logger.info(f"Backend reset: {backend_name} ha {be_total} repliche "
                                    f"ma frontend al minimo  ({fe_total}) → reset al minimo")
                         
-                        # Distribuisci min_replicas uniformemente
                         min_per_cluster = max(1, be_cfg.min_replicas)
                         for cluster_name in self.config.clusters:
                             self.k8s.scale_deployment(
@@ -667,14 +694,11 @@ class DMOSOrchestrator:
                         logger.info(f"  {backend_name} resettato a {min_per_cluster} per cluster")
                     
                     elif not fe_at_minimum and be_total > fe_total * 2:
-                        # Frontend non al minimo ma backend è >2x frontend → scale-down graduale
-                        # Usa max_delta=4 per scale-down backend (più aggressivo del frontend)
                         target_total = max(be_cfg.min_replicas * len(self.config.clusters),
-                                          fe_total)  # Almeno tanti quanti il frontend
+                                          fe_total)
                         if be_total > target_total + 2:
                             logger.info(f"Scale-down graduale backend: {backend_name} "
                                        f"{be_total} → target ~{target_total}")
-                            # Genera evento di scale-down per il backend
                             event = SchedulingEvent(
                                 priority=2,
                                 timestamp=datetime.now(),

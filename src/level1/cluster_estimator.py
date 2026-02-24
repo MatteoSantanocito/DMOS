@@ -26,7 +26,7 @@ class ClusterEstimator:
     """
     Cluster Estimator (deployed in each cluster)
     """
-    CPU_HARD_LIMIT_PCT = 90.0
+    CPU_HARD_LIMIT_PCT = 95.0
     MEMORY_HARD_LIMIT_PCT = 90.0
     MIN_CPU_CORES_AVAILABLE = 0.2
     MIN_MEMORY_GB_AVAILABLE = 0.2
@@ -61,9 +61,11 @@ class ClusterEstimator:
                     f"({self.cluster_config.region} - {self.cluster_config.location})")
         
         # Initialize clients
+        cluster_prom_url = f"http://{self.cluster_config.ip}:30090"
         self.prometheus = PrometheusClient(
-            url=self.config.prometheus.url,
-            timeout=5
+            url=cluster_prom_url,
+            timeout=5,
+            cluster_name=self.cluster_name
         )
         
         self.carbon_client = CarbonClient(

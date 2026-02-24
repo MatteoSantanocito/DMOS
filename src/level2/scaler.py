@@ -46,7 +46,7 @@ class ReplicaScaler:
         min_replicas: int = 1,
         max_replicas: int = 20,
         safety_margin: float = 0.10,
-        max_delta_per_cycle: int = 3,
+        max_delta_per_cycle: int = 4,
         predictor: Optional[TrafficPredictor] = None,
         controller: Optional[PDController] = None
     ):

@@ -1,12 +1,12 @@
 """
-DMOS Scheduler (Centralized with Local Estimation)
-Computes cluster scores locally using centralized Prometheus,
+DMOS Scheduler (Centralized with Per-Cluster Prometheus)
+Computes cluster scores locally using per-cluster Prometheus instances,
 then performs winner determination.
 
-Architecture:
-- Central Prometheus (192.168.1.245:30090) aggregates metrics from all clusters
-- Scheduler creates one ClusterEstimator per cluster locally
-- No need for remote HTTP estimator processes
+Architecture (PROM_MAP, approccio Romano):
+- Each cluster has its own Prometheus (ip:30090)
+- Scheduler creates one PrometheusClient per cluster
+- Each client queries only its cluster's metrics → accurate CPU/memory
 - Score computation happens in-process (faster, no network overhead)
 """
 
@@ -25,7 +25,7 @@ logger = get_logger("DMOSScheduler")
 
 
 # Hard constraint thresholds
-CPU_HARD_LIMIT_PCT = 90.0       # Exclude cluster if CPU utilization > 90%
+CPU_HARD_LIMIT_PCT = 95.0       # Exclude cluster if CPU utilization > 90%
 MEMORY_HARD_LIMIT_PCT = 90.0    # Exclude cluster if memory utilization > 90%
 MIN_CPU_CORES_AVAILABLE = 0.2   # At least 0.2 cores free
 MIN_MEMORY_GB_AVAILABLE = 0.2   # At least 0.2 GB free
@@ -33,12 +33,11 @@ MIN_MEMORY_GB_AVAILABLE = 0.2   # At least 0.2 GB free
 
 class DMOSScheduler:
     """
-    DMOS Centralized Scheduler with Local Score Computation
+    DMOS Centralized Scheduler with Per-Cluster Prometheus
     
-    Instead of querying remote estimator HTTP endpoints, this version
-    computes all scores locally using the centralized Prometheus instance.
-    This eliminates the need to deploy and manage estimator processes
-    on each cluster node.
+    Uses PROM_MAP pattern (like Romano's thesis): each cluster has its own
+    Prometheus that sees only its local pods. This ensures accurate CPU,
+    memory, and traffic metrics per cluster.
     """
     
     def __init__(self, config_path: str = "config"):
@@ -47,11 +46,19 @@ class DMOSScheduler:
         # Winner determination algorithm
         self.winner_det = WinnerDetermination()
         
-        # Centralized Prometheus client
-        self.prometheus = PrometheusClient(
-            url=self.config.prometheus.url,
-            timeout=5
-        )
+        # ── PROM_MAP: per-cluster Prometheus (approccio Romano) ──────
+        self.prom_map = {}
+        self.cluster_configs = self.config.get_all_clusters()
+        
+        for name, cfg in self.cluster_configs.items():
+            prom_url = f"http://{cfg.ip}:30090"
+            self.prom_map[name] = PrometheusClient(
+                url=prom_url,
+                timeout=5,
+                cluster_name=name
+            )
+        for prom in self.prom_map.values():
+            prom._locust_available = False
         
         # Carbon client (shared across all clusters)
         self.carbon_client = CarbonClient(
@@ -68,9 +75,6 @@ class DMOSScheduler:
             }
         )
         
-        # Cluster configurations
-        self.cluster_configs = self.config.get_all_clusters()
-        
         logger.info(f"DMOS Scheduler initialized (local mode) with "
                     f"{len(self.cluster_configs)} clusters")
         for name, cfg in self.cluster_configs.items():
@@ -82,7 +86,7 @@ class DMOSScheduler:
         service_name: str = "frontend"
     ) -> Optional[ClusterMetrics]:
         """
-        Collect metrics for a specific cluster from centralized Prometheus
+        Collect metrics for a specific cluster from its LOCAL Prometheus
         
         Args:
             cluster_name: Cluster to collect metrics for
@@ -96,27 +100,33 @@ class DMOSScheduler:
             logger.error(f"Unknown cluster: {cluster_name}")
             return None
         
+        # ── Get the cluster-specific Prometheus client ────────────────
+        prom = self.prom_map.get(cluster_name)
+        if not prom:
+            logger.error(f"No Prometheus client for cluster: {cluster_name}")
+            return None
+        
         try:
             # ── CPU metrics ───────────────────────────────────────────
-            cpu_available = self.prometheus.get_cpu_available() or 0.0
+            cpu_available = prom.get_cpu_available() or 0.0
             cpu_total = cluster_cfg.cpu_cores
             
             # ── Memory metrics ────────────────────────────────────────
-            memory_available = self.prometheus.get_memory_available_gb() or 0.0
+            memory_available = prom.get_memory_available_gb() or 0.0
             memory_total = cluster_cfg.memory_gb
             
             # ── Traffic metrics (real from Prometheus) ────────────────
             svc_cfg = self.config.get_service(service_name)
             namespace = svc_cfg.namespace if svc_cfg else "online-boutique"
             
-            request_rate = self.prometheus.get_request_rate(
+            request_rate = prom.get_request_rate(
                 service=service_name,
                 namespace=namespace
             )
             
             if request_rate is None:
                 # Fallback: estimate from CPU usage
-                cpu_usage_pct = self.prometheus.get_cpu_usage_percent(
+                cpu_usage_pct = prom.get_cpu_usage_percent(
                     deployment=service_name,
                     namespace=namespace
                 )
@@ -132,7 +142,7 @@ class DMOSScheduler:
             request_rate_max = cpu_total * capacity_per_core
             
             # ── Latency metrics (real from Prometheus) ────────────────
-            latency_p95 = self.prometheus.get_latency_p95(
+            latency_p95 = prom.get_latency_p95(
                 service=service_name,
                 namespace=namespace
             )
@@ -180,14 +190,6 @@ class DMOSScheduler:
         Compute score for a single cluster (locally, no HTTP)
         
         Includes hard constraint checking.
-        
-        Args:
-            cluster_name: Cluster to score
-            service_name: Service name
-            predicted_load: Optional predicted load
-            
-        Returns:
-            Score result dict or None
         """
         metrics = self._collect_cluster_metrics(cluster_name, service_name)
         if metrics is None:
