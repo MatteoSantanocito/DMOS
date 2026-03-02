@@ -1,0 +1,143 @@
+# ============================================================================
+# Prometheus Helm Values — DMOS Per-Cluster Setup
+# ============================================================================
+# Chart: prometheus-community/prometheus (standalone, non kube-prometheus-stack)
+#
+# Install su ogni cluster:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#
+#   # Cluster 1 (kubeconfig cluster1):
+#   helm upgrade --install prometheus prometheus-community/prometheus \
+#     -n monitoring --create-namespace \
+#     -f config/prometheus-helm-values.yaml \
+#     --kubeconfig .kube/cluster1.yaml
+#
+#   # Ripeti per cluster2 e cluster3 con i rispettivi kubeconfig.
+# ============================================================================
+
+server:
+  # ── NodePort 30090 — porta usata da DMOS ──────────────────────────────
+  service:
+    type: NodePort
+    servicePort: 9090
+    nodePort: 30090
+
+  # ── Retention ─────────────────────────────────────────────────────────
+  retention: "3d"
+
+  # ── Risorse (adeguate per cluster 4-core/8GB) ─────────────────────────
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # ── Scrape config aggiuntivi (Hubble + kubelet https) ─────────────────
+  extraScrapeConfigs: |
+
+    # ── Hubble metrics (Cilium L7 HTTP) ─────────────────────────────
+    # Hubble espone metriche sulla porta 9091 tramite il DaemonSet cilium.
+    # Questo job scrape tutti i pod cilium-agent nel namespace kube-system.
+    - job_name: 'hubble'
+      honor_labels: true
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: ['kube-system']
+      relabel_configs:
+        # Seleziona solo i pod cilium (che espongono hubble-metrics su 9091)
+        - source_labels: [__meta_kubernetes_pod_label_k8s_app]
+          regex: cilium
+          action: keep
+        # Usa la porta 9091 invece di quella del container principale
+        - source_labels: [__address__]
+          action: replace
+          target_label: __address__
+          regex: '([^:]+):.*'
+          replacement: '$1:9091'
+        - target_label: __scheme__
+          replacement: http
+        # Label utile per identificare il nodo
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+      # Mantieni solo le metriche Hubble rilevanti
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          regex: 'hubble_(http|drop|tcp|flows|dns).*'
+          action: keep
+
+    # ── kubelet cAdvisor (HTTPS — porta 10250) ────────────────────────
+    # Necessario per container_cpu_usage, container_memory, container_network
+    - job_name: 'kubernetes-cadvisor'
+      honor_labels: true
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          regex: 'container_(cpu|memory|network|fs).*'
+          action: keep
+
+    # ── kubelet metrics (HTTPS) ────────────────────────────────────────
+    - job_name: 'kubernetes-nodes'
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics
+
+# ── kube-state-metrics — OBBLIGATORIO per kube_node_status_capacity ───────
+kube-state-metrics:
+  enabled: true
+  # Esponi solo le metriche che servono a DMOS (riduce carico)
+  metricLabelsAllowlist:
+    - pods=[*]
+    - nodes=[*]
+
+# ── node-exporter — opzionale ma utile per metriche hardware ──────────────
+prometheus-node-exporter:
+  enabled: true
+
+# ── AlertManager — disabilitato (DMOS usa polling, non alerts) ────────────
+alertmanager:
+  enabled: false
+
+# ── Pushgateway — non necessario ──────────────────────────────────────────
+prometheus-pushgateway:
+  enabled: false
+
+# ── ServiceAccount con permessi di lettura cluster ────────────────────────
+serviceAccounts:
+  server:
+    create: true
+rbac:
+  create: true

@@ -120,16 +120,22 @@ class DMOSOrchestrator:
             }
         self.k8s = KubernetesClient(k8s_configs)
         
-        # [ANTI-OSC FIX B] Create scalers with reduced max_delta
-        self.scalers: Dict[str, ReplicaScaler] = {}
+        # Scalers per-cluster: ogni cluster ha il suo ReplicaScaler e il suo
+        # TrafficPredictor. In questo modo la history del traffico è separata
+        # per cluster — il predictor vede la serie storica di un solo cluster
+        # e può calcolare trend corretti.
+        # Struttura: self.scalers[service_name][cluster_name] = ReplicaScaler
+        self.scalers: Dict[str, Dict[str, ReplicaScaler]] = {}
         for svc_name, svc_cfg in self.config.services.items():
-            self.scalers[svc_name] = ReplicaScaler(
-                capacity_per_replica=svc_cfg.capacity_req_per_sec,
-                min_replicas=svc_cfg.min_replicas,
-                max_replicas=svc_cfg.max_replicas,
-                safety_margin=0.15,
-                max_delta_per_cycle=4  
-            )
+            self.scalers[svc_name] = {}
+            for cluster_name in self.config.clusters:
+                self.scalers[svc_name][cluster_name] = ReplicaScaler(
+                    capacity_per_replica=svc_cfg.capacity_req_per_sec,
+                    min_replicas=svc_cfg.min_replicas,
+                    max_replicas=svc_cfg.max_replicas,
+                    safety_margin=0.15,
+                    max_delta_per_cycle=4
+                )
         
         # All cluster names for scale-down of non-allocated clusters
         self.all_cluster_names: list = list(self.config.clusters.keys())
@@ -149,6 +155,14 @@ class DMOSOrchestrator:
         # [FIX D] Asymmetric cooldown tracking
         self.last_scale_down: Dict[str, datetime] = {}
         self.scale_down_cooldown = 60  # seconds — scale-down slower
+
+        # [FIX E] Scale-up protection: block scale-down for N seconds after a scale-up.
+        # Root cause: when traffic ramps up, the predictor triggers a scale-up.
+        # But at the *same* polling cycle the actual reading may still be below
+        # low_threshold (Hubble [5m] lags), so a scale-down event is queued
+        # immediately after. Adding a protection window avoids this oscillation.
+        self.last_scale_up: Dict[str, datetime] = {}
+        self.scale_up_protection_seconds = 120  # seconds
         
         # [FIX C] Dead zone: track previous traffic for stability check
         self.previous_traffic: Dict[str, float] = {}
@@ -156,6 +170,19 @@ class DMOSOrchestrator:
         
         # List of services to monitor
         self.monitored_services = list(self.config.services.keys())
+
+        # Startup grace period: DMOS monitors but does NOT issue any k8s scale
+        # calls for the first N seconds after start. This prevents Cilium BPF
+        # map updates (triggered by pod additions) from disrupting incoming TCP
+        # connections while the test framework is establishing sessions.
+        # Root cause: if DMOS starts at the same time as Locust, the predictor
+        # only has ~22s of history → derivative is large → aggressive scale-up
+        # triggers parallel Cilium BPF updates → new SYNs on NodePorts are
+        # dropped → Windows TCP timeout = 21s → 100% Locust failure.
+        # After 90s the predictor history is long enough that derivatives are
+        # gentle and scale decisions are stable.
+        self.startup_grace_seconds = 90  # seconds
+        self.startup_time = datetime.now()
         
         # ── Co-location: service dependency map ──────────────────────────
         self.service_dependencies: Dict[str, list] = {
@@ -175,67 +202,46 @@ class DMOSOrchestrator:
         logger.info(f"🌐 Clusters: {self.all_cluster_names}")
         logger.info(f"🔧 Anti-oscillation: debounce={self.debounce_seconds}s, "
                      f"max_delta=4, dead_zone={self.dead_zone_pct*100:.0f}%, "
-                     f"scale_down_cooldown={self.scale_down_cooldown}s")
+                     f"scale_down_cooldown={self.scale_down_cooldown}s, "
+                     f"scale_up_protection={self.scale_up_protection_seconds}s")
         if self.colocation_enabled:
             logger.info(f"🔗 Co-location: enabled — dependencies: {self.service_dependencies}")
+        logger.info(f"⏳ Startup grace: {self.startup_grace_seconds}s "
+                    f"(no k8s ops until {self.startup_grace_seconds}s after boot)")
     
     # ── Traffic Helper ─────────────────────────────────────────────────────
     
-    def _get_total_traffic(self, service_name: str) -> float:
+    def _get_per_cluster_traffic(self, service_name: str) -> Dict[str, float]:
         """
-        Get total traffic across all clusters.
-        
-        Priority:
-          1. Locust API (dato GLOBALE, una sola chiamata)
-          2. Somma network bytes da ogni Prometheus locale (fallback)
-        
-        Locust misura il throughput end-to-end di tutto il sistema.
-        È un dato globale — NON va chiamato per-cluster.
+        Misura il traffico reale per-cluster da Prometheus/Hubble locale.
+
+        Ogni istanza di PrometheusClient in prom_map parla con il Prometheus
+        del suo cluster (:30090), che vede solo i pod di quel cluster.
+        Il risultato è il traffico effettivamente servito da ciascun cluster —
+        non una stima proporzionale.
+
+        Con Nginx Ingress + CNP L7 attiva: usa Hubble (hubble_http_requests_total)
+        Fallback: network bytes (container_network_receive_bytes_total / 4000)
+
+        Returns:
+            Dict {cluster_name: rps} — traffico reale per-cluster
         """
-        # ── Try 1: Locust API (global, una sola chiamata) ────────────────
-        if self._locust_available is not False:
-            try:
-                resp = http_requests.get(
-                    f"{self.locust_url}/stats/requests",
-                    timeout=2
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._locust_available = True
-                    
-                    total_rps = data.get("total_rps", 0)
-                    if not total_rps:
-                        for stat in data.get("stats", []):
-                            if stat.get("name") == "Aggregated":
-                                total_rps = stat.get("current_rps", 0)
-                                break
-                    
-                    logger.info(f"✅ Traffic from Locust: {total_rps:.1f} req/s")
-                    # SEMPRE restituire il dato Locust, anche se 0
-                    # (significa che il test non è ancora partito)
-                    return float(total_rps)
-                    
-            except http_requests.exceptions.ConnectionError:
-                self._locust_available = False
-                logger.info("ℹ️ Locust non raggiungibile, uso fallback Prometheus")
-            except Exception as e:
-                logger.debug(f"Locust query failed: {e}")
-        
-        # ── Try 2: Somma da ogni Prometheus locale ───────────────────────
-        total = 0.0
+        per_cluster: Dict[str, float] = {}
         for cname, prom in self.prom_map.items():
-            # Disabilita Locust nel client per evitare chiamate duplicate
-            prom._locust_available = False
             rps = prom.get_request_rate(
                 service=service_name,
                 namespace="online-boutique"
             )
-            if rps and rps > 0:
-                total += rps
-        
+            per_cluster[cname] = max(0.0, rps or 0.0)
+
+        total = sum(per_cluster.values())
         if total > 0:
-            logger.info(f"✅ Traffic from Prometheus (sum {len(self.prom_map)} clusters): {total:.1f} req/s")
-        return total
+            breakdown = ", ".join(f"{c}={v:.1f}" for c, v in per_cluster.items())
+            logger.info(
+                f"✅ Traffic per-cluster [{service_name}]: {breakdown} "
+                f"| totale={total:.1f} req/s"
+            )
+        return per_cluster
     
     # ── Helpers ────────────────────────────────────────────────────────────
     
@@ -253,11 +259,36 @@ class DMOSOrchestrator:
         return abs(current_traffic - prev) / prev < self.dead_zone_pct
     
     def _can_scale_down(self, service_name: str) -> bool:
-        """[FIX D] Returns True if scale-down cooldown has elapsed."""
-        last = self.last_scale_down.get(service_name)
-        if last is None:
-            return True
-        return (datetime.now() - last).total_seconds() >= self.scale_down_cooldown
+        """[FIX D+E] Returns True if scale-down cooldown AND scale-up protection have elapsed.
+
+        Two independent guards:
+          1. Cooldown from last scale-DOWN:  scale_down_cooldown  (60s)
+             Prevents rapid back-to-back scale-downs (oscillation).
+          2. Protection from last scale-UP:  scale_up_protection_seconds (120s)
+             Prevents premature scale-down right after a scale-up event.
+             This is the main fix for Issue 1 (wrong scale-downs during ramp-up).
+        """
+        now = datetime.now()
+
+        # Guard 1: cooldown from last scale-down
+        last_down = self.last_scale_down.get(service_name)
+        if last_down is not None:
+            if (now - last_down).total_seconds() < self.scale_down_cooldown:
+                return False
+
+        # Guard 2: protection from last scale-up
+        last_up = self.last_scale_up.get(service_name)
+        if last_up is not None:
+            elapsed_since_up = (now - last_up).total_seconds()
+            if elapsed_since_up < self.scale_up_protection_seconds:
+                remaining = self.scale_up_protection_seconds - elapsed_since_up
+                logger.debug(
+                    f"  🛡 {service_name}: scale-up protection active "
+                    f"({elapsed_since_up:.0f}s since last up, {remaining:.0f}s left)"
+                )
+                return False
+
+        return True
     
     def _enforce_colocation(self, parent_service: str):
         """
@@ -361,26 +392,44 @@ class DMOSOrchestrator:
         logger.info(f"Scheduling di {service_name} (motivo: {reason})")
         logger.info(f"{'='*70}")
         
-        # ── Traffic: Locust (globale) o Prometheus (per-cluster sum) ──
-        current_traffic = self._get_total_traffic(service_name)
-        
-        if current_traffic is None:
+        # ── Traffic: per-cluster da Prometheus/Hubble ──────────────────
+        per_cluster_traffic = self._get_per_cluster_traffic(service_name)
+        current_traffic = sum(per_cluster_traffic.values())
+
+        if current_traffic == 0:
             svc_cfg_temp = self.config.get_service(service_name)
             current_traffic = svc_cfg_temp.capacity_req_per_sec * svc_cfg_temp.min_replicas * 0.5
+            # Distribuzione fallback uniforme tra cluster
+            n = len(self.prom_map) or 1
+            per_cluster_traffic = {c: current_traffic / n for c in self.prom_map}
             logger.warning(f"No metrics for {service_name}, using conservative fallback: "
                           f"{current_traffic:.1f} req/s "
                           f"(min_replicas={svc_cfg_temp.min_replicas} × "
                           f"capacity={svc_cfg_temp.capacity_req_per_sec} × 0.5)")
-        
+
         self.actual_traffic.labels(service=service_name).set(current_traffic)
-        
+
         traffic_stable = self._is_traffic_stable(service_name, current_traffic)
         prev_t = self.previous_traffic.get(service_name, 0)
         logger.info(f"Current traffic: {current_traffic:.1f} req/s "
                      f"(prev={prev_t:.1f}, stable={traffic_stable})")
         
         self.previous_traffic[service_name] = current_traffic
-        
+
+        # ── Startup grace period ────────────────────────────────────────────
+        # Block ALL k8s scale operations for the first startup_grace_seconds.
+        # Traffic is still measured above so the predictor history accumulates.
+        # Once the grace window expires, DMOS will have a stable derivative
+        # baseline and scale decisions will be much more conservative.
+        elapsed_startup = (datetime.now() - self.startup_time).total_seconds()
+        if elapsed_startup < self.startup_grace_seconds:
+            remaining = self.startup_grace_seconds - elapsed_startup
+            logger.info(
+                f"⏳ Grace period: {elapsed_startup:.0f}/{self.startup_grace_seconds}s "
+                f"({remaining:.0f}s remaining) — traffic observed, no k8s ops"
+            )
+            return
+
         svc_cfg = self.config.get_service(service_name)
         total_replicas = max(
             svc_cfg.min_replicas,
@@ -422,9 +471,10 @@ class DMOSOrchestrator:
                 service=service_name
             ).set(current_reps)
             
-            cluster_traffic = current_traffic * allocation.quota
-            
-            decision = self.scalers[service_name].compute_target_replicas(
+            # Traffico misurato per questo cluster (non più stima proporzionale)
+            cluster_traffic = per_cluster_traffic.get(cluster_name, 0.0)
+
+            decision = self.scalers[service_name][cluster_name].compute_target_replicas(
                 current_replicas=current_reps,
                 current_traffic=cluster_traffic
             )
@@ -477,7 +527,10 @@ class DMOSOrchestrator:
                 
                 if delta < 0:
                     any_scale_down = True
-        
+                elif delta > 0:
+                    # [FIX E] Record scale-up timestamp to activate protection window
+                    self.last_scale_up[service_name] = datetime.now()
+
         if any_scale_down:
             self.last_scale_down[service_name] = datetime.now()
         
@@ -568,22 +621,23 @@ class DMOSOrchestrator:
             try:
                 for service_name in self.monitored_services:
                     
-                    # ── Traffic: Locust (globale) o Prometheus (per-cluster sum) ──
-                    current_traffic = self._get_total_traffic(service_name)
-                    
+                    # ── Traffic: per-cluster da Prometheus/Hubble ──────────
+                    per_cluster_traffic = self._get_per_cluster_traffic(service_name)
+                    current_traffic = sum(per_cluster_traffic.values())
+
                     svc_cfg = self.config.get_service(service_name)
                     current_replicas = self.k8s.get_deployment_replicas(
                         cluster='cluster1',
                         deployment=svc_cfg.deployment_name,
                         namespace=svc_cfg.namespace
                     )
-                    
+
                     if current_replicas is None:
                         current_replicas = 1
-                    
-                    if current_traffic is None or current_traffic == 0:
+
+                    if current_traffic == 0:
                         logger.warning(f"Nessuna metrica Prometheus per {service_name}, uso stima di fallback")
-                        
+
                         fe_reps = 0
                         fe_cfg = self.config.get_service('frontend')
                         for cn in self.config.clusters:
@@ -593,7 +647,7 @@ class DMOSOrchestrator:
                                 namespace=fe_cfg.namespace
                             ) or 0
                             fe_reps += r
-                        
+
                         if fe_reps <= fe_cfg.min_replicas:
                             current_traffic = 5.0
                             logger.info(f"  Fallback: frontend al minimo ({fe_reps}) → backend BASSO ({current_traffic} req/s)")
@@ -603,21 +657,42 @@ class DMOSOrchestrator:
                         else:
                             current_traffic = 25.0
                             logger.info(f"  Fallback: backend OK ({current_replicas} vs fe={fe_reps}) → MEDIO ({current_traffic} req/s)")
-                    
-                    # ── Proactive check: use predictor to look ahead ──────────
+
+                    # ── Proactive check: predictor per-cluster ─────────────
+                    # Usa il predictor del cluster con più traffico come proxy
+                    # per stimare se il sistema nel complesso sta crescendo.
                     predicted_traffic = current_traffic
                     if service_name in self.scalers:
-                        pred_result, _ = self.scalers[service_name].predictor.predict(
-                            current_rate=current_traffic,
-                            timestamp=datetime.now()
-                        )
-                        predicted_traffic = pred_result
+                        now = datetime.now()
+                        best_pred = current_traffic
+                        for cn in self.all_cluster_names:
+                            if cn in self.scalers.get(service_name, {}):
+                                pred_result, _ = self.scalers[service_name][cn].predictor.predict(
+                                    current_rate=per_cluster_traffic.get(cn, 0.0),
+                                    timestamp=now
+                                )
+                                best_pred = max(best_pred, pred_result)
+                        predicted_traffic = best_pred
                     
                     logger.info(f"📊 {service_name}: {current_traffic:.1f} req/s "
                                f"(Predetto: {predicted_traffic:.1f}) | "
                                f"Repliche: {current_replicas}")
-                    
-                    effective_traffic = max(current_traffic, predicted_traffic)
+
+                    # [FIX F] Traffic floor: if actual traffic is near-zero, bypass
+                    # the predictor and use the real value as effective traffic.
+                    # Without this fix, after Locust stops the EMA decays slowly
+                    # (e.g. pred=21.6 for 15+ min) keeping replicas=3 needlessly.
+                    # Threshold: 2 rps ≈ background noise (Kubernetes health-checks).
+                    TRAFFIC_FLOOR_RPS = 2.0
+                    if 0 < current_traffic < TRAFFIC_FLOOR_RPS:
+                        effective_traffic = current_traffic
+                        logger.info(
+                            f"⬇ {service_name}: traffic floor active "
+                            f"({current_traffic:.2f} < {TRAFFIC_FLOOR_RPS} rps) "
+                            f"— predictor bypassed (was {predicted_traffic:.1f})"
+                        )
+                    else:
+                        effective_traffic = max(current_traffic, predicted_traffic)
                     
                     if effective_traffic > self.high_threshold:
                         reason_suffix = ""
@@ -653,6 +728,16 @@ class DMOSOrchestrator:
                         logger.debug(f"{service_name} traffic OK ({effective_traffic:.1f} req/s)")
                         
                 # === BACKEND RESET ===
+                # Skip backend reset during startup grace period
+                _elapsed_gr = (datetime.now() - self.startup_time).total_seconds()
+                if _elapsed_gr < self.startup_grace_seconds:
+                    logger.debug(
+                        f"⏳ Backend reset skipped (grace: {_elapsed_gr:.0f}/"
+                        f"{self.startup_grace_seconds}s)"
+                    )
+                    time.sleep(self.polling_interval)
+                    continue
+
                 fe_cfg = self.config.get_service('frontend')
                 fe_total = 0
                 for cluster_name in self.config.clusters:

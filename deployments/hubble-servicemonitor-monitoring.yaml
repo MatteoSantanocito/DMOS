@@ -1,0 +1,53 @@
+# ServiceMonitor per Hubble metrics nel namespace 'monitoring'
+# ============================================================
+# SCOPO: Fix per Prometheus Operator (kube-prometheus-stack) che
+#        per default NON guarda i ServiceMonitor in kube-system.
+#
+# Il ServiceMonitor 'hubble' creato da Cilium helm è in kube-system.
+# Questo file crea un ServiceMonitor equivalente in 'monitoring',
+# che il Prometheus Operator scopre sempre.
+#
+# APPLICA SU TUTTI I CLUSTER:
+#   kubectl apply -f deployments/hubble-servicemonitor-monitoring.yaml --kubeconfig .kube/cluster1.yaml
+#   kubectl apply -f deployments/hubble-servicemonitor-monitoring.yaml --kubeconfig .kube/cluster2.yaml
+#   kubectl apply -f deployments/hubble-servicemonitor-monitoring.yaml --kubeconfig .kube/cluster3.yaml
+#
+# VERIFICA (dopo ~30s):
+#   python scripts/check_prometheus.py
+# ============================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hubble-metrics
+  namespace: monitoring
+  labels:
+    # Label richiesta da kube-prometheus-stack per scoprire questo ServiceMonitor
+    release: prometheus
+spec:
+  # Guarda il Service 'hubble-metrics' nel namespace kube-system
+  namespaceSelector:
+    matchNames:
+      - kube-system
+
+  # Seleziona il Service hubble-metrics (label standard Cilium 1.16.x)
+  # Se non funziona, controlla con:
+  #   kubectl get svc hubble-metrics -n kube-system --show-labels --kubeconfig .kube/cluster1.yaml
+  # e aggiorna matchExpressions con i label effettivi.
+  selector:
+    matchExpressions:
+      - key: k8s-app
+        operator: In
+        values:
+          - hubble-metrics
+          - hubble
+
+  endpoints:
+    - port: hubble-metrics      # Nome porta nel Service (porta 9965)
+      interval: 15s
+      path: /metrics
+      honorLabels: true         # Mantiene le label Cilium originali
+      relabelings:
+        # Aggiunge node name alle metriche per identificare il nodo sorgente
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node

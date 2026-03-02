@@ -220,7 +220,7 @@ class BrowsingTasks(TaskSet):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Cluster1User(HttpUser):
-    host = "http://192.168.1.245:30007"
+    host = "http://192.168.1.245:30080"  # Nginx Ingress NodePort (era 30007 frontend diretto)
     cluster_name = "cluster1"
     weight = WEIGHTS[0]
     wait_time = between(1, 3)
@@ -228,7 +228,7 @@ class Cluster1User(HttpUser):
 
 
 class Cluster2User(HttpUser):
-    host = "http://192.168.1.246:30007"
+    host = "http://192.168.1.246:30080"  # Nginx Ingress NodePort
     cluster_name = "cluster2"
     weight = WEIGHTS[1]
     wait_time = between(1, 3)
@@ -236,7 +236,7 @@ class Cluster2User(HttpUser):
 
 
 class Cluster3User(HttpUser):
-    host = "http://192.168.1.247:30007"
+    host = "http://192.168.1.247:30080"  # Nginx Ingress NodePort
     cluster_name = "cluster3"
     weight = WEIGHTS[2]
     wait_time = between(1, 3)

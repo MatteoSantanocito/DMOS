@@ -54,9 +54,12 @@ KNOWN_SERVICES = [
 ]
 KNOWN_CLUSTERS = ["cluster1", "cluster2", "cluster3"]
 
-# From config/services.yaml
+# From config/services.yaml — aggiornato con capacity test 27/02/2026
+# frontend: knee point gradual_ramp ~45 rps/pod, burst ~25 rps/pod
+# Per analisi post-hoc (provisioning ratio): usa il valore graduale (osservato)
+# Per DMOS config/services.yaml (scaling trigger): usa valore conservativo (30)
 SERVICE_CAPACITY = {
-    "frontend": 35,
+    "frontend": 45,   # gradual_ramp: 3 pod @ 131 rps = p95 200ms → 43.7 rps/pod
     "cartservice": 10,
     "productcatalogservice": 15,
     "checkoutservice": 5,
@@ -315,38 +318,77 @@ def extract_locust_ts(data: List[dict]) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_prediction_accuracy(traffic: list, predicted: list) -> dict:
-    """Compute MAPE, RMSE, R², directional accuracy."""
-    pairs = [(a, p) for a, p in zip(traffic, predicted) if a > 1 and p > 0]
-    if len(pairs) < 3:
-        return {"mape": None, "rmse": None, "r2": None, "directional_accuracy": None, "n": len(pairs)}
+    """Compute MAPE, RMSE, R², directional accuracy.
 
-    actuals = [a for a, _ in pairs]
-    preds = [p for _, p in pairs]
+    Two MAPE variants are computed:
+    - mape_overall:     All snapshots where actual > 1 rps and pred > 0.
+                        Inflated by tail (actual→0, pred still EMA-high).
+    - mape_active:      Only snapshots where actual >= max(5, peak*0.10).
+                        Tail excluded → more meaningful for thesis.
+    The primary metric reported is mape_active (clearly labelled).
+    """
+    peak = max(traffic) if traffic else 1.0
 
-    # MAPE
-    ape = [abs(p - a) / a * 100 for a, p in pairs]
-    mape = sum(ape) / len(ape)
+    # --- Overall pairs (same filter as before for backward compat) ---
+    pairs_all = [(a, p) for a, p in zip(traffic, predicted) if a > 1 and p > 0]
 
-    # RMSE
-    sq_errors = [(p - a) ** 2 for a, p in pairs]
+    # --- Active-phase pairs (exclude tail + warmup) ---
+    active_threshold = max(5.0, peak * 0.10)
+    pairs_active = [(a, p) for a, p in zip(traffic, predicted)
+                    if a >= active_threshold and p > 0]
+
+    if len(pairs_all) < 3:
+        return {
+            "mape": None, "mape_active": None,
+            "rmse": None, "r2": None, "directional_accuracy": None,
+            "n": len(pairs_all), "n_active": len(pairs_active),
+            "active_threshold": active_threshold,
+        }
+
+    def _compute_mape(pairs):
+        return sum(abs(p - a) / a * 100 for a, p in pairs) / len(pairs)
+
+    mape_overall = _compute_mape(pairs_all)
+    mape_active = _compute_mape(pairs_active) if len(pairs_active) >= 3 else None
+
+    actuals = [a for a, _ in pairs_all]
+    preds   = [p for _, p in pairs_all]
+
+    # RMSE (overall)
+    sq_errors = [(p - a) ** 2 for a, p in pairs_all]
     rmse = math.sqrt(sum(sq_errors) / len(sq_errors))
 
-    # R²
+    # R² (overall)
     mean_a = sum(actuals) / len(actuals)
-    ss_res = sum((a - p) ** 2 for a, p in pairs)
+    ss_res = sum((a - p) ** 2 for a, p in pairs_all)
     ss_tot = sum((a - mean_a) ** 2 for a in actuals)
     r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
-    # Directional accuracy (did prediction go in the same direction as actual?)
+    # Directional accuracy (active pairs preferred for accuracy)
+    pairs_dir = pairs_active if len(pairs_active) >= 3 else pairs_all
     dir_correct = 0
-    for i in range(1, len(pairs)):
-        a_dir = pairs[i][0] - pairs[i - 1][0]
-        p_dir = pairs[i][1] - pairs[i - 1][1]
+    for i in range(1, len(pairs_dir)):
+        a_dir = pairs_dir[i][0] - pairs_dir[i - 1][0]
+        p_dir = pairs_dir[i][1] - pairs_dir[i - 1][1]
         if (a_dir >= 0 and p_dir >= 0) or (a_dir < 0 and p_dir < 0):
             dir_correct += 1
-    dir_acc = dir_correct / (len(pairs) - 1) * 100 if len(pairs) > 1 else 0
+    dir_acc = dir_correct / (len(pairs_dir) - 1) * 100 if len(pairs_dir) > 1 else 0
 
-    return {"mape": mape, "rmse": rmse, "r2": r2, "directional_accuracy": dir_acc, "n": len(pairs)}
+    # Primary reported MAPE = active (if available), else overall
+    mape_primary = mape_active if mape_active is not None else mape_overall
+
+    return {
+        "mape": mape_primary,           # primary (active-phase, tail excluded)
+        "mape_overall": mape_overall,   # incl. tail — for reference
+        "mape_active": mape_active,     # same as mape (explicit alias)
+        "rmse": rmse,
+        "r2": r2,
+        "directional_accuracy": dir_acc,
+        "n": len(pairs_all),
+        "n_active": len(pairs_active),
+        "active_threshold": active_threshold,
+        "peak_traffic": peak,
+    }
 
 def compute_provisioning_ratio(traffic: list, replicas: list, capacity_per_replica: float,
                                 min_replicas_total: int = 6) -> dict:
@@ -735,16 +777,29 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
     header("6. PREDICTION ACCURACY")
     pa = stats.get("prediction_accuracy", {})
     if pa.get("mape") is not None:
-        kv("Samples:", str(pa["n"]))
-        kv("MAPE:", f"{pa['mape']:.1f}%")
+        active_thr = pa.get("active_threshold", 0)
+        peak = pa.get("peak_traffic", 0)
+        n_total = pa.get("n", 0)
+        n_active = pa.get("n_active", 0)
+        kv("Peak traffic:", f"{peak:.1f} req/s")
+        kv("Active-phase threshold:", f"≥ {active_thr:.1f} req/s  (max(5, peak×10%))")
+        kv("Samples (total / active):", f"{n_total} / {n_active}")
+        # Primary metric: active-only MAPE
+        mape_act = pa.get("mape_active")
+        mape_ov  = pa.get("mape_overall")
+        if mape_act is not None:
+            kv("MAPE (active-phase):", f"{mape_act:.1f}%  ← primary metric")
+        if mape_ov is not None:
+            kv("MAPE (incl. tail):", f"{mape_ov:.1f}%  (inflated by EMA decay after traffic ends)")
         kv("RMSE:", f"{pa['rmse']:.2f} req/s")
         kv("R²:", f"{pa['r2']:.4f}")
         kv("Directional accuracy:", f"{pa['directional_accuracy']:.1f}%")
-        if pa["mape"] < 15:
-            print(f"    ✅ Excellent prediction accuracy (<15% MAPE)")
-        elif pa["mape"] < 25:
+        primary = mape_act if mape_act is not None else mape_ov
+        if primary < 15:
+            print(f"    ✅ Excellent prediction accuracy (<15% active-MAPE)")
+        elif primary < 25:
             print(f"    ✓  Good prediction accuracy")
-        elif pa["mape"] < 40:
+        elif primary < 40:
             print(f"    ⚠️  Fair prediction accuracy — may need tuning")
         else:
             print(f"    ❌ Poor prediction accuracy — review predictor config")
@@ -1185,10 +1240,12 @@ def generate_page4_response(data: list, fe_ts: dict, locust_ts: dict, stats: dic
     tts = stats.get("tts", {})
     osc = stats.get("oscillation", {})
 
+    # Use active-MAPE for KPI dashboard (more meaningful than tail-inflated overall)
+    mape_kpi = pa.get("mape_active") or pa.get("mape")
     kpis = [
         ("Metric", "Value", "Status"),
-        ("MAPE", f"{pa.get('mape', 'N/A'):.1f}%" if pa.get('mape') else "N/A",
-         "✅" if pa.get('mape') and pa['mape'] < 20 else "⚠️" if pa.get('mape') else "—"),
+        ("MAPE (active)", f"{mape_kpi:.1f}%" if mape_kpi else "N/A",
+         "✅" if mape_kpi and mape_kpi < 20 else "⚠️" if mape_kpi else "—"),
         ("R²", f"{pa.get('r2', 'N/A'):.3f}" if pa.get('r2') is not None else "N/A",
          "✅" if pa.get('r2') and pa['r2'] > 0.7 else "⚠️" if pa.get('r2') else "—"),
         ("Proactive %", f"{tts.get('proactive_pct', 0):.0f}%",
@@ -1371,7 +1428,8 @@ def analyze(filepath: str):
     stats["prediction_accuracy"] = compute_prediction_accuracy(fe_ts["traffic"], fe_ts["predicted"])
     stats["provisioning"] = compute_provisioning_ratio(
         fe_ts["traffic"], fe_ts["total_replicas"], SERVICE_CAPACITY["frontend"],
-        min_replicas_total=6
+        min_replicas_total=3   # 1 replica × 3 cluster = floor HA minimo
+        # (era 6, ma 6×45=270 > max_traffic=179 → ratio sempre <1 = artefatto)
     )
     stats["tts"] = compute_time_to_scale(fe_ts["timestamps"], fe_ts["traffic"], fe_ts["total_replicas"],
                                           predicted=fe_ts.get("predicted"), capacity_per_replica=SERVICE_CAPACITY["frontend"])

@@ -1,62 +1,107 @@
-# Configurazione Prometheus queries
+# ============================================================================
+# Configurazione metriche — DMOS Multi-Cluster (Hubble/Cilium, NO Istio)
+# ============================================================================
+# Questo file documenta le query PromQL effettivamente usate da DMOS.
+# Il codice usa prometheus_client.py con catena di fallback (non questo file).
+# ============================================================================
+
 prometheus:
-  url: "http://192.168.1.245:30090"
+  # URL del Prometheus centralizzato (legacy — non più usato da DMOS v2)
+  # DMOS usa ora PROM_MAP: un client per cluster, URL derivato da clusters.yaml
+  # cluster1: http://192.168.1.245:30090
+  # cluster2: http://192.168.1.246:30090
+  # cluster3: http://192.168.1.247:30090
+  url: "http://192.168.1.245:30090"  # riferimento cluster1 per backward compat
   timeout_seconds: 5
-  
-  # Queries per metriche cluster
+
+  # ── Query effettivamente usate da prometheus_client.py ────────────────
+  # (documentazione — il codice le costruisce dinamicamente)
   queries:
-    # CPU disponibile
+
+    # CPU disponibile per cluster (kube-state-metrics + cAdvisor)
+    # Restituisce core disponibili = totale - usato
     cpu_available: |
-      sum(kube_node_status_capacity{resource="cpu"}) 
-      - sum(kube_pod_container_resource_requests{resource="cpu"})
-      by (node)
-    
-    # Memory disponibile
+      sum(kube_node_status_capacity{resource="cpu"})
+      -
+      sum(rate(container_cpu_usage_seconds_total{image!=""}[2m]))
+
+    # Memoria disponibile per cluster
     memory_available: |
-      sum(kube_node_status_capacity{resource="memory"}) 
-      - sum(kube_pod_container_resource_requests{resource="memory"})
-      by (node)
-    
-    # Request rate per servizio (da Istio/Envoy se disponibile)
-    request_rate: |
-      sum(rate(istio_requests_total{destination_service_name="{{service}}"}[5m]))
-    
-    # Latency p95 per servizio
-    latency_p95: |
-      histogram_quantile(0.95, 
-        sum(rate(istio_request_duration_milliseconds_bucket{destination_service_name="{{service}}"}[5m])) 
-        by (le)
-      )
-    
-    # CPU usage per deployment
-    cpu_usage: |
+      sum(kube_node_status_capacity{resource="memory"})
+      -
+      sum(container_memory_working_set_bytes{image!=""})
+
+    # Request rate — catena di fallback in ordine di priorità:
+    # 1. Hubble httpV2 (Cilium >= 1.12, L7 HTTP metrics abilitato)
+    request_rate_hubble_new: |
+      sum(rate(hubble_http_requests_total{
+        destination_namespace="online-boutique",
+        traffic_direction="INGRESS"
+      }[1m]))
+
+    # 2. Hubble vecchio formato (Cilium < 1.12)
+    request_rate_hubble_old: |
+      sum(rate(hubble_http_requests_total{
+        source="reserved:ingress"
+      }[1m]))
+
+    # 3. Fallback: stima da network bytes (sempre disponibile)
+    # NOTA: stima ruvida — 1 req ≈ 4000 bytes medi per Online Boutique
+    request_rate_network_fallback: |
+      sum(rate(container_network_receive_bytes_total{
+        namespace="online-boutique",
+        pod=~"frontend.*"
+      }[1m])) / 4000
+
+    # Latency p95 — Hubble httpV2 (formato nuovo)
+    latency_p95_hubble_new: |
+      histogram_quantile(0.95,
+        sum(rate(hubble_http_request_duration_seconds_bucket{
+          destination_namespace="online-boutique",
+          destination_workload="frontend",
+          traffic_direction="INGRESS"
+        }[5m])) by (le)
+      ) * 1000
+
+    # CPU usage per deployment specifico
+    cpu_usage_deployment: |
       sum(rate(container_cpu_usage_seconds_total{
         namespace="online-boutique",
         pod=~"{{deployment}}-.*"
-      }[5m])) by (pod)
-    
+      }[5m]))
+
     # Memory usage per deployment
-    memory_usage: |
+    memory_usage_deployment: |
       sum(container_memory_working_set_bytes{
         namespace="online-boutique",
         pod=~"{{deployment}}-.*"
-      }) by (pod)
+      })
 
-# Configurazione Hubble (Cilium)
+# ── Configurazione Hubble (Cilium) ────────────────────────────────────────
 hubble:
-  ui_url: "http://192.168.1.245:30093"
-  
-  # Metriche cross-cluster latency
-  metrics:
-    - name: "cross_cluster_latency"
-      query: "hubble_flows_processed_total"
-      labels: ["source_cluster", "destination_cluster"]
+  # Porta metriche Hubble (esposta da ogni pod cilium-agent)
+  metrics_port: 9091
 
-# Configurazione Grafana
+  # UI Hubble (solo visualizzazione, non usata per metriche da DMOS)
+  ui_url: "http://192.168.1.245:30093"
+
+  # Metriche abilitate via cilium-config (vedi scripts/enable_hubble_http.sh)
+  metrics_config: "httpV2:exemplars=true;labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction,destination_port drop tcp flow icmp dns"
+
+  # Label usate da DMOS nelle query Hubble httpV2
+  expected_labels:
+    - destination_namespace    # namespace del pod destinazione
+    - destination_workload     # nome deployment destinazione
+    - source_namespace         # namespace sorgente
+    - source_workload          # nome deployment sorgente
+    - traffic_direction        # "INGRESS" o "EGRESS"
+    - method                   # GET, POST, etc.
+    - protocol                 # HTTP/1.1, HTTP/2.0
+    - status_code              # 200, 404, 500, etc.
+
+# ── Configurazione Grafana ────────────────────────────────────────────────
 grafana:
   url: "http://192.168.1.245:30091"
-  
-  # Dashboard IDs (da creare)
   dashboards:
     - name: "DMOS Overview"
       uid: "dmos-overview"

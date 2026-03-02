@@ -13,13 +13,18 @@ services:
         cpu: "200m"
         memory: "128Mi"
     
-    # Capacità stimata
-    capacity_req_per_sec: 50
-    
-    # SLA requirements
+    # Capacità stimata (misurata con capacity test graduale 27/02/2026)
+    # Flash crowd (burst): ~20-28 rps/pod  — usa questo per scenari worst-case
+    # Gradual ramp (DMOS): ~43-47 rps/pod  — usa questo per gradual_ramp
+    # Valore raccomandato: 30 rps (80% del burst knee) → scala prima che si saturi
+    # per ottenere scaling proattivo su scenari flash crowd + gradual
+    capacity_req_per_sec: 30
+
+    # SLA requirements (aggiornati con dati reali 27/02/2026)
+    # Baseline latenza: p95=60-70ms (idle), p95=130-200ms (under load)
     sla:
-      latency_p95_ms: 100
-      latency_p99_ms: 200
+      latency_p95_ms: 200  # era 100, ma baseline idle è già 60-70ms
+      latency_p99_ms: 500
       availability_percent: 99.9
     
     # Power consumption (stimato)

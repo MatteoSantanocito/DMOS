@@ -1,0 +1,384 @@
+
+======================================================================
+Timestamp: 2026-02-28T17:29:10.926606
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 396.0
+python_gc_objects_collected_total{generation="1"} 43.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 209.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster2",service="cartservice"} 3.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster1",service="productcatalogservice"} 4.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster2",service="cartservice"} 2.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="productcatalogservice"} 3.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="cartservice"} 2.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster1",service="cartservice"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster2",service="cartservice"} 1.7722958884689677e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster1",service="productcatalogservice"} 1.7722958888615332e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster2",service="cartservice"} 1.7722958890091693e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="productcatalogservice"} 1.7722958903317735e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster2",service="productcatalogservice"} 1.7722959639868915e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster2",service="productcatalogservice"} 1.7722959989879055e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="cartservice"} 1.7722960360902238e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster1",service="cartservice"} 1.772296071962221e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster2",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster1",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster3",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster2",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster1",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster1",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster3",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster2",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster3",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster2",service="checkoutservice"} 1.0
+dmos_current_replicas{cluster="cluster2",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster1",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster1",service="checkoutservice"} 1.0
+dmos_current_replicas{cluster="cluster3",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster3",service="checkoutservice"} 1.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster2",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster1",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster3",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster2",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="checkoutservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="checkoutservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="checkoutservice"} 1.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster2",service="frontend"} 0.46774895675126515
+dmos_cluster_score{cluster="cluster2",service="cartservice"} 0.46686604401694887
+dmos_cluster_score{cluster="cluster2",service="productcatalogservice"} 0.46709862758009085
+dmos_cluster_score{cluster="cluster2",service="checkoutservice"} 0.4667800545541021
+dmos_cluster_score{cluster="cluster2",service="recommendationservice"} 0.46670058122940516
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster2",service="frontend"} 0.023094462540716617
+dmos_predicted_traffic{cluster="cluster2",service="cartservice"} 0.10139748372005918
+dmos_predicted_traffic{cluster="cluster2",service="productcatalogservice"} 0.10470526125691985
+dmos_predicted_traffic{cluster="cluster2",service="checkoutservice"} 0.046185146421171795
+dmos_predicted_traffic{cluster="cluster2",service="recommendationservice"} 0.10128883502320495
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 0.07598443936655472
+dmos_actual_traffic{service="cartservice"} 0.25923358354222403
+dmos_actual_traffic{service="productcatalogservice"} 0.27750112264054994
+dmos_actual_traffic{service="checkoutservice"} 0.1518895494215619
+dmos_actual_traffic{service="recommendationservice"} 0.30662562950582645
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="cartservice"} 33.76847696304321
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 8.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 40.406070709228516
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="productcatalogservice"} 33.94271755218506
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="recommendationservice"} 33.360069274902344
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="checkoutservice"} 33.349445104599
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="cartservice"} 1.7722958891490438e+09
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7722958891586876e+09
+dmos_scheduling_duration_seconds_created{service="productcatalogservice"} 1.7722958904258354e+09
+dmos_scheduling_duration_seconds_created{service="recommendationservice"} 1.772295893322944e+09
+dmos_scheduling_duration_seconds_created{service="checkoutservice"} 1.7722958933259482e+09
+
+
+======================================================================
+Timestamp: 2026-02-28T17:29:32.037316
+======================================================================
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 396.0
+python_gc_objects_collected_total{generation="1"} 43.0
+python_gc_objects_collected_total{generation="2"} 0.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 209.0
+python_gc_collections_total{generation="1"} 18.0
+python_gc_collections_total{generation="2"} 1.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="10",version="3.12.10"} 1.0
+# HELP dmos_scaling_events_total Total scaling events
+# TYPE dmos_scaling_events_total counter
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster2",service="cartservice"} 3.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster1",service="productcatalogservice"} 4.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster2",service="cartservice"} 2.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="productcatalogservice"} 3.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_scaling_events_total{action="scale_down",cluster="cluster1",service="cartservice"} 2.0
+dmos_scaling_events_total{action="scale_up_colocation",cluster="cluster1",service="cartservice"} 2.0
+# HELP dmos_scaling_events_created Total scaling events
+# TYPE dmos_scaling_events_created gauge
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster2",service="cartservice"} 1.7722958884689677e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster1",service="productcatalogservice"} 1.7722958888615332e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster2",service="cartservice"} 1.7722958890091693e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="productcatalogservice"} 1.7722958903317735e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster2",service="productcatalogservice"} 1.7722959639868915e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster2",service="productcatalogservice"} 1.7722959989879055e+09
+dmos_scaling_events_created{action="scale_down",cluster="cluster1",service="cartservice"} 1.7722960360902238e+09
+dmos_scaling_events_created{action="scale_up_colocation",cluster="cluster1",service="cartservice"} 1.772296071962221e+09
+# HELP dmos_current_replicas Current replica count per cluster
+# TYPE dmos_current_replicas gauge
+dmos_current_replicas{cluster="cluster2",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster1",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster3",service="frontend"} 1.0
+dmos_current_replicas{cluster="cluster2",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster1",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster1",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster3",service="cartservice"} 2.0
+dmos_current_replicas{cluster="cluster2",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster3",service="productcatalogservice"} 2.0
+dmos_current_replicas{cluster="cluster2",service="checkoutservice"} 1.0
+dmos_current_replicas{cluster="cluster2",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster1",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster1",service="checkoutservice"} 1.0
+dmos_current_replicas{cluster="cluster3",service="recommendationservice"} 1.0
+dmos_current_replicas{cluster="cluster3",service="checkoutservice"} 1.0
+# HELP dmos_target_replicas Target replica count
+# TYPE dmos_target_replicas gauge
+dmos_target_replicas{cluster="cluster2",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster1",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster3",service="frontend"} 1.0
+dmos_target_replicas{cluster="cluster2",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="cartservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="productcatalogservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="checkoutservice"} 1.0
+dmos_target_replicas{cluster="cluster2",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster1",service="checkoutservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="recommendationservice"} 1.0
+dmos_target_replicas{cluster="cluster3",service="checkoutservice"} 1.0
+# HELP dmos_cluster_score Multi-objective score
+# TYPE dmos_cluster_score gauge
+dmos_cluster_score{cluster="cluster2",service="frontend"} 0.46774895675126515
+dmos_cluster_score{cluster="cluster2",service="cartservice"} 0.46686604401694887
+dmos_cluster_score{cluster="cluster2",service="productcatalogservice"} 0.46709862758009085
+dmos_cluster_score{cluster="cluster2",service="checkoutservice"} 0.4667800545541021
+dmos_cluster_score{cluster="cluster2",service="recommendationservice"} 0.46670058122940516
+# HELP dmos_predicted_traffic Predicted traffic
+# TYPE dmos_predicted_traffic gauge
+dmos_predicted_traffic{cluster="cluster2",service="frontend"} 0.023094462540716617
+dmos_predicted_traffic{cluster="cluster2",service="cartservice"} 0.10139748372005918
+dmos_predicted_traffic{cluster="cluster2",service="productcatalogservice"} 0.10470526125691985
+dmos_predicted_traffic{cluster="cluster2",service="checkoutservice"} 0.046185146421171795
+dmos_predicted_traffic{cluster="cluster2",service="recommendationservice"} 0.10128883502320495
+# HELP dmos_actual_traffic Actual traffic
+# TYPE dmos_actual_traffic gauge
+dmos_actual_traffic{service="frontend"} 0.07598443936655472
+dmos_actual_traffic{service="cartservice"} 0.25923358354222403
+dmos_actual_traffic{service="productcatalogservice"} 0.27750112264054994
+dmos_actual_traffic{service="checkoutservice"} 0.1518895494215619
+dmos_actual_traffic{service="recommendationservice"} 0.30662562950582645
+# HELP dmos_scheduling_duration_seconds Scheduling duration
+# TYPE dmos_scheduling_duration_seconds histogram
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="cartservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="cartservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="cartservice"} 33.76847696304321
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="frontend"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="frontend"} 1.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="frontend"} 8.0
+dmos_scheduling_duration_seconds_count{service="frontend"} 8.0
+dmos_scheduling_duration_seconds_sum{service="frontend"} 40.406070709228516
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="productcatalogservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="productcatalogservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="productcatalogservice"} 33.94271755218506
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="recommendationservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="recommendationservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="recommendationservice"} 33.360069274902344
+dmos_scheduling_duration_seconds_bucket{le="0.005",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.01",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.025",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.05",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.075",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.1",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.25",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.5",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="0.75",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="1.0",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="2.5",service="checkoutservice"} 0.0
+dmos_scheduling_duration_seconds_bucket{le="5.0",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="7.5",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="10.0",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_bucket{le="+Inf",service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_count{service="checkoutservice"} 8.0
+dmos_scheduling_duration_seconds_sum{service="checkoutservice"} 33.349445104599
+# HELP dmos_scheduling_duration_seconds_created Scheduling duration
+# TYPE dmos_scheduling_duration_seconds_created gauge
+dmos_scheduling_duration_seconds_created{service="cartservice"} 1.7722958891490438e+09
+dmos_scheduling_duration_seconds_created{service="frontend"} 1.7722958891586876e+09
+dmos_scheduling_duration_seconds_created{service="productcatalogservice"} 1.7722958904258354e+09
+dmos_scheduling_duration_seconds_created{service="recommendationservice"} 1.772295893322944e+09
+dmos_scheduling_duration_seconds_created{service="checkoutservice"} 1.7722958933259482e+09
+

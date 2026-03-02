@@ -78,15 +78,21 @@ class PDController:
         if timestamp is None:
             timestamp = datetime.now()
         
-        # Calculate error (normalized)
+        # When no traffic is expected, PD has no useful signal:
+        # skip control and reset state to prevent D-term overshoot
+        # when traffic later resumes (stale last_error would fire spurious delta)
         if predicted_traffic == 0:
-            error = 0.0
-        else:
-            error = (actual_traffic - predicted_traffic) / predicted_traffic
-        
+            self.state.last_error = None
+            self.state.last_timestamp = None
+            logger.info("PD control: predicted=0, skip (state reset) -> delta=0")
+            return 0
+
+        # Calculate error (normalized)
+        error = (actual_traffic - predicted_traffic) / predicted_traffic
+
         # Proportional term
         p_term = self.kp * error
-        
+
         # Derivative term
         d_term = 0.0
         if self.state.last_error is not None and self.state.last_timestamp is not None:
@@ -94,24 +100,24 @@ class PDController:
             if dt > 0:
                 d_error = error - self.state.last_error
                 d_term = self.kd * (d_error / dt)
-        
+
         # Total output
         output = p_term + d_term
-        
+
         # Apply limits (anti-windup)
         output = max(self.output_min, min(self.output_max, output))
-        
+
         # Round to integer replicas
         replica_delta = int(round(output))
-        
+
         logger.info(f"PD control: error={error:.3f}, "
                    f"P={p_term:.2f}, D={d_term:.2f}, "
                    f"output={output:.2f}, delta={replica_delta}")
-        
+
         # Update state
         self.state.last_error = error
         self.state.last_timestamp = timestamp
-        
+
         return replica_delta
     
     def reset(self):

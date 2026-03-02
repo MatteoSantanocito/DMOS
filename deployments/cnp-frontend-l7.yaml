@@ -1,0 +1,54 @@
+# CiliumNetworkPolicy — Frontend: restrizione solo sull'ingress
+#
+# SCOPO: bloccare l'accesso diretto esterno al frontend (world → pod:8080),
+#        forzando tutto il traffico esterno a passare da Nginx Ingress (30080).
+#
+# DESIGN:
+#   - Nessuna sezione egress → Cilium default = allow all egress
+#     Ragione: toEntities:cluster copre solo pod IP (Cilium-managed identity),
+#     NON i Kubernetes Service ClusterIP (10.43.0.0/16). Restringere l'egress
+#     romperebbe DNS (10.43.0.10:53) e tutte le connessioni gRPC ai backend
+#     (che passano per ClusterIP). Rimuovere l'egress è la soluzione corretta
+#     per cluster k3s con pod CIDR e service CIDR diversi tra i cluster.
+#
+#   - Ingress: solo traffico intra-cluster (fromEntities: cluster + host).
+#     fromEntities:cluster copre pod di QUALSIASI namespace (incluso ingress-nginx),
+#     a differenza di fromEndpoints:{} che è namespace-scoped.
+#     Il traffico world (esterno) è bloccato → solo Nginx può raggiungere il frontend.
+#
+# Applicare su tutti i cluster:
+#   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster1
+#   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster2
+#   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster3
+#
+# Rollback (torna al default allow-all):
+#   kubectl delete cnp l7-visibility-frontend -n online-boutique \
+#     --context cluster1 --context cluster2 --context cluster3
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: l7-visibility-frontend
+  namespace: online-boutique
+spec:
+  endpointSelector:
+    matchLabels:
+      app: frontend
+
+  # ── Nessuna sezione egress → default allow all ────────────────────────────
+  # Il frontend può raggiungere: DNS (kube-dns), backend gRPC (via ClusterIP),
+  # internet (CDN, immagini esterne). Nessuna restrizione necessaria lato egress.
+
+  # ── Ingress ──────────────────────────────────────────────────────────────
+  ingress:
+  # Solo traffico intra-cluster: Nginx Ingress (ingress-nginx namespace),
+  # microservizi interni, DMOS, kubelet health check.
+  # Traffico world (192.168.x.x esterno) → BLOCCATO: deve passare da Nginx.
+  - fromEntities:
+    - cluster
+    - host
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP

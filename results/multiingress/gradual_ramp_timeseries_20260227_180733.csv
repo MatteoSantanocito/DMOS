@@ -1,0 +1,4 @@
+timestamp,cluster1_count,cluster1_avg_ms,cluster1_p95_ms,cluster2_count,cluster2_avg_ms,cluster2_p95_ms,cluster3_count,cluster3_avg_ms,cluster3_p95_ms
+18:07:10,66,70.8,221.7,49,65.3,104.0,43,64.1,112.6
+18:07:20,93,49.0,61.3,80,47.5,52.5,64,47.8,58.5
+18:07:30,36,47.4,52.5,30,46.3,53.0,20,49.7,93.5

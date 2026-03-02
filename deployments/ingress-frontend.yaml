@@ -1,0 +1,52 @@
+# Nginx Ingress Controller — Deploy per bare-metal (ogni cluster)
+#
+# Prerequisito: Nginx Ingress Controller installato nel namespace ingress-nginx.
+# Comando di installazione:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/baremetal/deploy.yaml
+#
+# Dopo il deploy, fissa la porta NodePort a 30080:
+#   kubectl patch svc ingress-nginx-controller -n ingress-nginx \
+#     --type='json' \
+#     -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
+#
+# Verifica porta attiva:
+#   kubectl get svc -n ingress-nginx ingress-nginx-controller
+#
+# Applicare su tutti i cluster:
+#   kubectl apply -f deployments/ingress-frontend.yaml --context cluster1
+#   kubectl apply -f deployments/ingress-frontend.yaml --context cluster2
+#   kubectl apply -f deployments/ingress-frontend.yaml --context cluster3
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: online-boutique
+  annotations:
+    # Usa il Nginx Ingress Controller (non altri controller come Traefik)
+    kubernetes.io/ingress.class: "nginx"
+    # Preserva l'IP sorgente originale nei log/header (utile per debug)
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+    # Timeout generosi per evitare false disconnessioni durante i test di carico
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    # Disabilita il buffering per avere latenze più accurate nei test
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Forza Nginx a usare il ClusterIP del Service invece dei pod IP diretti.
+    # Necessario con Cilium L7 policy: il proxy Envoy non gestisce correttamente
+    # connessioni pod→pod sullo stesso nodo quando il sorgente bypassa il ClusterIP.
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80

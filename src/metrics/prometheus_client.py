@@ -187,54 +187,38 @@ class PrometheusClient:
     def get_request_rate(self, service: str, namespace: str = "default") -> float:
         """
         Get request rate for service using multi-source fallback chain.
-        
+        Ogni istanza di PrometheusClient parla con il Prometheus del suo cluster
+        (:30090), quindi tutte le metriche restituite sono per-cluster.
+
         Priority:
-          Try 0: Locust API (real measured throughput during load tests)
-          Try 1: Hubble HTTP metrics (Cilium eBPF, per-cluster)
-          Try 2: Istio metrics
-          Try 3: HTTP generic metrics
-          Try 4: Container network bytes (per-cluster, calibrated)
-        
+          Try 1: Hubble HTTP metrics (Cilium L7, richiede Nginx Ingress + CNP L7)
+                 → metrica più precisa: conta richieste HTTP reali
+          Try 2: Istio metrics (se Istio installato)
+          Try 3: HTTP generic metrics (se l'app le espone)
+          Try 4: Container network bytes (fallback sempre disponibile, stima empirica)
+
         Returns:
-          Request rate in req/s, or 0.0 if no source available
+          Request rate in req/s per questo cluster, o 0.0 se nessuna fonte disponibile.
         """
-        
-        # ── Try 0: Locust API (traffico reale misurato) ─────────────────
-        # REGOLA: se Locust è raggiungibile, SEMPRE usare il suo dato.
-        if self._locust_available is not False:
-            try:
-                resp = requests.get(
-                    f"{self.locust_url}/stats/requests",
-                    timeout=2
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._locust_available = True
-                    
-                    total_rps = data.get("total_rps", 0)
-                    
-                    if not total_rps:
-                        for stat in data.get("stats", []):
-                            if stat.get("name") == "Aggregated":
-                                total_rps = stat.get("current_rps", 0)
-                                break
-                    
-                    logger.info(f"✅ Traffic from Locust ({self.cluster_name}): {total_rps:.1f} req/s")
-                    return float(total_rps)
-                        
-            except requests.exceptions.ConnectionError:
-                self._locust_available = False
-                logger.info(f"ℹ️ Locust non raggiungibile, uso fallback Prometheus ({self.cluster_name})")
-            except Exception as e:
-                logger.debug(f"Locust query failed: {e}")
-        
-        # ── Try 1: Hubble HTTP metrics (Cilium eBPF) ───────────────────
-        query = f'''
-        sum(rate(hubble_http_requests_total{{
-            source="reserved:ingress"
-        }}[1m]))
-        '''
-        
+
+        # ── Try 1: Hubble HTTP metrics (Cilium L7 via Nginx Ingress) ────
+        # Disponibile dopo: deploy Nginx Ingress + CNP frontend con rules: http.
+        # Il traffico arriva da Nginx (pod interno) → Envoy attivo → Hubble conta.
+        #
+        # NOTA [5m]: Hubble-metrics scrape interval ≈ 60s → serve finestra ≥ 2× scrape
+        # per garantire almeno 2 data point a rate(). Con [1m] il timing è troppo
+        # stretto (1 solo sample → rate()=0 → fallback intermittente su cluster1).
+        # [5m] dà 4-5 campioni → rate() stabile e coerente su tutti i cluster.
+        #
+        # NOTA destination_workload: filtro per servizio specifico, altrimenti
+        # tutti i servizi restituirebbero il totale del namespace.
+        query = (
+            f'sum(rate(hubble_http_requests_total{{'
+            f'destination_workload="{service}",'
+            f'destination_namespace="{namespace}"'
+            f'}}[5m]))'
+        )
+
         try:
             result = self.query(query)
             if result and result.get('result') and len(result['result']) > 0:
@@ -242,8 +226,15 @@ class PrometheusClient:
                 if rps > 0:
                     logger.info(f"✅ Traffic from Hubble ({self.cluster_name}): {rps:.1f} req/s")
                     return rps
-        except Exception:
-            pass
+                else:
+                    logger.debug(
+                        f"Hubble: query OK ma rate=0 ({self.cluster_name}, svc={service}) "
+                        f"— possibile gap di scrape, fallback a network"
+                    )
+            else:
+                logger.debug(f"Hubble: query vuota ({self.cluster_name}, svc={service})")
+        except Exception as e:
+            logger.debug(f"Hubble query exception ({self.cluster_name}): {e}")
         
         # ── Try 2: Istio metrics ────────────────────────────────────────
         query = f'''
@@ -303,12 +294,15 @@ class PrometheusClient:
         return 0.0
 
     def get_latency_p95(self, service: str, namespace: str = "online-boutique") -> Optional[float]:
-        """Get p95 latency for a service in milliseconds"""
-        # Try Hubble first
+        """
+        Get p95 latency for a service in milliseconds.
+        Filtra per destination_namespace per coerenza con get_request_rate().
+        """
+        # Try Hubble first (disponibile con Nginx Ingress + CNP L7)
         query = f'''
         histogram_quantile(0.95,
           sum(rate(hubble_http_request_duration_seconds_bucket{{
-            destination=~"{service}.*"
+            destination_namespace="{namespace}"
           }}[5m])) by (le)
         ) * 1000
         '''

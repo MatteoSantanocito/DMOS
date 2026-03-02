@@ -1,0 +1,98 @@
+# CiliumNetworkPolicy — Abilita visibilità HTTP L7 per online-boutique
+# =====================================================================
+# SCOPO: Forza il traffico HTTP attraverso Envoy (proxy Cilium) per
+#        generare le metriche Hubble L7:
+#          - hubble_http_requests_total
+#          - hubble_http_request_duration_seconds_bucket
+#
+# Senza questa policy, Cilium vede il traffico solo a livello L3/L4 (TCP)
+# e NON genera metriche HTTP. Con questa policy, Envoy intercetta il traffico
+# HTTP e Hubble può estrarre request rate, latenza, metodo, status code.
+#
+# COMPORTAMENTO: Permette TUTTO il traffico (allow-all) ma forza L7 inspection.
+# Non restringe nulla rispetto alla situazione attuale.
+#
+# APPLICA SU TUTTI I CLUSTER:
+#   kubectl apply -f deployments/cilium-l7-visibility.yaml --kubeconfig .kube/cluster1.yaml
+#   kubectl apply -f deployments/cilium-l7-visibility.yaml --kubeconfig .kube/cluster2.yaml
+#   kubectl apply -f deployments/cilium-l7-visibility.yaml --kubeconfig .kube/cluster3.yaml
+# =====================================================================
+
+---
+# Policy per il frontend (traffico HTTP esterno da Locust)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: l7-visibility-frontend
+  namespace: online-boutique
+spec:
+  # Si applica solo al frontend (entry point HTTP del cluster)
+  endpointSelector:
+    matchLabels:
+      app: frontend
+
+  ingress:
+    # Permette traffico HTTP da QUALSIASI sorgente (Locust, altri pod, etc.)
+    - fromEndpoints:
+        - {}  # qualsiasi endpoint
+      toPorts:
+        - ports:
+            - port: "8080"   # porta container del frontend online-boutique
+              protocol: TCP
+          rules:
+            http:
+              - {}           # permette QUALSIASI richiesta HTTP (tutti i path e metodi)
+
+  egress:
+    # Permette tutto il traffico in uscita (verso altri servizi, DNS, etc.)
+    - toEndpoints:
+        - {}
+    - toEntities:
+        - world  # accesso a internet (se necessario)
+
+---
+# Policy per tutti gli altri servizi backend (traffico gRPC inter-service)
+# gRPC è HTTP/2, quindi viene catturato come HTTP da Hubble
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: l7-visibility-backends
+  namespace: online-boutique
+spec:
+  # Si applica a tutti i pod nel namespace ECCETTO il frontend
+  endpointSelector:
+    matchExpressions:
+      - key: app
+        operator: NotIn
+        values:
+          - frontend
+          - loadgenerator
+          - redis-cart    # Redis non è HTTP
+
+  ingress:
+    - fromEndpoints:
+        - {}  # da qualsiasi pod (incluso frontend, altri backend)
+      toPorts:
+        - ports:
+            # Porte gRPC comuni dei servizi online-boutique
+            - port: "3550"   # productcatalogservice
+              protocol: TCP
+            - port: "5050"   # checkoutservice
+              protocol: TCP
+            - port: "7000"   # currencyservice
+              protocol: TCP
+            - port: "7070"   # cartservice
+              protocol: TCP
+            - port: "8080"   # recommendationservice, emailservice
+              protocol: TCP
+            - port: "9555"   # adservice
+              protocol: TCP
+            - port: "50051"  # paymentservice, shippingservice
+              protocol: TCP
+          rules:
+            http:
+              - {}  # permette qualsiasi HTTP/gRPC
+
+  egress:
+    - toEndpoints:
+        - {}

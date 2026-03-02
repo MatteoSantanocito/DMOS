@@ -1,0 +1,58 @@
+{
+  "test_info": {
+    "start": "2026-02-27T17:00:54.516484",
+    "end": "2026-02-27T17:23:25.097949",
+    "duration_seconds": 1350.581465,
+    "snapshots": 80,
+    "locust_available": true
+  },
+  "traffic": {
+    "min": 0.08201553189375321,
+    "max": 179.3271225872862,
+    "mean": 94.35368095852785,
+    "samples": 80
+  },
+  "replicas": {
+    "min": 3,
+    "max": 5,
+    "mean": 3.725
+  },
+  "prediction_accuracy": {
+    "mape": 40.1789,
+    "rmse": 38.1994,
+    "r2": 0.4389,
+    "directional_accuracy": 84.4156,
+    "n": 78
+  },
+  "provisioning": {
+    "mean": 1.2585,
+    "median": 1.3333,
+    "over_pct": 37.5,
+    "under_pct": 18.75,
+    "ideal_pct": 43.75,
+    "active_snapshots": 64
+  },
+  "time_to_scale": {
+    "count": 4,
+    "proactive_count": 3,
+    "reactive_count": 1,
+    "proactive_pct": 75.0,
+    "avg_tts": -36.39,
+    "avg_proactive_tts": -48.52,
+    "avg_reactive_tts": 0.0
+  },
+  "oscillation": {
+    "direction_changes": 0,
+    "max_changes_in_window": 0,
+    "flapping_windows": 0
+  },
+  "jain_fairness": {
+    "mean": 0.9639,
+    "min": 0.8889
+  },
+  "response_time": {
+    "p95_min_ms": 130.0,
+    "p95_max_ms": 220.0,
+    "p95_mean_ms": 160.8
+  }
+}

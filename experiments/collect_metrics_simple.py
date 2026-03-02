@@ -9,7 +9,7 @@ Collects:
 Outputs a structured JSON-lines file (.jsonl) + legacy txt for backward compat.
 
 Usage:
-  python collect_metrics_simple.py [duration_min] [--locust-host http://localhost:8089]
+  python collect_metrics_simple.py [duration_sec] [--locust-host http://localhost:8089]
 """
 
 import requests
@@ -158,6 +158,13 @@ def scrape_locust_stats(locust_url: str) -> dict:
         stats["available"] = True
         stats["current_users"] = data.get("user_count", 0)
 
+        # [FIX] When Locust has zero active users, force rps=0.
+        # Without this, Locust's rolling average keeps returning the last
+        # measured rps (e.g. 24.5) for 30-60s after users_count drops to 0.
+        # This causes analyze_test_complete to report non-zero throughput
+        # during the idle phase, inflating success metrics artificially.
+        _zero_users = (stats["current_users"] == 0)
+
         # Aggregated row is the last one with name "Aggregated"
         for entry in data.get("stats", []):
             name = entry.get("name", "")
@@ -173,7 +180,9 @@ def scrape_locust_stats(locust_url: str) -> dict:
             }
 
             if name == "Aggregated":
-                stats["total_rps"] = entry.get("current_rps", 0)
+                # If no active users, force rps=0 regardless of stale rolling avg
+                raw_rps = entry.get("current_rps", 0)
+                stats["total_rps"] = 0.0 if _zero_users else raw_rps
                 stats["avg_response_time_ms"] = entry.get("avg_response_time", 0)
                 stats["median_response_time_ms"] = entry.get("median_response_time", 0)
                 fail_ratio = 0
@@ -363,7 +372,7 @@ def print_summary(snap: dict, iteration: int, total: int):
 
 # ─── Main Collector Loop ─────────────────────────────────────────────────────
 
-def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL, scenario: str = "test"):
+def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL, scenario: str = "test"):
     """
     Main collection loop.
     Outputs:
@@ -377,12 +386,12 @@ def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL, 
     jsonl_file = OUTPUT_DIR / f"{time_str}_{date_str}_{scenario}.jsonl"
     legacy_file = OUTPUT_DIR / f"{time_str}_{date_str}_{scenario}.txt"
 
-    iterations = (duration_minutes * 60) // SCRAPE_INTERVAL
+    iterations = duration_seconds // SCRAPE_INTERVAL
 
     print("=" * 80)
     print("🚀 DMOS Comprehensive Metrics Collector v2")
     print("=" * 80)
-    print(f"  Duration:     {duration_minutes} minutes")
+    print(f"  Duration:     {duration_seconds} seconds ({duration_seconds // 60}m {duration_seconds % 60}s)")
     print(f"  Interval:     {SCRAPE_INTERVAL} seconds")
     print(f"  Iterations:   {iterations}")
     print(f"  DMOS URL:     {DMOS_METRICS_URL}")
@@ -443,8 +452,8 @@ def run_collector(duration_minutes: int = 20, locust_url: str = LOCUST_API_URL, 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DMOS Metrics Collector v2")
-    parser.add_argument("duration", nargs="?", type=int, default=20,
-                        help="Collection duration in minutes (default: 20)")
+    parser.add_argument("duration", nargs="?", type=int, default=300,
+                        help="Collection duration in seconds (default: 300)")
     parser.add_argument("--scenario", "-s", type=str, default="test",
                         help="Nome scenario per il file output (es. flash_crowd, sinusoidal)")
     parser.add_argument("--locust-host", default=LOCUST_API_URL,
@@ -453,5 +462,5 @@ if __name__ == "__main__":
 
     print(f"\nStarting in 3 seconds...")
     time.sleep(3)
-    run_collector(duration_minutes=args.duration, locust_url=args.locust_host,
+    run_collector(duration_seconds=args.duration, locust_url=args.locust_host,
                   scenario=args.scenario)

@@ -3,40 +3,132 @@ kind: ConfigMap
 metadata:
   name: prometheus-dmos-alerts
   namespace: monitoring
+  annotations:
+    # NOTA: questi alert usano metriche Hubble (Cilium) + cAdvisor.
+    # NON usano Istio (non installato).
+    # Se Hubble HTTP non è abilitato, gli alert usano container_network_receive_bytes_total
+    # come fallback (meno preciso ma sempre disponibile).
 data:
   dmos-alerts.yml: |
     groups:
       - name: dmos_autoscaling
-        interval: 15s  # Check ogni 15s
+        interval: 15s
         rules:
-          # High traffic alert
+
+          # ── HIGH TRAFFIC — frontend ────────────────────────────────────
+          # Usa Hubble httpV2 (formato nuovo). Se Hubble non disponibile,
+          # il fallback è network bytes (stima ~rps).
           - alert: HighTrafficFrontend
             expr: |
-              rate(istio_requests_total{
-                destination_service_name="frontend",
-                destination_service_namespace="online-boutique"
-              }[1m]) > 100
+              (
+                # Formato Hubble nuovo (httpV2)
+                sum(rate(hubble_http_requests_total{
+                  destination_namespace="online-boutique",
+                  traffic_direction="INGRESS"
+                }[1m])) > 30
+              ) or (
+                # Fallback: network bytes / 4000 (stima rps)
+                sum(rate(container_network_receive_bytes_total{
+                  namespace="online-boutique",
+                  pod=~"frontend.*"
+                }[1m])) / 4000 > 30
+              )
             for: 30s
             labels:
               severity: warning
               service: frontend
               action: scale_up
             annotations:
-              summary: "High traffic on frontend"
-              description: "Frontend receiving >100 req/s"
-          
-          # Low traffic alert
+              summary: "High traffic on frontend (>30 req/s)"
+              description: "Frontend riceve traffico elevato, possibile necessità di scale-up"
+
+          # ── LOW TRAFFIC — frontend ─────────────────────────────────────
           - alert: LowTrafficFrontend
             expr: |
-              rate(istio_requests_total{
-                destination_service_name="frontend",
-                destination_service_namespace="online-boutique"
-              }[5m]) < 20
+              (
+                sum(rate(hubble_http_requests_total{
+                  destination_namespace="online-boutique",
+                  traffic_direction="INGRESS"
+                }[5m])) < 5
+                and
+                sum(rate(hubble_http_requests_total{
+                  destination_namespace="online-boutique",
+                  traffic_direction="INGRESS"
+                }[5m])) > 0
+              ) or (
+                sum(rate(container_network_receive_bytes_total{
+                  namespace="online-boutique",
+                  pod=~"frontend.*"
+                }[5m])) / 4000 < 5
+              )
             for: 2m
             labels:
               severity: info
               service: frontend
               action: scale_down
             annotations:
-              summary: "Low traffic on frontend"
-              description: "Frontend receiving <20 req/s"
+              summary: "Low traffic on frontend (<5 req/s)"
+              description: "Frontend ha poco traffico, valutare scale-down"
+
+          # ── HIGH TRAFFIC — backend services ───────────────────────────
+          - alert: HighTrafficCartservice
+            expr: |
+              sum(rate(hubble_http_requests_total{
+                destination_namespace="online-boutique",
+                destination_workload="cartservice"
+              }[1m])) > 20
+            for: 30s
+            labels:
+              severity: warning
+              service: cartservice
+              action: scale_up
+            annotations:
+              summary: "High traffic on cartservice"
+
+          - alert: HighTrafficProductcatalog
+            expr: |
+              sum(rate(hubble_http_requests_total{
+                destination_namespace="online-boutique",
+                destination_workload="productcatalogservice"
+              }[1m])) > 30
+            for: 30s
+            labels:
+              severity: warning
+              service: productcatalogservice
+              action: scale_up
+            annotations:
+              summary: "High traffic on productcatalogservice"
+
+          # ── CPU HIGH — qualsiasi nodo ──────────────────────────────────
+          - alert: ClusterHighCPU
+            expr: |
+              (
+                sum(rate(container_cpu_usage_seconds_total{image!=""}[5m]))
+                /
+                sum(kube_node_status_capacity{resource="cpu"})
+              ) > 0.80
+            for: 1m
+            labels:
+              severity: warning
+              action: schedule
+            annotations:
+              summary: "CPU cluster > 80%"
+              description: "CPU usage sopra 80%, possibile necessità di rescheduling"
+
+          # ── HIGH LATENCY — frontend via Hubble ────────────────────────
+          - alert: HighLatencyFrontend
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(hubble_http_request_duration_seconds_bucket{
+                  destination_namespace="online-boutique",
+                  destination_workload="frontend"
+                }[5m])) by (le)
+              ) * 1000 > 500
+            for: 1m
+            labels:
+              severity: warning
+              service: frontend
+              action: schedule
+            annotations:
+              summary: "Frontend p95 latency > 500ms"
+              description: "Latenza elevata, possibile sovraccarico o necessità di rescheduling"
