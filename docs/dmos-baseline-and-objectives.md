@@ -30,7 +30,9 @@ L'infrastruttura su cui Romano costruisce e testa il suo sistema è la stessa su
 | **Metriche** | Prometheus per-cluster (NodePort 30090) + ping_exporter (latenza inter-cluster) + Hubble L7 (traffico HTTP) |
 | **Generatore di carico** | K6 (Romano), poi sostituito da Locust in DMOS |
 
-L'idea architetturale chiave di Romano è il **PROM_MAP**: ogni cluster ha un'istanza Prometheus locale che vede esclusivamente i propri pod. Il metascheduler interroga tutte e tre le istanze in parallelo (`ThreadPoolExecutor`) e aggrega i dati per costruire una vista globale del sistema. Questo pattern è stato **integralmente ereditato da DMOS** (vedi `src/level1/dmos_scheduler.py`).
+L'idea architetturale chiave di Romano è il **PROM_MAP**: ogni cluster ha un'istanza Prometheus locale che vede esclusivamente i propri pod. Il metascheduler non incorpora nel codice riferimenti statici agli endpoint — la configurazione è interamente fornita tramite variabili d'ambiente (es. `PROM_RO1`, `PROM_RO2`, `PROM_RO3`), consentendo la scoperta dinamica dei cluster senza modificare il codice sorgente (p. 48-50, §5.2). Il loop principale chiama sequenzialmente le funzioni di raccolta (`verificatraffic`, `verificalatencyintercluster`) per tutti i cluster attivi e aggrega i dati per costruire una vista globale del sistema (Figura 5-3, p. 51).
+
+Questo pattern PROM_MAP è stato **integralmente ereditato da DMOS** (`src/level1/dmos_scheduler.py`), con l'aggiunta della parallelizzazione tramite `ThreadPoolExecutor` — Romano interroga i cluster sequenzialmente, DMOS li interroga in parallelo per ridurre la latenza del ciclo di scheduling al crescere del numero di cluster.
 
 ---
 
