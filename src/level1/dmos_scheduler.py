@@ -132,7 +132,7 @@ class DMOSScheduler:
             
             if latency_p95 is not None and latency_p95 > 0:
                 latency_mean = latency_p95 / 1.65
-                latency_variance = (latency_p95 - latency_mean) ** 2
+                latency_variance = ((latency_p95 - latency_mean) / 1.65) ** 2
             else:
                 latency_mean = cluster_cfg.baseline_latency_ms
                 latency_variance = cluster_cfg.latency.get('variance_ms', 15.0) ** 2
