@@ -14,7 +14,7 @@ logger = get_logger("ScoreFunctions")
 @dataclass
 class ClusterMetrics:
     """
-    Metrics for a single cluster at time t
+    Metrics per un cluster all'istante t
     """
     # Resources
     cpu_available_cores: float
@@ -38,21 +38,21 @@ class ClusterMetrics:
     
     @property
     def cpu_available_fraction(self) -> float:
-        """Fraction of CPU available"""
+        """frazione di CPU disponibile"""
         if self.cpu_total_cores == 0:
             return 0.0
         return self.cpu_available_cores / self.cpu_total_cores
     
     @property
     def memory_available_fraction(self) -> float:
-        """Fraction of memory available"""
+        """frazione di memoria disponibile"""
         if self.memory_total_gb == 0:
             return 0.0
         return self.memory_available_gb / self.memory_total_gb
     
     @property
     def load_fraction(self) -> float:
-        """Current load as fraction of max"""
+        """frazione di carico corrente rispetto al massimo"""
         if self.request_rate_max == 0:
             return 0.0
         return self.request_rate_current / self.request_rate_max
@@ -61,29 +61,27 @@ class ClusterMetrics:
 @dataclass
 class ScoreParameters:
     """
-    Parameters for score computation (from config)
+    Parameters per il calcolo dello score (from config)
     """
     # Latency component
-    eta: float = 0.01           # Sensitivity parameter
-    sigma_squared: float = 100  # Variance threshold
+    eta: float = 0.01           # Parametro di sensibilità alla latenza
+    sigma_squared: float = 100  # threshold per la penalità sulla varianza (ms^2)
     
     # Capacity component
-    kappa: float = 2.0          # Quadratic penalty exponent
+    kappa: float = 2.0          # espontenziale per la penalità sulla capacità
     
     # Load prediction component
-    mu: float = 1.0             # Load penalty coefficient
-    horizon_seconds: int = 600  # Prediction horizon (10 min)
+    mu: float = 1.0             # penalità per il carico predetto
+    horizon_seconds: int = 600  # orizzonte di predizione per il carico (10 minuti)
     
     # Carbon component
-    nu: float = 0.5             # Carbon penalty coefficient
-    ci_max: float = 500.0       # Max carbon intensity for normalization
+    nu: float = 0.5             # coefficiente per la penalità sulla carbon intensity
+    ci_max: float = 500.0       # massimo CI atteso (gCO2/kWh) per normalizzazione
 
 
 class ScoreFunctions:
     """
-    Compute multi-dimensional score for cluster selection
-    
-    Implements equation from paper:
+    Calcola il multi-dimensional score per la cluster selection:
     score_i = ω_1 * Φ_lat(i) + ω_2 * Φ_cap(i) + ω_3 * Φ_load(i) + ω_4 * Φ_carbon(i)
     """
     
@@ -92,22 +90,16 @@ class ScoreFunctions:
         weights: Dict[str, float],
         parameters: Optional[ScoreParameters] = None
     ):
-        """
-        Initialize score functions
-        
-        Args:
-            weights: Dict with keys omega_latency, omega_capacity, omega_load, omega_carbon
-            parameters: Optional ScoreParameters (uses defaults if None)
-        """
+
         self.omega_latency = weights.get('omega_latency', 0.4)
         self.omega_capacity = weights.get('omega_capacity', 0.3)
         self.omega_load = weights.get('omega_load', 0.1)
         self.omega_carbon = weights.get('omega_carbon', 0.2)
         
-        # Validate weights sum to 1
+        # Valida che le pesature devono sommare a 1
         total = self.omega_latency + self.omega_capacity + self.omega_load + self.omega_carbon
         if abs(total - 1.0) > 1e-6:
-            raise ValueError(f"Score weights must sum to 1.0, got {total}")
+            raise ValueError(f"La somma delle pesature deve essere 1.0, ho {total}")
         
         self.params = parameters or ScoreParameters()
         
@@ -116,24 +108,16 @@ class ScoreFunctions:
     
     def compute_latency_score(self, metrics: ClusterMetrics) -> float:
         """
-        Compute latency component Φ_lat(i)
-        
-        From paper:
         Φ_lat(i) = (1 / (1 + η * E[L_i])) * exp(-var(L_i) / σ²)
         
-        Args:
-            metrics: Cluster metrics
-        
-        Returns:
-            Latency score in [0, 1] (higher is better)
         """
         L_mean = metrics.latency_mean_ms
         L_var = metrics.latency_variance_ms2
         
-        # First term: soft threshold on mean latency
+        # Primo termine: penalità lineare sulla latenza media
         term1 = 1.0 / (1.0 + self.params.eta * L_mean)
         
-        # Second term: exponential penalty on variance
+        # Secondo termine: penalità esponenziale sulla varianza (stabilità)
         term2 = math.exp(-L_var / self.params.sigma_squared)
         
         score = term1 * term2
@@ -145,27 +129,18 @@ class ScoreFunctions:
     
     def compute_capacity_score(self, metrics: ClusterMetrics) -> float:
         """
-        Compute capacity component Φ_cap(i)
-        
-        From paper:
         Φ_cap(i) = (R_i^avail / R_i^tot)^κ * (1 - λ_i / λ_i^max)
-        
-        Args:
-            metrics: Cluster metrics
-        
-        Returns:
-            Capacity score in [0, 1] (higher is better)
         """
-        # Use minimum of CPU and memory fractions (conservative)
+        # Usa la frazione di risorse disponibili (CPU e memoria) e prendi il minimo
         resource_fraction = min(
             metrics.cpu_available_fraction,
             metrics.memory_available_fraction
         )
         
-        # Apply quadratic penalty (κ = 2)
+        # Applica la penalità esponenziale sulla capacità disponibile
         term1 = resource_fraction ** self.params.kappa
         
-        # Traffic-based term
+        # Termine di penalità sul carico attuale (più è vicino al massimo, più penalizza)
         term2 = 1.0 - metrics.load_fraction
         
         score = term1 * term2
@@ -175,7 +150,7 @@ class ScoreFunctions:
                     f"load_frac={metrics.load_fraction:.2f}, "
                     f"term1={term1:.3f}, term2={term2:.3f}, score={score:.3f}")
         
-        return max(0.0, score)  # Ensure non-negative
+        return max(0.0, score)  
     
     def compute_load_score(
         self, 
@@ -183,23 +158,14 @@ class ScoreFunctions:
         predicted_load: Optional[float] = None
     ) -> float:
         """
-        Compute load prediction component Φ_load(i)
-        
-        From paper:
         Φ_load(i) = exp(-μ * λ_i^pred / λ_i^max)
         
-        Args:
-            metrics: Cluster metrics
-            predicted_load: Optional predicted load (if None, uses current load)
-        
-        Returns:
-            Load score in [0, 1] (higher is better)
         """
-        # Use predicted load if provided, else current load
+        # Usa il carico predetto se disponibile, altrimenti quello attuale
         load = predicted_load if predicted_load is not None else metrics.request_rate_current
         
         if metrics.request_rate_max == 0:
-            logger.warning("Max request rate is 0, returning score 0")
+            logger.warning("request rate max è 0, non posso calcolare, restituisco 0")
             return 0.0
         
         load_fraction_pred = load / metrics.request_rate_max
@@ -213,16 +179,7 @@ class ScoreFunctions:
     
     def compute_carbon_score(self, metrics: ClusterMetrics) -> float:
         """
-        Compute carbon component Φ_carbon(i)
-        
-        From paper:
         Φ_carbon(i) = exp(-ν * CI_i(t) / CI_max)
-        
-        Args:
-            metrics: Cluster metrics
-        
-        Returns:
-            Carbon score in [0, 1] (higher is better, lower carbon is better)
         """
         ci_normalized = metrics.carbon_intensity_gco2_kwh / self.params.ci_max
         
@@ -239,17 +196,7 @@ class ScoreFunctions:
         predicted_load: Optional[float] = None
     ) -> float:
         """
-        Compute total multi-dimensional score
-        
-        From paper:
         score_i = ω_1 * Φ_lat + ω_2 * Φ_cap + ω_3 * Φ_load + ω_4 * Φ_carbon
-        
-        Args:
-            metrics: Cluster metrics
-            predicted_load: Optional predicted load for Φ_load
-        
-        Returns:
-            Total score in [0, 1] (higher is better)
         """
         phi_lat = self.compute_latency_score(metrics)
         phi_cap = self.compute_capacity_score(metrics)
@@ -263,7 +210,7 @@ class ScoreFunctions:
             self.omega_carbon * phi_carbon
         )
         
-        logger.info(f"Total score: {total_score:.3f} = "
+        logger.info(f"Score totale: {total_score:.3f} = "
                    f"{self.omega_latency}*{phi_lat:.3f} + "
                    f"{self.omega_capacity}*{phi_cap:.3f} + "
                    f"{self.omega_load}*{phi_load:.3f} + "
@@ -277,14 +224,7 @@ class ScoreFunctions:
         predicted_load: Optional[float] = None
     ) -> Dict[str, float]:
         """
-        Compute score with detailed breakdown
-        
-        Args:
-            metrics: Cluster metrics
-            predicted_load: Optional predicted load
-        
-        Returns:
-            Dict with individual scores and total
+        Calcola score con breakdown dettagliato
         """
         phi_lat = self.compute_latency_score(metrics)
         phi_cap = self.compute_capacity_score(metrics)
