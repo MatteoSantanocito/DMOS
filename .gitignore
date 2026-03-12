@@ -1,0 +1,43 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Build / packaging ─────────────────────────────────────────────────────
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# ── Ambienti virtuali ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── File generati da esperimenti ──────────────────────────────────────────
+capacity_report.html
+results/
+logs/
+
+# ── Backup manuali ────────────────────────────────────────────────────────
+*.backup
+*.bak
+*.orig
+
+# ── Kubeconfig (dati sensibili) ───────────────────────────────────────────
+.kube/
+
+# ── Editor / OS ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ── Claude ────────────────────────────────────────────────────────────────
+.claude/

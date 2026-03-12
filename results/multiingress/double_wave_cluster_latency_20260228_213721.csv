@@ -1,4 +1,0 @@
-cluster,region,requests,failures,fail_pct,avg_ms,p50_ms,p90_ms,p95_ms,p99_ms
-cluster1,DE,1145,0,0.0,59.6,56.1,63.4,69.3,122.9
-cluster2,FR,961,0,0.0,58.5,56.0,62.8,67.3,121.0
-cluster3,PL,757,0,0.0,58.0,55.8,62.9,65.4,115.1
