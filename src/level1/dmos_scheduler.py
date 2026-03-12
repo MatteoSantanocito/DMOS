@@ -25,20 +25,12 @@ logger = get_logger("DMOSScheduler")
 
 
 # Hard constraint thresholds
-CPU_HARD_LIMIT_PCT = 95.0       # Exclude cluster if CPU utilization > 90%
-MEMORY_HARD_LIMIT_PCT = 90.0    # Exclude cluster if memory utilization > 90%
-MIN_CPU_CORES_AVAILABLE = 0.2   # At least 0.2 cores free
-MIN_MEMORY_GB_AVAILABLE = 0.2   # At least 0.2 GB free
-
+CPU_HARD_LIMIT_PCT = 95.0       # Esclude cluster if CPU utilization > 95%
+MEMORY_HARD_LIMIT_PCT = 90.0    # Esclude cluster if memory utilization > 90%
+MIN_CPU_CORES_AVAILABLE = 0.2   # Almeno 0.2 core liberi (per evitare cluster sovraccarichi)
+MIN_MEMORY_GB_AVAILABLE = 0.2   # Almeno 0.2 GB liberi (per evitare cluster sovraccarichi)
 
 class DMOSScheduler:
-    """
-    DMOS Centralized Scheduler with Per-Cluster Prometheus
-    
-    Uses PROM_MAP pattern (like Romano's thesis): each cluster has its own
-    Prometheus that sees only its local pods. This ensures accurate CPU,
-    memory, and traffic metrics per cluster.
-    """
     
     def __init__(self, config_path: str = "config"):
         self.config = ConfigLoader(config_path)
@@ -60,12 +52,12 @@ class DMOSScheduler:
         for prom in self.prom_map.values():
             prom._locust_available = False
         
-        # Carbon client (shared across all clusters)
+        # Carbon client (condiviso, non cluster-specifico)
         self.carbon_client = CarbonClient(
             self.config.carbon_raw['carbon_intensity']
         )
         
-        # Score functions (shared, same weights for all clusters)
+        # Score functions (condiviso, non cluster-specifico)
         self.score_func = ScoreFunctions(
             weights={
                 'omega_latency': self.config.score_weights.omega_latency,
@@ -75,7 +67,7 @@ class DMOSScheduler:
             }
         )
         
-        logger.info(f"DMOS Scheduler initialized (local mode) with "
+        logger.info(f"DMOS Scheduler inizializato con:"
                     f"{len(self.cluster_configs)} clusters")
         for name, cfg in self.cluster_configs.items():
             logger.info(f"  {name}: {cfg.region} ({cfg.ip})")
@@ -85,25 +77,16 @@ class DMOSScheduler:
         cluster_name: str,
         service_name: str = "frontend"
     ) -> Optional[ClusterMetrics]:
-        """
-        Collect metrics for a specific cluster from its LOCAL Prometheus
         
-        Args:
-            cluster_name: Cluster to collect metrics for
-            service_name: Service name for traffic/latency queries
-            
-        Returns:
-            ClusterMetrics or None if collection failed
-        """
         cluster_cfg = self.cluster_configs.get(cluster_name)
         if not cluster_cfg:
             logger.error(f"Unknown cluster: {cluster_name}")
             return None
         
-        # ── Get the cluster-specific Prometheus client ────────────────
+        # ── Ottieni il client Prometheus specifico per il cluster ────────────────
         prom = self.prom_map.get(cluster_name)
         if not prom:
-            logger.error(f"No Prometheus client for cluster: {cluster_name}")
+            logger.error(f"Non riesco a connettermi al prometheus per il cluster: {cluster_name}")
             return None
         
         try:
@@ -135,7 +118,7 @@ class DMOSScheduler:
                     request_rate = (cpu_usage_pct / 100.0) * capacity
                 else:
                     request_rate = 0.0
-                    logger.warning(f"No traffic metrics for {cluster_name}, defaulting to 0")
+                    logger.warning(f"Nessuna metrica di traffico per {cluster_name}, setto default a 0")
             
             # Max request rate
             capacity_per_core = svc_cfg.capacity_req_per_sec if svc_cfg else 50
@@ -177,7 +160,7 @@ class DMOSScheduler:
             return metrics
             
         except Exception as e:
-            logger.error(f"Error collecting metrics for {cluster_name}: {e}")
+            logger.error(f"Errore durante la raccolta delle metriche per {cluster_name}: {e}")
             return None
     
     def _compute_cluster_score(
@@ -186,11 +169,7 @@ class DMOSScheduler:
         service_name: str = "frontend",
         predicted_load: Optional[float] = None
     ) -> Optional[Dict]:
-        """
-        Compute score for a single cluster (locally, no HTTP)
-        
-        Includes hard constraint checking.
-        """
+
         metrics = self._collect_cluster_metrics(cluster_name, service_name)
         if metrics is None:
             return None
@@ -224,7 +203,7 @@ class DMOSScheduler:
             exclusion_reason = f"Mem avail {metrics.memory_available_gb:.2f}GB < {MIN_MEMORY_GB_AVAILABLE}GB"
         
         if not is_eligible:
-            logger.warning(f"⛔ {cluster_name} EXCLUDED: {exclusion_reason}")
+            logger.warning(f" {cluster_name} Escluso perché: {exclusion_reason}")
             return {
                 'cluster_name': cluster_name,
                 'score': 0.0,
@@ -311,15 +290,13 @@ class DMOSScheduler:
         service_name: str,
         predicted_load: Optional[float] = None
     ) -> List[ClusterBid]:
-        """
-        Collect scores from all clusters (locally, no HTTP)
-        """
+
         logger.info(f"Calcolo score per  '{service_name}' su tutti i cluster...")
         
         bids = []
         excluded = []
         
-        # Compute scores for each cluster
+        # Calcola score per ogni cluster 
         for cluster_name in self.cluster_configs.keys():
             result = self._compute_cluster_score(
                 cluster_name, service_name, predicted_load
@@ -354,12 +331,10 @@ class DMOSScheduler:
         total_replicas: int,
         predicted_load: Optional[float] = None
     ) -> Tuple[List[Allocation], bool]:
-        """
-        Schedule a service across clusters
-        """
+
         logger.info(f"Scheduling '{service_name}' con {total_replicas} repliche")
         
-        # Step 1: Collect scores
+        # Step 1: Raccolta offerte (scores + capacity) da tutti i cluster
         start_time = time.time()
         bids = self.collect_scores(service_name, predicted_load)
         collection_time = (time.time() - start_time) * 1000
