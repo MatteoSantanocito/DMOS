@@ -4,57 +4,89 @@
 #
 # Prerequisiti:
 #   - I 3 cluster K3s sono attivi e raggiungibili
+#   - Nginx Ingress Controller deployato su ogni cluster (porta 30080)
 #   - Online Boutique è deployato su tutti i cluster
-#   - locustfile_scenarios.py è nella cartella experiments/
+#   - locustfile_multiingress.py è nella cartella experiments/
+#
+# IMPORTANTE: usa locustfile_multiingress.py (NON locustfile_scenarios.py)
+#   - locustfile_multiingress.py: 3 UserClass separate, una per cluster,
+#     hardcoded su :30080 (Nginx Ingress). Traffico reale multi-cluster.
+#   - locustfile_scenarios.py: single-ingress (usa --host), manda tutto
+#     su cluster1 soltanto. Incompatibile con setup Nginx attuale.
 #
 # Tra un test e l'altro:
-#   1. Ferma Locust (si ferma da solo a fine scenario)
-#   2. Aspetta che il collector finisca (ha ~3-5 min di margine)
+#   1. Locust si ferma da solo a fine scenario
+#   2. Aspetta che il collector finisca (ha ~5 min di margine)
 #   3. Stoppa DMOS (Ctrl+C) e riavvialo per pulire lo stato del predittore
 #   4. Opzionale: resetta le repliche a 1 per cluster prima del test
+#      kubectl scale deployment frontend -n online-boutique --replicas=1 \
+#        --context cluster1 --context cluster2 --context cluster3
 #
 # ══════════════════════════════════════════════════════════════════════════
 
 
 # ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 1: gradual_ramp (25 min) — Il tuo scenario originale     │
+# │  CAPACITY TEST (una tantum — calibra services.yaml)                 │
 # └──────────────────────────────────────────────────────────────────────┘
+#
+# Scopo: trovare il knee point rps/replica del frontend e aggiornare
+#        capacity_req_per_sec in config/services.yaml.
+# Da eseguire solo quando cambia l'hardware o dopo modifiche al frontend.
+# Durata: ~15-35 min (dipende da quanti step prima della violazione SLA)
 
-# Terminal 1: DMOS
-python src/dmos_main.py
+# Step 1: ferma DMOS e scala frontend a 1 replica/cluster
+kubectl scale deployment frontend -n online-boutique --replicas=1 --context cluster1
+kubectl scale deployment frontend -n online-boutique --replicas=1 --context cluster2
+kubectl scale deployment frontend -n online-boutique --replicas=1 --context cluster3
 
-# Terminal 2: Collector (25 min scenario + 5 min margine = 30 min)
-python experiments/collect_metrics_simple.py 30 -s gradual_ramp
+# Step 2: esegui il capacity test headless
+locust -f experiments/locustfile_capacity.py --host http://ignored --headless
 
-# Terminal 3: Locust
-$env:DMOS_SCENARIO="gradual_ramp"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+# Step 3: leggi l'output console — cerca la riga:
+#   → Aggiorna config/services.yaml:
+#       frontend:
+#         capacity_req_per_sec: XX
+#   → Aggiorna analyze_test_complete.py:
+#       SERVICE_CAPACITY['frontend'] = YY
 
-# Terminal 4: Analisi (dopo che collector finisce)
-python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_gradual_ramp.jsonl
+# Step 4: se il valore raccomandato è diverso dall'attuale (30 rps),
+#         aggiorna config/services.yaml e analyze_test_complete.py
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SCENARI DI TEST DMOS (usa locustfile_multiingress.py)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# locustfile_multiingress.py NON usa --host: i cluster IP sono hardcoded
+# nel file (192.168.1.245:30080, .246:30080, .247:30080)
 
 
 # ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 2: flash_crowd (17 min) — Spike improvviso               │
+# │  SCENARIO 1: flash_crowd (~20 min) — Spike improvviso               │
 # └──────────────────────────────────────────────────────────────────────┘
+# Fasi: warm-up(3') → flash-spike(4') → sustained-peak(5') →
+#        partial-decline(3') → full-decline(3') → cooldown(2') = 20 min
 
 # Terminal 1: DMOS
 python src/dmos_main.py
 
-# Terminal 2: Collector (17 + 5 = 22 min)
-python experiments/collect_metrics_simple.py 22 -s flash_crowd
+# Terminal 2: Collector (20 min scenario + 5 min margine = 25 min)
+python experiments/collect_metrics_simple.py 25 -s flash_crowd
 
-# Terminal 3: Locust
+# Terminal 3: Locust (si ferma da solo dopo 20 min)
 $env:DMOS_SCENARIO="flash_crowd"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+locust -f experiments/locustfile_multiingress.py --headless
 
-# Analisi:
+# Terminal 4: Analisi (dopo che collector finisce)
 python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_flash_crowd.jsonl
 
 
 # ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 3: double_wave (26 min) — Doppia onda                    │
+# │  SCENARIO 2: double_wave (~26 min) — Doppia onda                   │
 # └──────────────────────────────────────────────────────────────────────┘
+# Fasi: warm-up(2') → wave1-ramp(3') → wave1-peak(4') → valley-descent(3') →
+#        valley(2') → wave2-ramp(3') → wave2-peak(4') → final-decline(3') →
+#        cooldown(2') = 26 min
 
 # Terminal 1: DMOS
 python src/dmos_main.py
@@ -64,71 +96,37 @@ python experiments/collect_metrics_simple.py 31 -s double_wave
 
 # Terminal 3: Locust
 $env:DMOS_SCENARIO="double_wave"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+locust -f experiments/locustfile_multiingress.py --headless
 
 # Analisi:
 python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_double_wave.jsonl
 
 
 # ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 4: sinusoidal (25 min) — Oscillante anti-flapping        │
+# │  SCENARIO 3: sinusoidal (~34 min) — Oscillante anti-flapping       │
 # └──────────────────────────────────────────────────────────────────────┘
+# Fasi: warm-up(2') → sinusoidal 80-300 utenti period=6min (30') →
+#        cooldown(2') = 34 min
 
 # Terminal 1: DMOS
 python src/dmos_main.py
 
-# Terminal 2: Collector (25 + 5 = 30 min)
-python experiments/collect_metrics_simple.py 30 -s sinusoidal
+# Terminal 2: Collector (34 + 5 = 39 min)
+python experiments/collect_metrics_simple.py 39 -s sinusoidal
 
 # Terminal 3: Locust
 $env:DMOS_SCENARIO="sinusoidal"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+locust -f experiments/locustfile_multiingress.py --headless
 
 # Analisi:
 python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_sinusoidal.jsonl
-
-
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 5: slow_ramp (33 min) — Rampa lenta + plateau lungo      │
-# └──────────────────────────────────────────────────────────────────────┘
-
-# Terminal 1: DMOS
-python src/dmos_main.py
-
-# Terminal 2: Collector (33 + 5 = 38 min)
-python experiments/collect_metrics_simple.py 38 -s slow_ramp
-
-# Terminal 3: Locust
-$env:DMOS_SCENARIO="slow_ramp"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
-
-# Analisi:
-python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_slow_ramp.jsonl
-
-
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  SCENARIO 6: sawtooth (25 min) — Dente di sega ripetuto            │
-# └──────────────────────────────────────────────────────────────────────┘
-
-# Terminal 1: DMOS
-python src/dmos_main.py
-
-# Terminal 2: Collector (25 + 5 = 30 min)
-python experiments/collect_metrics_simple.py 30 -s sawtooth
-
-# Terminal 3: Locust
-$env:DMOS_SCENARIO="sawtooth"
-locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
-
-# Analisi:
-python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_sawtooth.jsonl
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # NOTA: Su Linux/Mac usa "export" invece di "$env:"
 #
 #   export DMOS_SCENARIO=flash_crowd
-#   locust -f experiments/locustfile_scenarios.py --host http://192.168.1.245:30007
+#   locust -f experiments/locustfile_multiingress.py --headless
 #
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -137,12 +135,12 @@ python experiments/analyze_test_complete.py results/<HHMMSS>_<YYYYMMDD>_sawtooth
 # ORDINE CONSIGLIATO PER LA TESI (priorità decrescente)
 # ══════════════════════════════════════════════════════════════════════════
 #
-#  1. flash_crowd     — Il più diverso, testa il worst-case
-#  2. double_wave     — Confronto TtS tra due onde
-#  3. sinusoidal      — Prova anti-flapping
-#  4. gradual_ramp    — Già fatto, rifai solo se vuoi con i nuovi nomi file
-#  5. sawtooth        — Bonus se hai tempo
-#  6. slow_ramp       — Bonus, conferma efficienza stazionaria
+#  Prima di tutto: capacity test (se non già fatto o se hai cambiato hw)
 #
-# Con i primi 3 + il gradual_ramp che hai già, hai 4 scenari = validazione solida.
+#  Poi, in ordine:
+#  1. flash_crowd   — Il più diverso, testa il worst-case (spike improvviso)
+#  2. double_wave   — Confronta TtS tra prima e seconda onda
+#  3. sinusoidal    — Prova anti-flapping (oscillazioni periodiche)
+#
+# Con questi 3 scenari hai una validazione solida per la tesi.
 # ══════════════════════════════════════════════════════════════════════════
