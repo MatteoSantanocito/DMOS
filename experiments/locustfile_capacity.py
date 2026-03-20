@@ -37,14 +37,45 @@ Parametri configurabili in CAPACITY_CONFIG sotto.
 
 from locust import HttpUser, task, between, events
 from locust.runners import MasterRunner, WorkerRunner
+from gevent.threadpool import ThreadPoolExecutor as _GeventThreadPool
 
 import csv
 import json
 import math
 import threading
+import requests as _requests
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
+
+# Thread pool: ogni richiesta HTTP gira in un thread OS reale (non greenlet)
+# → immune al gevent select() polling delay su Windows (~2700ms)
+# gevent.threadpool integra i thread reali con l'event loop: il greenlet
+# aspetta il risultato correttamente senza bloccare tutto Locust.
+_request_pool = _GeventThreadPool(max_workers=800)
+_thread_local = threading.local()
+
+def _get_session():
+    """Sessione requests per-thread (connection reuse, una per thread OS)."""
+    if not hasattr(_thread_local, "session"):
+        _thread_local.session = _requests.Session()
+    return _thread_local.session
+
+def _blocking_http_get(url):
+    """Gira in un thread OS reale — r.elapsed accurato su Windows e macOS."""
+    session = _get_session()
+    resp = session.get(url, timeout=10)
+    return resp.elapsed.total_seconds() * 1000, resp.status_code
+
+
+def _blocking_http_post(url, data):
+    """POST in un thread OS reale — r.elapsed accurato su Windows e macOS.
+    allow_redirects=True segue i 302 che il frontend emette dopo /setCurrency
+    e /cart/checkout (comportamento standard del browser).
+    """
+    session = _get_session()
+    resp = session.post(url, data=data, timeout=10, allow_redirects=True)
+    return resp.elapsed.total_seconds() * 1000, resp.status_code
 
 # Sopprime la tabella finale di Locust (per-endpoint breakdown)
 # che verrebbe stampata dopo il summary personalizzato.
@@ -53,9 +84,7 @@ locust.stats.print_stats = lambda *args, **kwargs: None
 locust.stats.print_percentile_stats = lambda *args, **kwargs: None
 locust.stats.print_error_report = lambda *args, **kwargs: None
 
-# NOTA: non usare r.elapsed.total_seconds() — in Locust con catch_response=True
-# restituisce 0 in alcune versioni. Usa r.request_meta["response_time"] che è la
-# misura interna di Locust (time.perf_counter(), senza overhead gevent su Windows).
+# Timing: r.elapsed (urllib3 interno) misurato nel thread OS reale → accurato.
 
 
 # ─── Configurazione ──────────────────────────────────────────────────────────
@@ -69,7 +98,7 @@ CAPACITY_CONFIG = {
     },
 
     # Step configuration
-    "users_start": 150,         # Utenti al primo step — abbastanza da tenere gevent attivo su Windows
+    "users_start": 5,           # Utenti al primo step
     "users_step": 5,            # Utenti aggiunti ad ogni step
     "users_max": 700,           # Stop se si raggiunge questo valore
     "step_duration_s": 90,      # Durata di ogni step (secondi)
@@ -81,6 +110,15 @@ CAPACITY_CONFIG = {
     "sla_p95_ms": 200,          # ms — 200ms = risposta percepita istantanea (baseline ~70ms)
     "sla_fail_rate": 0.02,      # 2% max fail
     "sla_consecutive": 2,       # Stop solo dopo N step consecutivi in violazione (evita falsi stop da GC spike)
+
+    # Pesi del traffico per cluster (devono corrispondere ai weight delle HttpUser class)
+    # Usati per calcolare il rps della replica più carica (C_replica corretto).
+    # Con distribuzione uniforme (tutti uguali) il risultato coincide con total/N.
+    "cluster_weights": {
+        "cluster1": 40,
+        "cluster2": 35,
+        "cluster3": 25,
+    },
 
     # Output
     "output_dir": "results/capacity",
@@ -105,54 +143,100 @@ _consecutive_violations = 0
 
 # ─── Endpoint mix per Online Boutique ────────────────────────────────────────
 
+_CHECKOUT_DATA = {
+    "email":                        "test@example.com",
+    "street_address":               "123 Test St",
+    "zip_code":                     "10001",
+    "city":                         "New York",
+    "state":                        "NY",
+    "country":                      "US",
+    "credit_card_number":           "4432801561520454",
+    "credit_card_expiration_month": "1",
+    "credit_card_expiration_year":  "2030",
+    "credit_card_cvv":              "672",
+}
+
+# Formato: (path, peso, metodo, data_post_o_None)
+# /setCurrency e /cart/checkout richiedono POST — inviarli come GET restituisce
+# 405 in ~1ms senza caricare il backend, falsando il knee point verso l'alto.
 ENDPOINTS = [
-    ("/", 0.35),
-    ("/product/OLJCESPC7Z", 0.25),
-    ("/product/66VCHSJNUP", 0.10),
-    ("/cart", 0.15),
-    ("/setCurrency", 0.05),
-    ("/cart/checkout", 0.10),
+    ("/",                  0.35, "GET",  None),
+    ("/product/OLJCESPC7Z",0.25, "GET",  None),
+    ("/product/66VCHSJNUP",0.10, "GET",  None),
+    ("/cart",              0.15, "GET",  None),
+    ("/setCurrency",       0.05, "POST", {"currency_code": "EUR"}),
+    ("/cart/checkout",     0.10, "POST", _CHECKOUT_DATA),
 ]
 
+
 def _weighted_choice(items):
-    """Sceglie un endpoint pesato."""
+    """Sceglie un endpoint pesato. Ritorna (path, method, data)."""
     r = __import__("random").random()
-    cumulative = 0
-    for item, weight in items:
+    cumulative = 0.0
+    for path, weight, method, data in items:
         cumulative += weight
         if r <= cumulative:
-            return item
-    return items[-1][0]
+            return path, method, data
+    path, _, method, data = items[-1]
+    return path, method, data
 
 
 # ─── Locust User Classes ──────────────────────────────────────────────────────
 
-def _do_request(user_self, endpoint):
-    """Esegue la richiesta usando la latenza interna di Locust (request_meta).
+# Mappa diretta classe→URL (immune a --host che Locust inietta sulle classi)
+_CLUSTER_URL = {
+    "Cluster1User": CAPACITY_CONFIG["clusters"]["cluster1"],
+    "Cluster2User": CAPACITY_CONFIG["clusters"]["cluster2"],
+    "Cluster3User": CAPACITY_CONFIG["clusters"]["cluster3"],
+}
 
-    NON usa time.time() perché su Windows include ~2600ms di overhead gevent
-    (scheduling delay quando il greenlet ritorna dalla sleep). La misura corretta
-    è r.request_meta["response_time"] che Locust calcola con time.perf_counter()
-    dentro la macchina HTTP, prima di restituire il controllo al greenlet.
+def _do_request(user_self, endpoint_tuple):
+    """Esegue la richiesta in un thread OS reale via gevent.threadpool.
+
+    Il greenlet Locust aspetta il risultato senza bloccare l'event loop.
+    r.elapsed è misurato nel thread reale → nessun gevent select() delay.
+    Usa GET o POST a seconda dell'endpoint per misurare il carico reale.
     """
-    with user_self.client.get(endpoint, catch_response=True, name=endpoint) as r:
-        # request_meta["response_time"] è in millisecondi (float), misurato da Locust
-        # con perf_counter() — stessa metrica mostrata dalla tabella built-in di Locust.
-        elapsed_ms = r.request_meta["response_time"]
-        with _stats_lock:
-            _step_stats[_current_step]["requests"] += 1
-            _step_stats[_current_step]["total_rt"] += elapsed_ms
-            _step_stats[_current_step]["response_times"].append(elapsed_ms)
-            if r.status_code >= 500:
-                _step_stats[_current_step]["failures"] += 1
-                r.failure(f"HTTP {r.status_code}")
-            else:
-                r.success()
+    
+   # 1. Estrae i 3 valori dall'endpoint scelto da _weighted_choice
+    path, method, data = endpoint_tuple
+    # es: path="/cart", method="GET", data=None
+    # path="/setCurrency", method="POST", data={"currency_code":"EUR"}
+    
+    # 2. Costruisce URL completo per il cluster giusto
+    # type(user_self).__name__ → "Cluster1User" → "http://192.168.1.245:30080"
+    # url finale → "http://192.168.1.245:30080/cart"
+    url = _CLUSTER_URL[type(user_self).__name__] + path
+
+    try:
+        if method == "POST":
+            # 3a. Lancia la POST in un thread OS reale, il greenlet aspetta
+            # senza bloccare l'event loop di gevent
+            elapsed_ms, status_code = _request_pool.submit(
+                _blocking_http_post, url, data
+            ).result()
+        else:
+            # 3b. Stessa cosa per GET
+            elapsed_ms, status_code = _request_pool.submit(
+                _blocking_http_get, url
+            ).result()
+    except Exception:
+         # 4. Timeout / connessione persa
+        elapsed_ms, status_code = 10000.0, 500
+
+    with _stats_lock:
+         # 5. Scrittura thread-safe: più thread OS scrivono in parallelo
+       # _stats_lock evita race condition sull'array condiviso
+        _step_stats[_current_step]["requests"] += 1   # totale richieste
+        _step_stats[_current_step]["total_rt"] += elapsed_ms # somma per calcolare media
+        _step_stats[_current_step]["response_times"].append(elapsed_ms) # array per p95
+        if status_code >= 500:
+            _step_stats[_current_step]["failures"] += 1
 
 
 class Cluster1User(HttpUser):
     host = CAPACITY_CONFIG["clusters"]["cluster1"]
-    weight = 40  # 40% del traffico → cluster1 (DE)
+    weight = 40  # 40% del traffico → cluster1 
     wait_time = between(1, 3)
 
     @task
@@ -162,7 +246,7 @@ class Cluster1User(HttpUser):
 
 class Cluster2User(HttpUser):
     host = CAPACITY_CONFIG["clusters"]["cluster2"]
-    weight = 35  # 35% → cluster2 (FR)
+    weight = 35  # 35% → cluster2 
     wait_time = between(1, 3)
 
     @task
@@ -172,7 +256,7 @@ class Cluster2User(HttpUser):
 
 class Cluster3User(HttpUser):
     host = CAPACITY_CONFIG["clusters"]["cluster3"]
-    weight = 25  # 25% → cluster3 (PL)
+    weight = 25  # 25% → cluster3 
     wait_time = between(1, 3)
 
     @task
@@ -217,7 +301,7 @@ class SteppedCapacityShape(LoadTestShape):
             remaining = warmup - run_time
             if int(run_time) % 30 == 0 and run_time > 0:
                 # Log ogni 30s durante warmup per confermare che è attivo
-                print(f"  🔥 Warmup in corso... ancora {remaining:.0f}s "
+                print(f"   Warmup in corso... ancora {remaining:.0f}s "
                       f"({self.start_users} utenti, metriche non misurate)")
             return (self.start_users, self.spawn_rate)
 
@@ -228,7 +312,7 @@ class SteppedCapacityShape(LoadTestShape):
             with _stats_lock:
                 _step_stats.clear()
             _warmup_done = True
-            print(f"\n  ✅ Warmup completato — inizio fase di misura\n"
+            print(f"\n  Warmup completato — inizio fase di misura\n"
                   f"  {'Step':>4s} | {'Utenti':>6s} | {'RPS':>6s} | {'rps/pod':>7s} | "
                   f"{'p50':>5s} | {'p95':>5s} | {'p99':>5s} | {'Fail':>5s} | SLA")
             print(f"  " + "-" * 62)
@@ -238,13 +322,14 @@ class SteppedCapacityShape(LoadTestShape):
         target_users = self.start_users + step_num * self.step_users
 
         # Cambio di step: analizza il passo precedente
+        #Calcolo lo step attuale, lo analizzo e passo allo step successivo 
         if step_num != _current_step and _current_step > 0:
             self._analyze_step(_current_step)
 
         _current_step = step_num
 
         if target_users > self.max_users:
-            print(f"\n  ⚠️  Limite utenti raggiunto ({self.max_users}), test terminato")
+            print(f"\n   Limite utenti raggiunto ({self.max_users}), test terminato")
             self._finalize()
             return None
 
@@ -264,9 +349,17 @@ class SteppedCapacityShape(LoadTestShape):
         n = stats["requests"]
         duration_s = self.step_time
         rps = n / duration_s
-        rps_per_replica = rps / (
-            self.cfg["num_replicas_per_cluster"] * len(self.cfg["clusters"])
-        )
+
+        # rps_per_replica = carico della replica più carica al knee point.
+        # Usa il peso massimo tra i cluster
+        weights = self.cfg.get("cluster_weights", {})
+        if weights:
+            total_weight = sum(weights.values())
+            max_fraction = max(w / total_weight for w in weights.values())
+        else:
+            # Fallback: distribuzione uniforme
+            max_fraction = 1.0 / len(self.cfg["clusters"])
+        rps_per_replica = (rps * max_fraction) / self.cfg["num_replicas_per_cluster"]
 
         rt_sorted = sorted(stats["response_times"])
         p50 = rt_sorted[int(len(rt_sorted) * 0.50)]
@@ -280,10 +373,10 @@ class SteppedCapacityShape(LoadTestShape):
 
         if sla_ok:
             _consecutive_violations = 0
-            stato = "✅"
+            stato = ""
         else:
             _consecutive_violations += 1
-            stato = f"⚠️ ({_consecutive_violations}/{max_consec})" if _consecutive_violations < max_consec else "❌"
+            stato = f" ({_consecutive_violations}/{max_consec})" if _consecutive_violations < max_consec else "❌"
 
         result = {
             "step": step_idx,
@@ -312,19 +405,20 @@ class SteppedCapacityShape(LoadTestShape):
             _knee_point_users = users
         elif _consecutive_violations == 1:
             # Primo step in violazione — potrebbe essere spike GC, aspetta conferma
-            print(f"  ⚠️  p95={p95:.0f}ms > {self.cfg['sla_p95_ms']}ms — "
+            print(f"    p95={p95:.0f}ms > {self.cfg['sla_p95_ms']}ms — "
                   f"possibile spike, aspetto conferma al prossimo step...")
         else:
             # N step consecutivi → saturazione confermata
-            print(f"\n  🛑 SLA VIOLATO per {_consecutive_violations} step consecutivi "
+            print(f"\n   SLA VIOLATO per {_consecutive_violations} step consecutivi "
                   f"→ saturazione confermata")
             if _knee_point_rps is not None:
-                print(f"  📌 Knee point: {_knee_point_rps:.1f} rps/replica "
+                print(f"   Knee point: {_knee_point_rps:.1f} rps/replica "
                       f"({_knee_point_users} users)\n")
             else:
-                print(f"  📌 Knee point: N/A (SLA violato già al primo step — "
+                print(f"   Knee point: N/A (SLA violato già al primo step — "
                       f"sistema già saturo con {users} utenti)\n")
             self._stop_flag = True
+            self._finalize()
 
     def _finalize(self):
         """Salva i risultati e stampa il summary finale."""
@@ -352,8 +446,8 @@ class SteppedCapacityShape(LoadTestShape):
             "knee_point_rps_per_replica": _knee_point_rps,
             "knee_point_users": _knee_point_users,
             "recommended_capacity_req_per_sec": (
-                max(1, round(_knee_point_rps * 0.80)) if _knee_point_rps else None
-            ),  # 80% del knee = margine di sicurezza (max(1,...) evita di ottenere 0)
+                round(_knee_point_rps) if _knee_point_rps else None
+            ),  # valore grezzo del knee point — il safety margin (10%) è applicato da DMOS internamente
             "steps": _test_results,
         }
         with open(json_path, "w") as f:
@@ -391,22 +485,110 @@ class SteppedCapacityShape(LoadTestShape):
             print()
 
         if _knee_point_rps:
-            rec = max(1, round(_knee_point_rps * 0.80))
+            rec = round(_knee_point_rps)
             print(f"  Knee point:          {_knee_point_rps:.1f} rps/replica  ({_knee_point_users} utenti)")
-            print(f"  Capacità raccomandata: {rec} rps/replica  (80% del knee point)")
+            print(f"  Capacità raccomandata: {rec} rps/replica  (valore grezzo — safety margin 10% aggiunto da DMOS)")
             print(f"")
             print(f"  → Aggiorna config/services.yaml:")
             print(f"    frontend:")
             print(f"      capacity_req_per_sec: {rec}")
             print(f"")
             print(f"  → Aggiorna analyze_test_complete.py:")
-            print(f"    SERVICE_CAPACITY['frontend'] = {int(_knee_point_rps)}")
+            print(f"    SERVICE_CAPACITY['frontend'] = {rec}")
         else:
             print("  ⚠️  Knee point non trovato — aumenta users_max e rilancia")
+
+        # Grafici
+        chart_path = self._generate_charts(output_dir, ts)
         print(f"")
-        print(f"  File CSV:  {csv_path}")
-        print(f"  File JSON: {json_path}")
+        print(f"  File CSV:   {csv_path}")
+        print(f"  File JSON:  {json_path}")
+        if chart_path:
+            print(f"  Grafici:    {chart_path}")
         print("=" * 65 + "\n")
+
+    def _generate_charts(self, output_dir: Path, ts: str):
+        """Genera un PNG con 2 subplot: latenza e throughput vs utenti."""
+        try:
+            import matplotlib
+            matplotlib.use("Agg")          # non-interactive, funziona senza display
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+        except ImportError:
+            print("  ⚠️  matplotlib non installato — grafici saltati (pip install matplotlib)")
+            return None
+
+        if not _test_results:
+            return None
+
+        users   = [r["users"]           for r in _test_results]
+        p50     = [r["p50_ms"]          for r in _test_results]
+        p95     = [r["p95_ms"]          for r in _test_results]
+        p99     = [r["p99_ms"]          for r in _test_results]
+        rps_pod = [r["rps_per_replica"] for r in _test_results]
+        sla_ms  = self.cfg["sla_p95_ms"]
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+        fig.suptitle("DMOS Capacity Test — Frontend", fontsize=14, fontweight="bold")
+
+        # ── Subplot 1: Latenza ────────────────────────────────────────────────
+        ax1.plot(users, p50, "o-", color="#2196F3", linewidth=2, markersize=4, label="p50")
+        ax1.plot(users, p95, "s-", color="#FF9800", linewidth=2, markersize=4, label="p95")
+        ax1.plot(users, p99, "^-", color="#F44336", linewidth=1.5, markersize=4,
+                 label="p99", alpha=0.7)
+        ax1.axhline(sla_ms, color="#F44336", linestyle="--", linewidth=1.5,
+                    label=f"SLA p95 = {sla_ms}ms")
+
+        if _knee_point_users:
+            ax1.axvline(_knee_point_users, color="#9C27B0", linestyle=":", linewidth=2,
+                        label=f"Knee point ({_knee_point_users} utenti)")
+            # Evidenzia il knee point sulla curva p95
+            knee_results = [r for r in _test_results if r["users"] == _knee_point_users]
+            if knee_results:
+                ax1.plot(_knee_point_users, knee_results[0]["p95_ms"],
+                         "*", color="#9C27B0", markersize=14, zorder=5)
+
+        ax1.set_ylabel("Latenza (ms)", fontsize=11)
+        ax1.set_ylim(bottom=0)
+        ax1.legend(loc="upper left", fontsize=9)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_title("Latenza per-percentile", fontsize=11)
+
+        # Colora le righe oltre SLA in rosso chiaro
+        for r in _test_results:
+            if not r["sla_ok"]:
+                ax1.axvspan(r["users"] - self.cfg["users_step"] / 2,
+                            r["users"] + self.cfg["users_step"] / 2,
+                            alpha=0.15, color="#F44336")
+
+        # ── Subplot 2: Throughput ─────────────────────────────────────────────
+        ax2.plot(users, rps_pod, "o-", color="#4CAF50", linewidth=2, markersize=4,
+                 label="rps/replica")
+
+        if _knee_point_users and _knee_point_rps:
+            ax2.axvline(_knee_point_users, color="#9C27B0", linestyle=":", linewidth=2,
+                        label=f"Knee point ({_knee_point_users} utenti)")
+            ax2.axhline(_knee_point_rps, color="#9C27B0", linestyle="--", linewidth=1,
+                        alpha=0.6, label=f"Max = {_knee_point_rps:.1f} rps/replica")
+            ax2.plot(_knee_point_users, _knee_point_rps,
+                     "*", color="#9C27B0", markersize=14, zorder=5)
+
+            rec = round(_knee_point_rps)
+            ax2.axhline(rec, color="#FF9800", linestyle="--", linewidth=1.5,
+                        label=f"Raccomandato = {rec} rps/replica (grezzo)")
+
+        ax2.set_xlabel("Utenti virtuali", fontsize=11)
+        ax2.set_ylabel("Throughput (rps/replica)", fontsize=11)
+        ax2.set_ylim(bottom=0)
+        ax2.legend(loc="upper left", fontsize=9)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_title("Throughput sostenibile", fontsize=11)
+
+        plt.tight_layout()
+        chart_path = output_dir / f"capacity_{ts}.png"
+        plt.savefig(chart_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return chart_path
 
 
 # ─── Event hooks ─────────────────────────────────────────────────────────────
