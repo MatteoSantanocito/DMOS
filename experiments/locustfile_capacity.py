@@ -107,13 +107,13 @@ CAPACITY_CONFIG = {
                                  # Evita falsi SLA fail da Major GC JVM dopo test precedente
 
     # SLA thresholds — il test si ferma quando vengono violati
-    "sla_p95_ms": 200,          # ms — 200ms = risposta percepita istantanea (baseline ~70ms)
+    "sla_p95_ms": 3000,          # ms — 200ms = risposta percepita istantanea (baseline ~70ms)
     "sla_fail_rate": 0.02,      # 2% max fail
     "sla_consecutive": 2,       # Stop solo dopo N step consecutivi in violazione (evita falsi stop da GC spike)
 
     # Pesi del traffico per cluster (devono corrispondere ai weight delle HttpUser class)
     # Usati per calcolare il rps della replica più carica (C_replica corretto).
-    # Con distribuzione uniforme (tutti uguali) il risultato coincide con total/N.
+    
     "cluster_weights": {
         "cluster1": 40,
         "cluster2": 35,

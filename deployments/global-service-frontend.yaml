@@ -1,0 +1,62 @@
+# Global Service — Frontend (Cilium ClusterMesh)
+#
+# SCOPO: Rendere il servizio frontend visibile agli altri cluster della mesh
+#        (necessario affinché i backend cross-cluster possano risolvere "frontend"
+#        come hostname), MA senza condividere gli endpoint locali.
+#
+# PREREQUISITI:
+#   - Cilium ClusterMesh attivo e connesso su tutti i cluster
+#   - Verifica: cilium clustermesh status --context cluster1
+#
+# ANNOTAZIONI:
+#   io.cilium/global-service: "true"
+#     → rende il Service visibile e raggiungibile da tutti i cluster della mesh
+#   io.cilium/shared-service: RIMOSSA (era "true")
+#     → PROBLEMA: con shared-service=true Cilium ClusterMesh unifica i pod
+#        frontend di tutti i cluster in un unico pool virtuale. Cilium quindi
+#        bilancia automaticamente le richieste in arrivo su ciascun cluster
+#        verso i pod di TUTTI i cluster, proporzionalmente al numero di pod.
+#        Questo causa un feedback loop positivo:
+#          più pod su c1 → Cilium invia più traffico a c1 → Hubble su c1 vede
+#          più ingress → Phi_demand(c1) cresce → DMOS dà più repliche a c1 → loop.
+#        Con shared-service rimosso ogni cluster serve SOLO i propri pod frontend,
+#        Hubble misura traffico reale per-cluster e DMOS può allocare correttamente.
+#
+# COMPORTAMENTO dopo la rimozione di shared-service:
+#   - Ogni cluster gestisce il proprio traffico frontend in isolamento
+#   - Il Cilium Ingress su cluster-N instrada le richieste SOLO ai pod frontend
+#     di cluster-N (selector locale)
+#   - Hubble su cluster-N misura solo il traffico che cluster-N ha effettivamente
+#     servito → Phi_demand riflette il carico reale, non il pool globale
+#   - DMOS può fare allocazione proporzionale corretta basandosi su dati Hubble
+#
+# Applicare su tutti i cluster (stessa definizione, stesso nome):
+#   kubectl apply -f deployments/global-service-frontend.yaml --context cluster1
+#   kubectl apply -f deployments/global-service-frontend.yaml --context cluster2
+#   kubectl apply -f deployments/global-service-frontend.yaml --context cluster3
+#
+# Rollback a shared (NON consigliato per il frontend — causa feedback loop DMOS):
+#   kubectl annotate svc frontend -n online-boutique \
+#     io.cilium/shared-service=true --overwrite \
+#     --context cluster1 --context cluster2 --context cluster3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: online-boutique
+  annotations:
+    # Abilita Global Service: il frontend è noto agli altri cluster della mesh
+    # (necessario per risoluzione hostname cross-cluster dai backend)
+    io.cilium/global-service: "true"
+    # io.cilium/shared-service: "true"  ← RIMOSSA: causerebbe pool unificato
+    #                                      e feedback loop Phi_demand in DMOS
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP

@@ -181,7 +181,9 @@ class DMOSOrchestrator:
         # dropped → Windows TCP timeout = 21s → 100% Locust failure.
         # After 90s the predictor history is long enough that derivatives are
         # gentle and scale decisions are stable.
-        self.startup_grace_seconds = 90  # seconds
+        self.startup_grace_seconds = 120  # seconds — allineato a COLD_START_SECONDS in dmos_scheduler.py
+        # 0-120s: nessun k8s op (grace) + Phase 1 weights (solo Φ_demand, Φ_net, Φ_carbon)
+        # 120s+:  Phase 2 completo con Φ_response_time, Φ_cap, Φ_load
         self.startup_time = datetime.now()
         
         # ── Co-location: service dependency map ──────────────────────────
@@ -197,6 +199,7 @@ class DMOSOrchestrator:
         
         start_http_server(9090)
         logger.info("📊 Metrics server started on :9090/metrics")
+        self._initialize_replica_gauges()
         logger.info(f"✅ Orchestrator initialized ({num_workers} workers)")
         logger.info(f"📋 Monitored services: {self.monitored_services}")
         logger.info(f"🌐 Clusters: {self.all_cluster_names}")
@@ -209,8 +212,37 @@ class DMOSOrchestrator:
         logger.info(f"⏳ Startup grace: {self.startup_grace_seconds}s "
                     f"(no k8s ops until {self.startup_grace_seconds}s after boot)")
     
+    # ── Startup Initialization ──────────────────────────────────────────────
+
+    def _initialize_replica_gauges(self):
+        """
+        Legge il numero reale di repliche da Kubernetes all'avvio e inizializza
+        i gauge dmos_current_replicas / dmos_target_replicas.
+
+        Senza questo, i gauge partono a 0 (default Prometheus) anche se i pod
+        esistono già, causando:
+          - Falso primo scaling event "0→N" nell'analisi
+          - avg_tts / provisioning ratio distorti nei primi snapshot
+          - Classificazione REACTIVE errata sul primo ciclo
+        """
+        logger.info("⚙️  Initializing replica gauges from Kubernetes state...")
+        for svc_name, svc_cfg in self.config.services.items():
+            for cluster_name in self.all_cluster_names:
+                reps = self.k8s.get_deployment_replicas(
+                    cluster=cluster_name,
+                    deployment=svc_cfg.deployment_name,
+                    namespace=svc_cfg.namespace
+                )
+                if reps is None:
+                    reps = svc_cfg.min_replicas
+                    logger.warning(f"  {cluster_name}/{svc_name}: k8s read failed, "
+                                   f"defaulting to min_replicas={reps}")
+                self.current_replicas.labels(cluster=cluster_name, service=svc_name).set(reps)
+                self.target_replicas.labels(cluster=cluster_name, service=svc_name).set(reps)
+                logger.info(f"  {cluster_name}/{svc_name}: {reps} replicas")
+
     # ── Traffic Helper ─────────────────────────────────────────────────────
-    
+
     def _get_per_cluster_traffic(self, service_name: str) -> Dict[str, float]:
         """
         Misura il traffico reale per-cluster da Prometheus/Hubble locale.
@@ -220,7 +252,7 @@ class DMOSOrchestrator:
         Il risultato è il traffico effettivamente servito da ciascun cluster —
         non una stima proporzionale.
 
-        Con Nginx Ingress + CNP L7 attiva: usa Hubble (hubble_http_requests_total)
+        Con Cilium Ingress + CNP L7 attiva: usa Hubble (hubble_http_requests_total)
         Fallback: network bytes (container_network_receive_bytes_total / 4000)
 
         Returns:

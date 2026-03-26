@@ -31,16 +31,28 @@ CLUSTERS = {
     "cluster3": "http://192.168.1.247:30080",
 }
 
-WARMUP_ROUNDS = 5       # Numero di round di richieste
+WARMUP_ROUNDS = 5       # Numero di round di richieste GET /
 PAUSE_BETWEEN = 2.0     # Secondi tra un round e l'altro
 TIMEOUT_SECS  = 35      # Timeout per richiesta (copre max 3 retry Nginx = 30s)
 
+# Endpoint aggiuntivi da scaldare dopo i round iniziali.
+# Ogni entry apre pool gRPC distinti nel frontend:
+#   /product/XXX  → productcatalogservice.GetProduct (distinto da ListProducts)
+#   /cart         → cartservice.GetCart
+EXTRA_ENDPOINTS = [
+    "/product/OLJCESPC7Z",
+    "/product/66VCHSJNUP",
+    "/cart",
+]
+EXTRA_ROUNDS = 3   # Round aggiuntivi per gli endpoint extra
 
-def ping_cluster(name: str, url: str) -> tuple[str, int, float]:
-    """Invia una GET / e restituisce (cluster_name, status_code, latency_s)."""
+
+def ping_endpoint(name: str, base_url: str, path: str) -> tuple[str, str, int, float]:
+    """Invia una GET su path e restituisce (cluster_name, path, status_code, latency_s)."""
     t0 = time.monotonic()
+    url = base_url.rstrip("/") + path
     try:
-        req = urllib.request.Request(url + "/", headers={"User-Agent": "warmup/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "warmup/1.0"})
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECS) as resp:
             _ = resp.read()
             status = resp.status
@@ -49,7 +61,7 @@ def ping_cluster(name: str, url: str) -> tuple[str, int, float]:
     except Exception as e:
         status = 0  # connection error
     latency = time.monotonic() - t0
-    return name, status, latency
+    return name, path, status, latency
 
 
 def warmup():
@@ -57,22 +69,26 @@ def warmup():
     print("  Cluster warm-up — pre-riscaldamento pool gRPC")
     print("=" * 60)
     print(f"  Clusters: {', '.join(CLUSTERS.keys())}")
-    print(f"  Round: {WARMUP_ROUNDS}  |  Pausa: {PAUSE_BETWEEN}s  |  Timeout: {TIMEOUT_SECS}s")
+    print(f"  Phase 1 — GET /   : {WARMUP_ROUNDS} rounds  (homepage + catalog list + recommendation)")
+    print(f"  Phase 2 — extra   : {EXTRA_ROUNDS} rounds  (product detail + cartservice)")
+    print(f"  Timeout per req   : {TIMEOUT_SECS}s")
     print()
 
     all_ok = {name: False for name in CLUSTERS}
 
+    # ── Phase 1: GET / ────────────────────────────────────────────────
+    print("Phase 1 — homepage:")
     for round_n in range(1, WARMUP_ROUNDS + 1):
-        print(f"Round {round_n}/{WARMUP_ROUNDS}:", end="  ", flush=True)
+        print(f"  Round {round_n}/{WARMUP_ROUNDS}:", end="  ", flush=True)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             futures = {
-                pool.submit(ping_cluster, name, url): name
+                pool.submit(ping_endpoint, name, url, "/"): name
                 for name, url in CLUSTERS.items()
             }
             results = {}
             for fut in concurrent.futures.as_completed(futures):
-                name, status, lat = fut.result()
+                name, _, status, lat = fut.result()
                 results[name] = (status, lat)
 
         for name in sorted(results):
@@ -86,6 +102,25 @@ def warmup():
         if round_n < WARMUP_ROUNDS:
             time.sleep(PAUSE_BETWEEN)
 
+    # ── Phase 2: extra endpoints (product detail + cart) ─────────────
+    print()
+    print("Phase 2 — product detail + cart (apre pool gRPC distinti):")
+    for round_n in range(1, EXTRA_ROUNDS + 1):
+        for path in EXTRA_ENDPOINTS:
+            print(f"  Round {round_n}/{EXTRA_ROUNDS} {path:<30}", end="  ", flush=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {
+                    pool.submit(ping_endpoint, name, url, path): name
+                    for name, url in CLUSTERS.items()
+                }
+                for fut in concurrent.futures.as_completed(futures):
+                    name, _, status, lat = fut.result()
+                    icon = "[OK]" if status == 200 else ("[WARN]" if status in (500, 503) else "[ERR]")
+                    print(f"{icon} {name}:{lat:.2f}s", end="  ", flush=True)
+            print()
+        if round_n < EXTRA_ROUNDS:
+            time.sleep(PAUSE_BETWEEN)
+
     print()
     print("=" * 60)
 
@@ -95,7 +130,7 @@ def warmup():
         print("   Attendi qualche secondo e riprova, o avvia il test comunque.")
         print("   Le prime 2-3 richieste Locust potrebbero essere lente (500/504).")
     else:
-        print("[OK] Tutti i cluster warm - pool gRPC stabili.")
+        print("[OK] Tutti i cluster warm — pool gRPC stabili.")
         print("   Avvia Locust ora per avere latenze nominali dal primo secondo.")
     print("=" * 60)
     print()

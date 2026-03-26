@@ -1,7 +1,8 @@
-# CiliumNetworkPolicy — Frontend: restrizione solo sull'ingress
+# CiliumNetworkPolicy — Frontend: visibilità L7 con Cilium Ingress
 #
-# SCOPO: bloccare l'accesso diretto esterno al frontend (world → pod:8080),
-#        forzando tutto il traffico esterno a passare da Nginx Ingress (30080).
+# SCOPO: abilitare Hubble L7 visibility sul frontend per metriche
+#        hubble_http_requests_total e hubble_http_request_duration_seconds_bucket.
+#        Tutto il traffico esterno passa ora da Cilium Ingress (Envoy, reserved:ingress).
 #
 # DESIGN:
 #   - Nessuna sezione egress → Cilium default = allow all egress
@@ -11,19 +12,27 @@
 #     (che passano per ClusterIP). Rimuovere l'egress è la soluzione corretta
 #     per cluster k3s con pod CIDR e service CIDR diversi tra i cluster.
 #
-#   - Ingress: solo traffico intra-cluster (fromEntities: cluster + host).
-#     fromEntities:cluster copre pod di QUALSIASI namespace (incluso ingress-nginx),
-#     a differenza di fromEndpoints:{} che è namespace-scoped.
-#     Il traffico world (esterno) è bloccato → solo Nginx può raggiungere il frontend.
+#   - Ingress regola 1: traffico da Cilium Ingress Envoy (reserved:ingress)
+#     con regola HTTP → abilita hubble_http_requests_total{source="reserved:ingress"}
+#     usata da DMOS per Φ_demand.
+#
+#   - Ingress regola 2: traffico intra-cluster (fromEntities: cluster + host) +
+#     traffico cross-cluster via ClusterMesh (fromEntities: remote-node).
+#     Con regola HTTP → abilita Hubble L7 per Φ_lat e Φ_load.
+#     fromEntities:cluster copre pod di QUALSIASI namespace (incluso cilium-ingress),
+#     fromEntities:remote-node copre nodi e pod dei cluster remoti connessi
+#     via Cilium ClusterMesh — necessario con Global Services abilitati.
+#
+# NOTA Global Services:
+#   Con io.cilium/global-service: "true" sul Service frontend, il pod
+#   frontend di cluster1 può ricevere richieste inoltrate da Cilium Ingress di
+#   cluster2 o cluster3 via ClusterMesh. Questo traffico arriva come
+#   "remote-node" nella policy Cilium.
 #
 # Applicare su tutti i cluster:
 #   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster1
 #   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster2
 #   kubectl apply -f deployments/cnp-frontend-l7.yaml --context cluster3
-#
-# Rollback (torna al default allow-all):
-#   kubectl delete cnp l7-visibility-frontend -n online-boutique \
-#     --context cluster1 --context cluster2 --context cluster3
 
 ---
 apiVersion: cilium.io/v2
@@ -42,13 +51,32 @@ spec:
 
   # ── Ingress ──────────────────────────────────────────────────────────────
   ingress:
-  # Solo traffico intra-cluster: Nginx Ingress (ingress-nginx namespace),
-  # microservizi interni, DMOS, kubelet health check.
-  # Traffico world (192.168.x.x esterno) → BLOCCATO: deve passare da Nginx.
+  # Regola 1: traffico dal Cilium Ingress Envoy (reserved:ingress)
+  #   - Ogni richiesta da Locust → NodePort 30080 → Cilium Envoy → frontend:8080
+  #   - Con rules: http → Hubble vede source="reserved:ingress" nei log L7
+  #   - Metrica: hubble_http_requests_total{source="reserved:ingress"} per Φ_demand
   - fromEntities:
-    - cluster
-    - host
+    - ingress      # Cilium Ingress Envoy proxy (reserved:ingress)
     toPorts:
     - ports:
       - port: "8080"
         protocol: TCP
+      rules:
+        http:
+        - {}       # match any HTTP → abilita Hubble L7 per reserved:ingress
+
+  # Regola 2: traffico intra-cluster e cross-cluster
+  #   - Microservizi interni, DMOS health check, kubelet.
+  #   - Con rules: http → abilita Hubble L7 per Φ_lat (p95 latenza) e Φ_load.
+  #   - remote-node copre pod frontend cross-cluster via ClusterMesh Global Services.
+  - fromEntities:
+    - cluster      # pod di qualsiasi namespace nel cluster locale
+    - host         # processo sul nodo (kubelet, health check)
+    - remote-node  # nodi/pod dei cluster remoti connessi via ClusterMesh
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+      rules:
+        http:
+        - {}       # match any HTTP → abilita Hubble L7 per traffico interno

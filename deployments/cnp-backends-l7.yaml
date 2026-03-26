@@ -1,0 +1,84 @@
+# CiliumNetworkPolicy — Backend services: visibilità gRPC/HTTP2 via Hubble
+#
+# SCOPO: abilitare Hubble L7 sui microservizi backend di Online Boutique.
+#        gRPC è HTTP/2, quindi Hubble lo cattura come httpV2 esattamente come
+#        il traffico HTTP del frontend. Questo permette a DMOS di leggere
+#        traffic rate reale per cartservice, productcatalogservice, ecc.
+#        invece del fallback container_network_receive_bytes/4000.
+#
+# PERCHÉ FILE SEPARATO:
+#   Non si usa cilium-l7-visibility.yaml (che contiene anche la policy frontend)
+#   perché quella sovrascritterebbe cnp-frontend-l7.yaml già applicato e
+#   più preciso (usa fromEntities:ingress invece di fromEntities:world).
+#
+# METRICHE ABILITATE:
+#   hubble_http_requests_total{destination_workload="cartservice", ...}
+#   hubble_http_requests_total{destination_workload="productcatalogservice", ...}
+#   hubble_http_requests_total{destination_workload="checkoutservice", ...}
+#   hubble_http_requests_total{destination_workload="recommendationservice", ...}
+#
+# NOTA GRPC + ENVOY:
+#   Cilium usa Envoy come proxy L7. gRPC su Envoy funziona correttamente
+#   perché Envoy supporta HTTP/2 con trailers. Se si verificano timeout
+#   o connessioni interrotte sui backend, rimuovere questa policy:
+#     kubectl delete cnp l7-visibility-backends -n online-boutique --context clusterX
+#
+# Applicare su tutti i cluster:
+#   kubectl apply -f deployments/cnp-backends-l7.yaml --context cluster1
+#   kubectl apply -f deployments/cnp-backends-l7.yaml --context cluster2
+#   kubectl apply -f deployments/cnp-backends-l7.yaml --context cluster3
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: l7-visibility-backends
+  namespace: online-boutique
+spec:
+  # Si applica a tutti i pod nel namespace ECCETTO frontend, loadgenerator e redis
+  # (redis è TCP puro, non HTTP — non ha senso applicare L7 su di esso)
+  endpointSelector:
+    matchExpressions:
+      - key: app
+        operator: NotIn
+        values:
+          - frontend
+          - loadgenerator
+          - redis-cart
+
+  # ── Ingress ───────────────────────────────────────────────────────────────
+  # Traffico gRPC inter-service (frontend → backend, backend → backend)
+  # Con rules: http → Hubble intercetta HTTP/2 e genera hubble_http_requests_total
+  ingress:
+    - fromEndpoints:
+        - {}   # qualsiasi pod del namespace (frontend, altri backend)
+      toPorts:
+        - ports:
+            - port: "3550"    # productcatalogservice
+              protocol: TCP
+            - port: "5050"    # checkoutservice
+              protocol: TCP
+            - port: "7000"    # currencyservice
+              protocol: TCP
+            - port: "7070"    # cartservice
+              protocol: TCP
+            - port: "8080"    # recommendationservice, emailservice
+              protocol: TCP
+            - port: "9555"    # adservice
+              protocol: TCP
+            - port: "50051"   # paymentservice, shippingservice
+              protocol: TCP
+          rules:
+            http:
+              - {}   # match any HTTP/gRPC → abilita Hubble L7
+
+  # ── Egress ────────────────────────────────────────────────────────────────
+  # I backend devono rispondere alle richieste e parlare tra loro.
+  # toEntities:cluster copre i pod i cui IP Cilium non ha ancora risolto
+  # (ad es. pod appena rischedulati da DMOS il cui IP è temporaneamente
+  #  classificato come "world" → i pacchetti di risposta verrebbero droppati).
+  egress:
+    - toEndpoints:
+        - {}   # qualsiasi pod (risposte gRPC, chiamate a altri backend)
+    - toEntities:
+        - cluster  # bypass per IP non ancora risolti da Cilium identity

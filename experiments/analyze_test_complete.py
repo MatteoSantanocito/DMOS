@@ -98,6 +98,7 @@ COLORS = {
     'overprov': '#e67e22',
     'underprov': '#e74c3c',
 }
+CLUSTER_REGIONS = {"cluster1": "DE", "cluster2": "FR", "cluster3": "PL"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -667,8 +668,9 @@ def compute_jain_fairness(data: List[dict], svc: str = "frontend") -> Tuple[list
         total = sum(reps)
         if total > 0:
             sum_sq = sum(x ** 2 for x in reps)
-            n = len([r for r in reps if r > 0])  # only count active clusters
-            if n > 0 and sum_sq > 0:
+            n = len(KNOWN_CLUSTERS)  # sempre 3: fairness rispetto a tutti i cluster previsti
+            # J=1 → distribuzione perfetta, J=1/3 → tutto su un cluster
+            if sum_sq > 0:
                 jain = (total ** 2) / (n * sum_sq)
             else:
                 jain = 0.0
@@ -681,11 +683,166 @@ def compute_jain_fairness(data: List[dict], svc: str = "frontend") -> Tuple[list
     return timestamps, jain_values
 
 
+def load_locust_cluster_csv(scenario: str = None, results_dir: Path = None) -> dict:
+    """
+    Legge il timeseries CSV per-cluster prodotto da locustfile_multiingress.py.
+    Compatibile sia con formato vecchio (3 colonne/cluster) che nuovo (4 colonne/cluster con slo_pct).
+
+    Returns dict:
+        {cluster_name: {"timestamps": [...], "p95_ms": [...], "slo_pct": [...], "count": [...]}}
+    """
+    empty = {c: {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []} for c in KNOWN_CLUSTERS}
+
+    search_dir = results_dir or Path("results/multiingress")
+    if not search_dir.exists():
+        print(f"  ℹ  Locust cluster dir not found: {search_dir}")
+        return empty
+
+    pattern = f"{scenario}_timeseries_*.csv" if scenario else "*_timeseries_*.csv"
+    candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates and scenario:
+        # Fallback: strip _off / _on suffix (collector uses _off/_on, Locust CSV doesn't)
+        import re as _re
+        base_scenario = _re.sub(r'_(off|on)$', '', scenario)
+        if base_scenario != scenario:
+            pattern = f"{base_scenario}_timeseries_*.csv"
+            candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        print(f"  ℹ  No Locust timeseries CSV found (pattern: {pattern})")
+        return empty
+
+    csv_path = candidates[0]
+    print(f"  📄 Locust cluster CSV: {csv_path.name}")
+
+    result = {c: {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []} for c in KNOWN_CLUSTERS}
+    today = datetime.now().date()
+
+    try:
+        import csv as _csv
+        with open(csv_path, "r", newline="") as f:
+            reader = _csv.DictReader(f)
+            prev_ts = None
+            day_offset = 0
+            for row in reader:
+                try:
+                    t = datetime.strptime(row["timestamp"], "%H:%M:%S")
+                    ts = t.replace(year=today.year, month=today.month, day=today.day)
+                    # Handle midnight rollover
+                    if prev_ts and ts < prev_ts:
+                        day_offset += 1
+                    from datetime import timedelta as _td
+                    ts = ts + _td(days=day_offset)
+                    prev_ts = ts
+                except ValueError:
+                    continue
+
+                for cn in KNOWN_CLUSTERS:
+                    try:
+                        count = int(float(row.get(f"{cn}_count", 0) or 0))
+                        p95   = float(row.get(f"{cn}_p95_ms", 0) or 0)
+                        slo   = float(row.get(f"{cn}_slo_pct", 0) or 0)
+                        result[cn]["timestamps"].append(ts)
+                        result[cn]["count"].append(count)
+                        result[cn]["p95_ms"].append(p95)
+                        result[cn]["slo_pct"].append(slo)
+                    except (ValueError, KeyError):
+                        pass
+    except Exception as e:
+        print(f"  ⚠  Error reading Locust cluster CSV: {e}")
+        return empty
+
+    total_rows = len(result[KNOWN_CLUSTERS[0]]["timestamps"])
+    print(f"  ✅ Loaded {total_rows} windows from Locust per-cluster CSV")
+    return result
+
+
+def load_locust_cluster_latency_csv(scenario: str = None, results_dir: Path = None) -> dict:
+    """
+    Legge il cluster_latency CSV prodotto da locustfile_multiingress.py.
+    Contiene statistiche aggregate per-cluster sull'INTERA durata del test
+    (equivalente al P95 globale flat di k6 / Romano):
+      cluster, region, requests, failures, fail_pct, avg_ms, p50_ms, p90_ms, p95_ms, p99_ms, slo_pct
+
+    Returns dict:
+        {cluster_name: {"requests": int, "failures": int, "avg_ms": float,
+                        "p50_ms": float, "p90_ms": float, "p95_ms": float,
+                        "p99_ms": float, "slo_pct": float}}
+    """
+    empty = {c: {"requests": 0, "failures": 0, "avg_ms": 0.0,
+                 "p50_ms": 0.0, "p90_ms": 0.0, "p95_ms": 0.0,
+                 "p99_ms": 0.0, "slo_pct": 0.0} for c in KNOWN_CLUSTERS}
+
+    search_dir = results_dir or Path("results/multiingress")
+    if not search_dir.exists():
+        return empty
+
+    pattern = f"{scenario}_cluster_latency_*.csv" if scenario else "*_cluster_latency_*.csv"
+    candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates and scenario:
+        # Fallback: strip _off / _on suffix (collector uses _off/_on, Locust CSV doesn't)
+        import re as _re
+        base_scenario = _re.sub(r'_(off|on)$', '', scenario)
+        if base_scenario != scenario:
+            pattern = f"{base_scenario}_cluster_latency_*.csv"
+            candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        print(f"  ℹ  No Locust cluster_latency CSV found (pattern: {pattern})")
+        return empty
+
+    csv_path = candidates[0]
+    print(f"  📄 Locust latency CSV: {csv_path.name}")
+
+    result = {c: dict(empty[c]) for c in KNOWN_CLUSTERS}
+    try:
+        import csv as _csv
+        with open(csv_path, "r", newline="") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                cn = row.get("cluster", "").strip()
+                if cn not in KNOWN_CLUSTERS:
+                    continue
+                result[cn] = {
+                    "requests": int(float(row.get("requests", 0) or 0)),
+                    "failures": int(float(row.get("failures", 0) or 0)),
+                    "avg_ms":   float(row.get("avg_ms",  0) or 0),
+                    "p50_ms":   float(row.get("p50_ms",  0) or 0),
+                    "p90_ms":   float(row.get("p90_ms",  0) or 0),
+                    "p95_ms":   float(row.get("p95_ms",  0) or 0),
+                    "p99_ms":   float(row.get("p99_ms",  0) or 0),
+                    "slo_pct":  float(row.get("slo_pct", 0) or 0),
+                }
+    except Exception as e:
+        print(f"  ⚠  Error reading Locust latency CSV: {e}")
+        return empty
+
+    loaded = [cn for cn in KNOWN_CLUSTERS if result[cn]["requests"] > 0]
+    print(f"  ✅ Loaded cluster_latency for: {', '.join(loaded)}")
+    return result
+
+
+def compute_global_p95_flat(cluster_latency: dict) -> Optional[float]:
+    """
+    P95 globale flat (stile k6/Romano): media pesata dei p95 per-cluster,
+    pesata per numero di request totali.
+    Approssima il vero p95 globale — comparabile con i risultati di Romano.
+    """
+    total_req = sum(v.get("requests", 0) for v in cluster_latency.values())
+    if total_req == 0:
+        return None
+    weighted = sum(
+        v.get("p95_ms", 0.0) * v.get("requests", 0)
+        for v in cluster_latency.values()
+        if v.get("requests", 0) > 0
+    )
+    return weighted / total_req
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Statistical Report (Console)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
+def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict,
+                 cluster_latency: dict = None):
     """Print comprehensive statistical report to console."""
     W = 78
 
@@ -729,12 +886,19 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
         kv("Total — Min:", str(min(reps)))
         kv("Total — Max:", str(max(reps)))
         kv("Total — Mean:", f"{sum(reps)/len(reps):.1f}")
-        for c in KNOWN_CLUSTERS:
-            cr = [v for v in fe_ts["per_cluster_replicas"][c] if v > 0]
-            if cr:
-                kv(f"{c}:", f"avg={sum(cr)/len(cr):.1f}, max={max(cr)}, active {len(cr)}/{len(reps)} snapshots")
-            else:
-                kv(f"{c}:", "never active")
+        # Replica distribution % per cluster (media snapshot con traffico)
+        active_snaps = [i for i, r in enumerate(reps) if r > 0]
+        if active_snaps:
+            print(f"\n    {'Cluster':<12} {'Avg reps':>10} {'Share %':>10} {'Max':>6}")
+            print(f"    {'─'*42}")
+            total_avg = sum(reps[i] for i in active_snaps) / len(active_snaps) if active_snaps else 1
+            for c in KNOWN_CLUSTERS:
+                cr_all = [fe_ts["per_cluster_replicas"][c][i] for i in active_snaps]
+                avg_c = sum(cr_all) / len(cr_all) if cr_all else 0
+                share = avg_c / max(total_avg, 1) * 100
+                region = CLUSTER_REGIONS.get(c, "")
+                print(f"    {c:<12} {avg_c:>10.1f} {share:>9.1f}% {max(cr_all) if cr_all else 0:>6d}")
+            print()
 
     # ── Scaling Activity ──
     header("4. SCALING ACTIVITY")
@@ -869,8 +1033,13 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
     if jain_vals:
         nonzero = [j for j in jain_vals if j > 0]
         if nonzero:
-            kv("Mean Jain Index:", f"{sum(nonzero)/len(nonzero):.3f}  (1.0 = perfect)")
+            mean_j = sum(nonzero) / len(nonzero)
+            kv("Mean Jain Index:", f"{mean_j:.3f}  (1.0 = perfect, 0.333 = worst)")
             kv("Min Jain Index:", f"{min(nonzero):.3f}")
+            status = "✅ Good" if mean_j > 0.85 else "⚠️  Unbalanced" if mean_j > 0.6 else "❌ Poor"
+            kv("Fairness status:", status)
+    else:
+        print(f"    ⚠️  No Jain data available")
 
     # ── Locust Response Time ──
     header("10. END-USER RESPONSE TIME (Locust)")
@@ -890,6 +1059,30 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
             kv("Failure ratio — Max:", f"{max(fr)*100:.2f}%")
     else:
         print(f"    ⚠️  No Locust data — run with --locust-host to capture")
+
+    # ── SLO Violation Rate + Global P95 flat (da cluster_latency CSV) ──
+    header("10b. GLOBAL P95 FLAT  (stile k6 / Romano — aggregato sull'intero test)")
+    kv("SLO threshold:", "1000 ms  (allineato Romano p95~1.0–1.5s, Cilantro 2s)")
+    if cluster_latency:
+        flat = compute_global_p95_flat(cluster_latency)
+        if flat is not None:
+            status = "✅" if flat < 1000 else ("⚠️" if flat < 2000 else "❌")
+            kv("p95 globale flat (pesato):", f"{flat:.0f} ms  {status}")
+            kv("  (Romano Scenario 2 rif.):", "~1320 ms  ON / ~2140 ms OFF")
+            print()
+            print(f"    {'Cluster':<12} {'Requests':>9}  {'p50':>7}  {'p90':>7}  {'p95':>7}  {'p99':>7}  {'SLO%':>7}")
+            print(f"    {'─'*58}")
+            for cn in KNOWN_CLUSTERS:
+                cl = cluster_latency[cn]
+                reg = CLUSTER_REGIONS.get(cn, "")
+                print(f"    {cn+' ('+reg+')':<17} {cl['requests']:>7}  "
+                      f"{cl['p50_ms']:>6.0f}ms  {cl['p90_ms']:>6.0f}ms  "
+                      f"{cl['p95_ms']:>6.0f}ms  {cl['p99_ms']:>6.0f}ms  "
+                      f"{cl['slo_pct']:>6.1f}%")
+        else:
+            kv("p95 globale flat:", "N/A  (cluster_latency CSV senza request)")
+    else:
+        kv("p95 globale flat:", "N/A  (cluster_latency CSV non trovato)")
 
     # ── Backend Services ──
     header("11. BACKEND SERVICES")
@@ -917,375 +1110,286 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict):
 def _fmt_time(ax):
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
-def generate_page1_core(fe_ts: dict, output_dir: Path, prefix: str = "dmos"):
-    """Page 1: Core metrics — Traffic, Replicas, Correlation, Distribution."""
+def generate_page_scaling(fe_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
+    """
+    Thesis Page 1 — Scaling & Resource Allocation.
+    Plots: Traffic+Predicted | Replica distribution % | Provisioning ratio | TtS proactive%.
+    """
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    fig.suptitle('DMOS Analysis — Core Metrics', fontsize=14, fontweight='bold')
+    fig.suptitle('DMOS Analysis — Scaling & Resource Allocation', fontsize=14, fontweight='bold')
     timestamps = fe_ts["timestamps"]
 
-    # 1. Traffic over time
+    # ── [0,0] Traffic + Predicted ──
     ax = axes[0, 0]
     ax.plot(timestamps, fe_ts["traffic"], color=COLORS['traffic'], lw=2, label='Actual Traffic')
     if any(p > 0 for p in fe_ts["predicted"]):
-        ax.plot(timestamps, fe_ts["predicted"], '--', color=COLORS['predicted'], lw=1.5, alpha=0.7, label='Predicted Traffic')
-    ax.axhline(y=HIGH_THRESHOLD, color='orange', ls='--', alpha=0.5, label=f'High Threshold ({HIGH_THRESHOLD})')
-    ax.axhline(y=LOW_THRESHOLD, color='cyan', ls='--', alpha=0.5, label=f'Low Threshold ({LOW_THRESHOLD})')
+        ax.plot(timestamps, fe_ts["predicted"], '--', color=COLORS['predicted'],
+                lw=1.5, alpha=0.8, label='Predicted Traffic')
     ax.set_ylabel('Traffic (req/s)')
-    ax.set_title('Traffic Over Time')
-    ax.legend(loc='upper left', fontsize=7)
+    ax.set_title('Traffic & Prediction Over Time')
+    ax.legend(fontsize=8)
     _fmt_time(ax)
 
-    # 2. Replicas over time
+    # ── [0,1] Replica distribution % per cluster (normalized stacked area) ──
     ax = axes[0, 1]
-    ax.plot(timestamps, fe_ts["total_replicas"], color=COLORS['replicas'], lw=2, marker='o', ms=3, label='Total Replicas')
-    ax.set_ylabel('Replica Count')
-    ax.set_title('Total Replica Count Over Time')
-    ax.legend()
-    _fmt_time(ax)
-
-    # 3. Traffic vs Replicas (dual axis)
-    ax = axes[1, 0]
-    ax.plot(timestamps, fe_ts["traffic"], color=COLORS['traffic'], lw=2, label='Traffic')
-    ax.set_ylabel('Traffic (req/s)', color=COLORS['traffic'])
-    ax.tick_params(axis='y', labelcolor=COLORS['traffic'])
-    ax2 = ax.twinx()
-    ax2.plot(timestamps, fe_ts["total_replicas"], color=COLORS['replicas'], lw=2, marker='o', ms=2)
-    ax2.set_ylabel('Replicas', color=COLORS['replicas'])
-    ax2.tick_params(axis='y', labelcolor=COLORS['replicas'])
-    ax.set_title('Traffic vs Replicas Correlation')
-    _fmt_time(ax)
-
-    # 4. Cluster distribution (stacked area)
-    ax = axes[1, 1]
     c1 = fe_ts["per_cluster_replicas"]["cluster1"]
     c2 = fe_ts["per_cluster_replicas"]["cluster2"]
     c3 = fe_ts["per_cluster_replicas"]["cluster3"]
-    ax.fill_between(timestamps, 0, c1, label='Cluster1', alpha=0.7, color=COLORS['cluster1'])
-    c1c2 = [a + b for a, b in zip(c1, c2)]
-    ax.fill_between(timestamps, c1, c1c2, label='Cluster2', alpha=0.7, color=COLORS['cluster2'])
-    total = [a + b + c for a, b, c in zip(c1, c2, c3)]
-    ax.fill_between(timestamps, c1c2, total, label='Cluster3', alpha=0.7, color=COLORS['cluster3'])
-    ax.set_ylabel('Replicas')
-    ax.set_title('Replica Distribution Across Clusters')
-    ax.legend()
-    _fmt_time(ax)
+    totals = [a + b + c for a, b, c in zip(c1, c2, c3)]
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / f"{prefix}_page1_core.png"
-    fig.savefig(path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-    print(f"  📊 {path.name}")
+    def _pct(vals, tots):
+        return [v / t * 100 if t > 0 else 0 for v, t in zip(vals, tots)]
 
-
-def generate_page2_scaling(fe_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
-    """Page 2: Scaling analysis — TtS, Oscillation, Provisioning, Events."""
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    fig.suptitle('DMOS Analysis — Scaling Quality', fontsize=14, fontweight='bold')
-    timestamps = fe_ts["timestamps"]
-
-    # 1. Over/Under-provisioning ratio timeline
-    ax = axes[0, 0]
-    prov = stats.get("provisioning", {})
-    ratios = prov.get("ratios", [])
-    if ratios:
-        # ratios is full-length (one per snapshot), 0 where traffic=0
-        min_len = min(len(timestamps), len(ratios))
-        ratio_ts = timestamps[:min_len]
-        ratios_plot = ratios[:min_len]
-        # Filter out zeros for plotting
-        plot_ts = [t for t, r in zip(ratio_ts, ratios_plot) if r > 0]
-        plot_ratios = [r for r in ratios_plot if r > 0]
-        if plot_ts:
-            ax.plot(plot_ts, plot_ratios, color=COLORS['overprov'], lw=1.5, alpha=0.8)
-            ax.fill_between(plot_ts, 1.0, plot_ratios,
-                            where=[r > 1.0 for r in plot_ratios],
-                            color=COLORS['overprov'], alpha=0.2, label='Over-provisioned')
-            ax.fill_between(plot_ts, plot_ratios, 1.0,
-                            where=[r < 1.0 for r in plot_ratios],
-                            color=COLORS['underprov'], alpha=0.2, label='Under-provisioned')
-        ax.axhline(y=1.0, color='black', ls='-', lw=1)
-        ax.axhline(y=1.15, color='green', ls='--', alpha=0.5, label='Ideal (1.15x)')
-    ax.set_ylabel('Provisioning Ratio')
-    ax.set_title('Over/Under-Provisioning Ratio')
+    p1, p2, p3 = _pct(c1, totals), _pct(c2, totals), _pct(c3, totals)
+    ax.stackplot(timestamps, p1, p2, p3,
+                 labels=[f'cluster1 ({CLUSTER_REGIONS.get("cluster1","DE")})',
+                         f'cluster2 ({CLUSTER_REGIONS.get("cluster2","FR")})',
+                         f'cluster3 ({CLUSTER_REGIONS.get("cluster3","PL")})'],
+                 colors=[COLORS['cluster1'], COLORS['cluster2'], COLORS['cluster3']],
+                 alpha=0.75)
+    ax.axhline(y=33.3, color='gray', ls='--', alpha=0.5, lw=1, label='Equal share (33%)')
+    ax.set_ylim(0, 100)
+    ax.set_ylabel('Replica Share (%)')
+    ax.set_title('Replica Distribution % per Cluster')
     ax.legend(fontsize=7)
     _fmt_time(ax)
 
-    # 2. Time to Scale events
-    ax = axes[0, 1]
+    # ── [1,0] Provisioning ratio (over/under-prov timeline) ──
+    ax = axes[1, 0]
+    prov = stats.get("provisioning", {})
+    ratios = prov.get("ratios", [])
+    if ratios:
+        min_len = min(len(timestamps), len(ratios))
+        ratio_ts = timestamps[:min_len]
+        ratios_plot = ratios[:min_len]
+        plot_ts     = [t for t, r in zip(ratio_ts, ratios_plot) if r > 0]
+        plot_ratios = [r for r in ratios_plot if r > 0]
+        if plot_ts:
+            ax.plot(plot_ts, plot_ratios, color=COLORS['overprov'], lw=1.5, alpha=0.9)
+            ax.fill_between(plot_ts, 1.0, plot_ratios,
+                            where=[r > 1.0 for r in plot_ratios],
+                            color=COLORS['overprov'], alpha=0.25, label='Over-provisioned')
+            ax.fill_between(plot_ts, plot_ratios, 1.0,
+                            where=[r < 1.0 for r in plot_ratios],
+                            color=COLORS['underprov'], alpha=0.25, label='Under-provisioned')
+    ax.axhline(y=1.0, color='black', ls='-', lw=1)
+    ax.axhline(y=1.15, color='green', ls='--', alpha=0.5, lw=1, label='Ideal (1.15×)')
+    over_p  = prov.get('over_pct', 0)
+    under_p = prov.get('under_pct', 0)
+    ideal_p = prov.get('ideal_pct', 0)
+    ax.text(0.02, 0.97,
+            f"Over: {over_p:.1f}%   Under: {under_p:.1f}%   Ideal: {ideal_p:.1f}%",
+            transform=ax.transAxes, fontsize=8, va='top',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    ax.set_ylabel('Provisioning Ratio  (capacity / demand)')
+    ax.set_title('Resource Utilization — Over/Under-Provisioning')
+    ax.legend(fontsize=7)
+    _fmt_time(ax)
+
+    # ── [1,1] Time to Scale — proactive vs reactive bar chart ──
+    ax = axes[1, 1]
     tts = stats.get("tts", {})
     tts_events = tts.get("events", [])
     if tts_events:
         pro_times = [e["cross_time"] for e in tts_events if e["proactive"]]
-        pro_vals = [e["tts_seconds"] for e in tts_events if e["proactive"]]
+        pro_vals  = [e["tts_seconds"] for e in tts_events if e["proactive"]]
         rea_times = [e["cross_time"] for e in tts_events if not e["proactive"]]
-        rea_vals = [e["tts_seconds"] for e in tts_events if not e["proactive"]]
+        rea_vals  = [e["tts_seconds"] for e in tts_events if not e["proactive"]]
         if pro_times:
-            ax.bar(pro_times, pro_vals, width=0.001, color='green', alpha=0.7, label=f'Proactive ({len(pro_times)})')
+            ax.bar(pro_times, pro_vals, width=0.0012, color='#27ae60', alpha=0.8,
+                   label=f'Proactive ({len(pro_times)})')
         if rea_times:
-            ax.bar(rea_times, rea_vals, width=0.001, color='red', alpha=0.7, label=f'Reactive ({len(rea_times)})')
+            ax.bar(rea_times, rea_vals, width=0.0012, color='#e74c3c', alpha=0.8,
+                   label=f'Reactive ({len(rea_times)})')
         ax.axhline(y=0, color='black', ls='-', lw=0.8)
-
-        # Add proactive % annotation
         pro_pct = tts.get("proactive_pct", 0)
-        ax.text(0.02, 0.95, f"Proactive: {pro_pct:.0f}%",
-                transform=ax.transAxes, fontsize=9, fontweight='bold',
-                color='green' if pro_pct > 50 else 'red',
-                verticalalignment='top',
+        color_pct = '#27ae60' if pro_pct > 50 else '#e74c3c'
+        n_total = len(tts_events)
+        n_pro   = tts.get("proactive_count", 0)
+        ax.text(0.02, 0.97,
+                f"Proactive: {pro_pct:.0f}%  ({n_pro}/{n_total} events)",
+                transform=ax.transAxes, fontsize=9, fontweight='bold', va='top',
+                color=color_pct,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax.set_ylabel('Time to Scale (seconds)')
-    ax.set_title('Time to Scale (TtS) — Negative = Proactive')
-    ax.legend()
-    _fmt_time(ax)
-
-    # 3. Scaling oscillation (direction changes in sliding window)
-    ax = axes[1, 0]
-    osc = stats.get("oscillation", {})
-    wc = osc.get("window_changes_timeline", [])
-    if wc:
-        # Create timestamps for windows
-        wc_ts = timestamps[:len(wc)]
-        ax.plot(wc_ts, wc, color='#9b59b6', lw=1.5)
-        ax.fill_between(wc_ts, 0, wc, alpha=0.2, color='#9b59b6')
-        ax.axhline(y=3, color='red', ls='--', alpha=0.5, label='Flapping threshold')
-    ax.set_ylabel('Direction Changes')
-    ax.set_title('Scaling Oscillation (5-min sliding window)')
-    ax.legend()
-    _fmt_time(ax)
-
-    # 4. Scaling events timeline
-    ax = axes[1, 1]
-    reps = fe_ts["total_replicas"]
-    up_t, up_d = [], []
-    dn_t, dn_d = [], []
-    for i in range(1, len(reps)):
-        delta = reps[i] - reps[i - 1]
-        if delta > 0:
-            up_t.append(timestamps[i]); up_d.append(delta)
-        elif delta < 0:
-            dn_t.append(timestamps[i]); dn_d.append(delta)
-    if up_t:
-        ax.scatter(up_t, up_d, color='green', s=80, marker='^', label='Scale Up', zorder=5)
-    if dn_t:
-        ax.scatter(dn_t, dn_d, color='red', s=80, marker='v', label='Scale Down', zorder=5)
-    ax.axhline(y=0, color='black', ls='-', lw=0.5)
-    ax.set_ylabel('Replica Change (Δ)')
-    ax.set_title('Scaling Events Timeline')
-    ax.legend()
+        ax.legend(fontsize=8)
+    else:
+        ax.text(0.5, 0.5, 'No scaling events detected',
+                transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+    ax.set_ylabel('Time to Scale (s)   [negative = before spike]')
+    ax.set_title('Time to Scale — Proactive vs Reactive')
     _fmt_time(ax)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / f"{prefix}_page2_scaling.png"
+    path = output_dir / f"{prefix}_page1_scaling.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
 
 
-def generate_page3_quality(data: list, fe_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
-    """Page 3: Quality metrics — Prediction scatter, Fairness, Scores, Duration."""
+def generate_page_qos(fe_ts: dict, locust_ts: dict, locust_cluster: dict,
+                      stats: dict, output_dir: Path, prefix: str = "dmos",
+                      cluster_latency: dict = None):
+    """
+    Thesis Page 2 — Quality of Service & Fairness.
+    Plots: p95 per cluster | SLO violation rate | Jain FI | KPI summary table.
+    """
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    fig.suptitle('DMOS Analysis — Quality Metrics', fontsize=14, fontweight='bold')
-    timestamps = fe_ts["timestamps"]
+    fig.suptitle('DMOS Analysis — Quality of Service & Fairness', fontsize=14, fontweight='bold')
 
-    # 1. Prediction accuracy scatter
+    # ── [0,0] p95 latency per cluster over time ──
     ax = axes[0, 0]
-    pairs = [(a, p) for a, p in zip(fe_ts["traffic"], fe_ts["predicted"]) if a > 1 and p > 0]
-    if pairs:
-        a_vals, p_vals = zip(*pairs)
-        ax.scatter(a_vals, p_vals, alpha=0.5, s=25, color='#2980b9')
-        mx = max(max(a_vals), max(p_vals))
-        ax.plot([0, mx], [0, mx], 'r--', lw=2, label='Perfect Prediction')
-        pa = stats.get("prediction_accuracy", {})
-        if pa.get("mape") is not None:
-            ax.text(0.05, 0.95, f"MAPE={pa['mape']:.1f}%\nR²={pa['r2']:.3f}",
-                    transform=ax.transAxes, va='top', fontsize=9,
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    ax.set_xlabel('Actual Traffic (req/s)')
-    ax.set_ylabel('Predicted Traffic (req/s)')
-    ax.set_title('Prediction Accuracy')
-    ax.legend()
+    has_data = False
+    for cn in KNOWN_CLUSTERS:
+        ts_c  = locust_cluster[cn]["timestamps"]
+        p95_c = locust_cluster[cn]["p95_ms"]
+        if ts_c and any(v > 0 for v in p95_c):
+            ax.plot(ts_c, p95_c, lw=2, color=COLORS[cn],
+                    label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
+            has_data = True
+    if has_data:
+        ax.axhline(y=1000, color='red', ls=':', lw=1.5, alpha=0.7, label='SLO 1 s')
+        ax.legend(fontsize=7)
+        _fmt_time(ax)
+    else:
+        ax.text(0.5, 0.5, 'No per-cluster latency data\n(run locustfile_multiingress.py)',
+                transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+    ax.set_ylabel('p95 Latency (ms)')
+    ax.set_title('p95 Latency per Cluster Over Time')
 
-    # 2. Jain Fairness Index over time
+    # ── [0,1] SLO violation rate per cluster ──
     ax = axes[0, 1]
+    has_slo = False
+    for cn in KNOWN_CLUSTERS:
+        ts_c  = locust_cluster[cn]["timestamps"]
+        slo_c = locust_cluster[cn]["slo_pct"]
+        if ts_c and any(v > 0 for v in slo_c):
+            ax.plot(ts_c, slo_c, lw=2, color=COLORS[cn],
+                    label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
+            has_slo = True
+    if has_slo:
+        ax.axhline(y=5, color='orange', ls='--', alpha=0.7, lw=1.5, label='5% threshold')
+        ax.set_ylim(bottom=0)
+        ax.legend(fontsize=7)
+        _fmt_time(ax)
+    else:
+        ax.text(0.5, 0.5, 'SLO data not available\n(update locustfile and re-run)',
+                transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+    ax.set_ylabel('SLO Violation Rate (%)')
+    ax.set_title('SLO Violation Rate per Cluster  (req > 1 s)')
+
+    # ── [1,0] Jain Fairness Index over time ──
+    ax = axes[1, 0]
     jain_ts, jain_vals = stats.get("jain_data", ([], []))
     if jain_ts:
         ax.plot(jain_ts, jain_vals, color='#16a085', lw=2)
         ax.fill_between(jain_ts, 0, jain_vals, alpha=0.15, color='#16a085')
-        ax.axhline(y=1.0, color='green', ls='--', alpha=0.5, label='Perfect fairness')
-        ax.axhline(y=1/3, color='red', ls='--', alpha=0.5, label='Worst case (1/3)')
+        ax.axhline(y=1.0, color='green',  ls='--', alpha=0.6, lw=1, label='Perfect (1.0)')
+        ax.axhline(y=1/3, color='red',    ls='--', alpha=0.5, lw=1, label='Worst (0.333)')
+        nonzero_j = [j for j in jain_vals if j > 0]
+        if nonzero_j:
+            mean_j = sum(nonzero_j) / len(nonzero_j)
+            ax.text(0.02, 0.05, f"Mean Jain: {mean_j:.3f}",
+                    transform=ax.transAxes, fontsize=9, fontweight='bold',
+                    color='#16a085',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         ax.set_ylim(0, 1.1)
-    ax.set_ylabel('Jain Fairness Index')
-    ax.set_title('Cluster Fairness Over Time')
-    ax.legend(fontsize=7)
-    _fmt_time(ax)
-
-    # 3. Multi-objective scores evolution
-    ax = axes[1, 0]
-    for c in KNOWN_CLUSTERS:
-        scores = fe_ts["per_cluster_scores"][c]
-        if any(s > 0 for s in scores):
-            ax.plot(timestamps, scores, lw=1.5, label=c, color=COLORS[c])
-    ax.set_ylabel('Multi-Objective Score')
-    ax.set_title('Cluster Scores Over Time')
-    ax.legend()
-    _fmt_time(ax)
-
-    # 4. Scheduling duration over time
-    ax = axes[1, 1]
-    # Extract from raw data
-    sched_counts = []
-    sched_avgs = []
-    sched_ts = []
-    prev_count = 0
-    prev_sum_val = 0
-    for snap in data:
-        fe = snap["dmos"]["services"].get("frontend", {})
-        cnt = fe.get("scheduling_invocations", 0)
-        avg = fe.get("avg_scheduling_duration_s", 0)
-        if cnt > prev_count:
-            sched_ts.append(snap["_ts"])
-            sched_avgs.append(avg)
-            prev_count = cnt
-    if sched_ts:
-        ax.bar(sched_ts, sched_avgs, width=0.0005, color='#e67e22', alpha=0.7)
-        avg_dur = sum(sched_avgs) / len(sched_avgs)
-        ax.axhline(y=avg_dur, color='red', ls='--', alpha=0.7, label=f'Avg: {avg_dur:.3f}s')
-    ax.set_ylabel('Duration (seconds)')
-    ax.set_title('Scheduling Duration')
-    ax.legend()
-    _fmt_time(ax)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / f"{prefix}_page3_quality.png"
-    fig.savefig(path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-    print(f"  📊 {path.name}")
-
-
-def generate_page4_response(data: list, fe_ts: dict, locust_ts: dict, stats: dict, output_dir: Path, prefix: str = "dmos"):
-    """Page 4: Response Time & Backend — Locust RT, RT vs Replicas, Backend svcs, KPI summary."""
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    fig.suptitle('DMOS Analysis — End-User & Backend Impact', fontsize=14, fontweight='bold')
-
-    # 1. Locust Response Time over time
-    ax = axes[0, 0]
-    if locust_ts["timestamps"]:
-        ts = locust_ts["timestamps"]
-        if any(v > 0 for v in locust_ts["p95_rt"]):
-            ax.plot(ts, locust_ts["p95_rt"], color=COLORS['p95'], lw=2, label='p95')
-        if any(v > 0 for v in locust_ts["p99_rt"]):
-            ax.plot(ts, locust_ts["p99_rt"], color='#c0392b', lw=1.5, ls='--', label='p99')
-        if any(v > 0 for v in locust_ts["median_rt"]):
-            ax.plot(ts, locust_ts["median_rt"], color='#2ecc71', lw=1.5, label='Median')
-        ax.legend()
-        _fmt_time(ax)
-    else:
-        ax.text(0.5, 0.5, 'No Locust data\nRun with --locust-host',
-                transform=ax.transAxes, ha='center', va='center', fontsize=12, color='gray')
-    ax.set_ylabel('Response Time (ms)')
-    ax.set_title('End-User Response Time (Locust)')
-
-    # 2. p95 RT vs Total Replicas scatter
-    ax = axes[0, 1]
-    if locust_ts["timestamps"]:
-        # Align by nearest timestamp
-        rt_map = {}
-        for i, t in enumerate(locust_ts["timestamps"]):
-            rt_map[t] = locust_ts["p95_rt"][i]
-        
-        aligned_rt = []
-        aligned_reps = []
-        for i, t in enumerate(fe_ts["timestamps"]):
-            # Find nearest locust timestamp
-            best = None
-            best_diff = float('inf')
-            for lt in locust_ts["timestamps"]:
-                diff = abs((t - lt).total_seconds())
-                if diff < best_diff:
-                    best_diff = diff
-                    best = lt
-            if best and best_diff < 20 and rt_map.get(best, 0) > 0:
-                aligned_rt.append(rt_map[best])
-                aligned_reps.append(fe_ts["total_replicas"][i])
-        
-        if aligned_rt:
-            sc = ax.scatter(aligned_reps, aligned_rt, alpha=0.5, s=30, c=COLORS['p95'])
-            ax.set_xlabel('Total Replicas')
-            ax.set_ylabel('p95 Response Time (ms)')
-    ax.set_title('Response Time vs Replica Count')
-
-    # 3. Backend services replicas over time (stacked)
-    ax = axes[1, 0]
-    has_backend = False
-    for svc in KNOWN_SERVICES:
-        if svc == "frontend":
-            continue
-        svc_ts = extract_service_ts(data, svc)
-        if any(r > 0 for r in svc_ts["total_replicas"]):
-            ax.plot(svc_ts["timestamps"], svc_ts["total_replicas"], lw=1.5, label=svc, alpha=0.8)
-            has_backend = True
-    if not has_backend:
-        ax.text(0.5, 0.5, 'Backend services not yet\nscaled by DMOS',
-                transform=ax.transAxes, ha='center', va='center', fontsize=11, color='gray')
-    else:
         ax.legend(fontsize=7)
         _fmt_time(ax)
-    ax.set_ylabel('Total Replicas')
-    ax.set_title('Backend Services Scaling')
+    else:
+        ax.text(0.5, 0.5, 'No Jain data available',
+                transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+    ax.set_ylabel('Jain Fairness Index  (n = 3 clusters)')
+    ax.set_title('Cluster Fairness — Jain Index Over Time')
 
-    # 4. KPI Summary table
+    # ── [1,1] KPI Summary table (6 thesis metrics) ──
     ax = axes[1, 1]
     ax.axis('off')
-    pa = stats.get("prediction_accuracy", {})
     prov = stats.get("provisioning", {})
-    tts = stats.get("tts", {})
-    osc = stats.get("oscillation", {})
+    tts  = stats.get("tts", {})
+    jain_ts_v, jain_vals_v = stats.get("jain_data", ([], []))
+    nonzero_j = [j for j in jain_vals_v if j > 0]
+    jain_mean = sum(nonzero_j) / len(nonzero_j) if nonzero_j else 0
 
-    # Use active-MAPE for KPI dashboard (more meaningful than tail-inflated overall)
-    mape_kpi = pa.get("mape_active") or pa.get("mape")
+    # Global p95: mean of per-cluster p95 values from Locust CSV (fallback: global locust)
+    all_p95 = []
+    for cn in KNOWN_CLUSTERS:
+        all_p95.extend(v for v in locust_cluster[cn]["p95_ms"] if v > 0)
+    if all_p95:
+        global_p95_mean: Optional[float] = sum(all_p95) / len(all_p95)
+    else:
+        rt_vals = [v for v in locust_ts["p95_rt"] if v > 0]
+        global_p95_mean = sum(rt_vals) / len(rt_vals) if rt_vals else None
+
+    # SLO violation: mean across all clusters/windows
+    all_slo = []
+    for cn in KNOWN_CLUSTERS:
+        all_slo.extend(v for v in locust_cluster[cn]["slo_pct"] if v >= 0)
+    global_slo_mean: Optional[float] = sum(all_slo) / len(all_slo) if all_slo else None
+
+    over_p  = prov.get("over_pct", 0)
+    under_p = prov.get("under_pct", 0)
+    pro_pct = tts.get("proactive_pct", 0)
+    n_pro   = tts.get("proactive_count", 0)
+    n_total_events = n_pro + tts.get("reactive_count", 0)
+
+    def _slo_status(v: Optional[float]) -> str:
+        if v is None: return "—"
+        return "✅" if v < 5 else "⚠️" if v < 15 else "❌"
+
+    # p95 flat globale (Romano/k6 style)
+    p95_flat: Optional[float] = compute_global_p95_flat(cluster_latency) if cluster_latency else None
+
     kpis = [
-        ("Metric", "Value", "Status"),
-        ("MAPE (active)", f"{mape_kpi:.1f}%" if mape_kpi else "N/A",
-         "✅" if mape_kpi and mape_kpi < 20 else "⚠️" if mape_kpi else "—"),
-        ("R²", f"{pa.get('r2', 'N/A'):.3f}" if pa.get('r2') is not None else "N/A",
-         "✅" if pa.get('r2') and pa['r2'] > 0.7 else "⚠️" if pa.get('r2') else "—"),
-        ("Proactive %", f"{tts.get('proactive_pct', 0):.0f}%",
-         "✅" if tts.get('proactive_pct', 0) > 50 else "⚠️"),
-        ("Avg TtS", f"{tts.get('avg_tts', 0):.1f}s",
-         "✅" if tts.get('avg_tts', 0) < 0 else "⚠️"),
-        ("Over-prov %", f"{prov.get('over_pct', 0):.1f}%",
-         "✅" if prov.get('over_pct', 0) < 30 else "⚠️"),
-        ("Under-prov %", f"{prov.get('under_pct', 0):.1f}%",
-         "✅" if prov.get('under_pct', 0) < 10 else "⚠️"),
-        ("Flapping", str(osc.get("flapping_windows", 0)),
-         "✅" if osc.get("flapping_windows", 0) == 0 else "⚠️"),
+        ("Metric", "Value", "✓"),
+        ("p95 latency (windowed mean)",
+         f"{global_p95_mean:.0f} ms" if global_p95_mean else "N/A",
+         "✅" if global_p95_mean and global_p95_mean < 1000 else ("⚠️" if global_p95_mean else "—")),
+        ("p95 latency (flat / k6-style)",
+         f"{p95_flat:.0f} ms" if p95_flat is not None else "N/A",
+         "✅" if p95_flat is not None and p95_flat < 1000 else ("⚠️" if p95_flat is not None and p95_flat < 2000 else ("❌" if p95_flat else "—"))),
+        ("SLO violation rate (mean)",
+         f"{global_slo_mean:.1f}%" if global_slo_mean is not None else "N/A",
+         _slo_status(global_slo_mean)),
+        ("Jain Fairness Index (mean)",
+         f"{jain_mean:.3f}   (1.0 = perfect)",
+         "✅" if jain_mean > 0.85 else ("⚠️" if jain_mean > 0 else "—")),
+        ("Over-provisioned time",
+         f"{over_p:.1f}% of snapshots",
+         "✅" if over_p < 30 else "⚠️"),
+        ("Under-provisioned time",
+         f"{under_p:.1f}% of snapshots",
+         "✅" if under_p < 10 else "⚠️"),
+        ("Proactive scaling %",
+         f"{pro_pct:.0f}%   ({n_pro}/{n_total_events} scale-ups)",
+         "✅" if pro_pct > 50 else "⚠️"),
     ]
 
     table = ax.table(
-        cellText=[row for row in kpis],
+        cellText=kpis,
         cellLoc='center',
         loc='center',
-        colWidths=[0.4, 0.3, 0.15]
+        colWidths=[0.44, 0.34, 0.12],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(10)
-    table.scale(1, 1.6)
+    table.scale(1, 1.75)
 
-    # Style header
+    # Style header row
     for j in range(3):
         cell = table[0, j]
         cell.set_facecolor('#2c3e50')
         cell.set_text_props(color='white', fontweight='bold')
 
-    # Style data rows
+    # Style data rows (alternating)
     for i in range(1, len(kpis)):
         for j in range(3):
             cell = table[i, j]
             cell.set_facecolor('#ecf0f1' if i % 2 == 0 else 'white')
 
-    ax.set_title('KPI Summary Dashboard', fontsize=12, fontweight='bold', pad=20)
+    ax.set_title('KPI Summary — Thesis Metrics', fontsize=12, fontweight='bold', pad=20)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    path = output_dir / f"{prefix}_page4_response.png"
+    path = output_dir / f"{prefix}_page2_qos.png"
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  📊 {path.name}")
@@ -1295,7 +1399,9 @@ def generate_page4_response(data: list, fe_ts: dict, locust_ts: dict, stats: dic
 # JSON Export
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict, output_file: Path):
+def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict,
+                         locust_cluster: dict, output_file: Path,
+                         cluster_latency: dict = None):
     """Export comprehensive analysis as JSON."""
 
     traffic_vals = [v for v in fe_ts["traffic"] if v > 0]
@@ -1342,6 +1448,9 @@ def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: 
             "mean": 0,
             "min": 0,
         },
+        "slo_violation": {
+            "global_mean_pct": None,
+        },
     }
 
     jain_ts, jain_vals = stats.get("jain_data", ([], []))
@@ -1350,7 +1459,38 @@ def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: 
         summary["jain_fairness"]["mean"] = round(sum(nonzero_jain) / len(nonzero_jain), 4)
         summary["jain_fairness"]["min"] = round(min(nonzero_jain), 4)
 
-    if locust_ts["p95_rt"]:
+    # Per-cluster p95 and SLO stats from Locust CSV
+    per_cluster_p95: dict = {}
+    per_cluster_slo: dict = {}
+    all_slo_vals: list = []
+    all_p95_vals: list = []
+    for cn in KNOWN_CLUSTERS:
+        c_p95 = [v for v in locust_cluster[cn]["p95_ms"] if v > 0]
+        c_slo = [v for v in locust_cluster[cn]["slo_pct"] if v >= 0]
+        per_cluster_p95[cn] = round(sum(c_p95) / len(c_p95), 1) if c_p95 else None
+        per_cluster_slo[cn] = round(sum(c_slo) / len(c_slo), 2) if c_slo else None
+        all_p95_vals.extend(c_p95)
+        all_slo_vals.extend(c_slo)
+
+    summary["slo_violation"]["global_mean_pct"] = (
+        round(sum(all_slo_vals) / len(all_slo_vals), 2) if all_slo_vals else None
+    )
+    summary["slo_violation"]["per_cluster_mean_pct"] = per_cluster_slo
+
+    # p95 response time
+    p95_flat = compute_global_p95_flat(cluster_latency) if cluster_latency else None
+    if all_p95_vals:
+        summary["response_time"] = {
+            "p95_global_mean_ms": round(sum(all_p95_vals) / len(all_p95_vals), 1),
+            "p95_global_flat_ms": round(p95_flat, 1) if p95_flat is not None else None,
+            "p95_per_cluster_mean_ms": per_cluster_p95,
+        }
+        if cluster_latency:
+            summary["response_time"]["p95_per_cluster_flat_ms"] = {
+                cn: round(cluster_latency[cn]["p95_ms"], 1)
+                for cn in KNOWN_CLUSTERS if cluster_latency[cn]["requests"] > 0
+            }
+    elif locust_ts["p95_rt"]:
         rt = [v for v in locust_ts["p95_rt"] if v > 0]
         summary["response_time"] = {
             "p95_min_ms": min(rt) if rt else 0,
@@ -1398,7 +1538,7 @@ def _build_output_paths(input_file: str) -> tuple:
 
     output_dir = parent / scenario
     output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir, prefix
+    return output_dir, prefix, scenario
 
 def analyze(filepath: str):
     """Main analysis pipeline."""
@@ -1408,7 +1548,7 @@ def analyze(filepath: str):
     print(f"\n  Input: {filepath}\n")
 
     # Calcola output paths
-    output_dir, prefix = _build_output_paths(filepath)
+    output_dir, prefix, scenario = _build_output_paths(filepath)
     print(f"  📁 Output: {output_dir}/")
     print(f"  📝 Prefix: {prefix}\n")
 
@@ -1436,28 +1576,31 @@ def analyze(filepath: str):
     stats["oscillation"] = compute_scaling_oscillation(fe_ts["total_replicas"], fe_ts["timestamps"])
     stats["jain_data"] = compute_jain_fairness(data, "frontend")
 
-    # Console report
-    print_report(data, fe_ts, locust_ts, stats)
+    # Load per-cluster Locust CSV (prodotto da locustfile_multiingress.py)
+    locust_cluster = load_locust_cluster_csv(scenario=scenario)
 
-    # Generate plots (passa prefix per i nomi file)
+    # Load cluster_latency CSV (aggregato sull'intero test — stile k6/Romano)
+    cluster_latency = load_locust_cluster_latency_csv(scenario=scenario)
+
+    # Console report
+    print_report(data, fe_ts, locust_ts, stats, cluster_latency=cluster_latency)
+
+    # Generate plots (2 thesis pages)
     print("  Generating plots...")
-    generate_page1_core(fe_ts, output_dir, prefix)
-    generate_page2_scaling(fe_ts, stats, output_dir, prefix)
-    generate_page3_quality(data, fe_ts, stats, output_dir, prefix)
-    generate_page4_response(data, fe_ts, locust_ts, stats, output_dir, prefix)
+    generate_page_scaling(fe_ts, stats, output_dir, prefix)
+    generate_page_qos(fe_ts, locust_ts, locust_cluster, stats, output_dir, prefix,
+                      cluster_latency=cluster_latency)
 
     # Export JSON
     json_path = output_dir / f"{prefix}_analysis.json"
-    export_analysis_json(data, fe_ts, locust_ts, stats, json_path)
-
-    # Report testuale
-    report_path = output_dir / f"{prefix}_report.txt"
-    # (se vuoi salvare il report testuale su file, aggiungi qui la logica)
+    export_analysis_json(data, fe_ts, locust_ts, stats, locust_cluster, json_path,
+                         cluster_latency=cluster_latency)
 
     print(f"\n{'=' * 78}")
     print(f"✅ Analysis complete!")
     print(f"   Output:   {output_dir}/")
-    print(f"   Plots:    {prefix}_page{{1..4}}_*.png")
+    print(f"   Plots:    {prefix}_page1_scaling.png")
+    print(f"             {prefix}_page2_qos.png")
     print(f"   JSON:     {json_path.name}")
     print(f"{'=' * 78}\n")
 

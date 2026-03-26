@@ -15,6 +15,7 @@ Oppure automaticamente da clusters.yaml (ip:30090 per ogni cluster).
 """
 
 import os
+import math
 import requests
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
@@ -201,14 +202,15 @@ class PrometheusClient:
           Request rate in req/s per questo cluster, o 0.0 se nessuna fonte disponibile.
         """
 
-        # ── Try 1: Hubble HTTP metrics (Cilium L7 via Nginx Ingress) ────
-        # Disponibile dopo: deploy Nginx Ingress + CNP frontend con rules: http.
-        # Il traffico arriva da Nginx (pod interno) → Envoy attivo → Hubble conta.
+        # ── Try 1: Hubble HTTP metrics (Cilium L7 via Cilium Ingress) ────
+        # Disponibile dopo: Cilium Ingress Controller attivo + CNP frontend con rules: http.
+        # Il traffico arriva da Cilium Ingress Envoy → Hubble conta le richieste HTTP.
         #
-        # NOTA [5m]: Hubble-metrics scrape interval ≈ 60s → serve finestra ≥ 2× scrape
-        # per garantire almeno 2 data point a rate(). Con [1m] il timing è troppo
-        # stretto (1 solo sample → rate()=0 → fallback intermittente su cluster1).
-        # [5m] dà 4-5 campioni → rate() stabile e coerente su tutti i cluster.
+        # NOTA [1m]: Hubble-metrics scrape_interval = 15s (configurato in
+        # prometheus-helm-values.yaml extraScrapeConfigs job 'hubble').
+        # Con 15s interval, rate()[1m] ha ~4 campioni → stabile.
+        # Rispetto a [5m] (usato quando scrape era 60s), il lag durante flash crowd
+        # scende da ~5min a ~60s → DMOS scala ~4× più veloce al picco.
         #
         # NOTA destination_workload: filtro per servizio specifico, altrimenti
         # tutti i servizi restituirebbero il totale del namespace.
@@ -216,7 +218,7 @@ class PrometheusClient:
             f'sum(rate(hubble_http_requests_total{{'
             f'destination_workload="{service}",'
             f'destination_namespace="{namespace}"'
-            f'}}[5m]))'
+            f'}}[1m]))'
         )
 
         try:
@@ -298,12 +300,13 @@ class PrometheusClient:
         Get p95 latency for a service in milliseconds.
         Filtra per destination_namespace per coerenza con get_request_rate().
         """
-        # Try Hubble first (disponibile con Nginx Ingress + CNP L7)
+        # Try Hubble first (disponibile con Cilium Ingress + CNP L7)
+        # [1m] con scrape_interval=15s → ~4 campioni per finestra → stabile
         query = f'''
         histogram_quantile(0.95,
           sum(rate(hubble_http_request_duration_seconds_bucket{{
             destination_namespace="{namespace}"
-          }}[5m])) by (le)
+          }}[1m])) by (le)
         ) * 1000
         '''
         
@@ -311,11 +314,22 @@ class PrometheusClient:
             result = self.query(query)
             if result and result.get('result') and len(result['result']) > 0:
                 val = float(result['result'][0]['value'][1])
-                if val > 0:
+                # Guard contro +Inf: histogram_quantile ritorna +Inf quando tutto il
+                # traffico cade nell'ultimo bucket (es. latenza > upper bound del bucket).
+                # float('+Inf') > 0 è True → passerebbe il check, poi 1/(1+η×∞)=0.
+                if val > 0 and math.isfinite(val):
+                    logger.debug(
+                        f"Hubble p95 latency ({self.cluster_name}): {val:.1f}ms"
+                    )
                     return val
+                elif math.isinf(val):
+                    logger.warning(
+                        f"Hubble p95 latency ({self.cluster_name}): +Inf — "
+                        f"tutti i sample nel bucket superiore, fallback a baseline"
+                    )
         except Exception:
             pass
-        
+
         # Fallback: Istio
         query = f'''
         histogram_quantile(0.95, 
@@ -341,6 +355,120 @@ class PrometheusClient:
             return int(float(result['result'][0]['value'][1]))
         return 0
     
+    def get_network_rtt_ms(self, peer_ips: List[str]) -> float:
+        """
+        Restituisce la RTT media (ms) verso i peer cluster via ping_exporter.
+
+        ping_exporter (czerwonk/ping_exporter, deploy Helm in namespace observability)
+        misura la RTT con ICMP ping verso target configurati (IP nodi degli altri cluster).
+        La metrica esposta è `ping_rtt_mean_seconds` con label `target=<IP>`.
+
+        La RTT inter-cluster è usata come proxy della distanza geografica utente-cluster:
+        - Cluster con bassa RTT verso i peer → geograficamente centrale → Φ_net alto
+        - Cluster con alta RTT verso i peer → geograficamente periferico → Φ_net basso
+
+        Con tc netem attivo:
+          cluster1 → cluster2 RTT ≈ 150ms, cluster1 → cluster3 RTT ≈ 350ms
+          → cluster1 RTT_avg = (150+350)/2 = 250ms → Φ_net ≈ 0.368
+
+        Args:
+            peer_ips: IP nodi degli altri cluster
+                      (es. ["192.168.1.246", "192.168.1.247"] per cluster1)
+
+        Returns:
+            RTT media in ms, o fallback_rtt (5.0 ms) se ping_exporter non disponibile.
+        """
+        if not peer_ips:
+            return 5.0  # nessun peer → fallback LAN
+
+        # Costruisce regex OR per matchare tutti i target peer in una query
+        targets_regex = "|".join(peer_ips)
+        query = f'avg(ping_rtt_mean_seconds{{target=~"{targets_regex}"}}) * 1000'
+
+        try:
+            result = self.query(query)
+            if result and result.get('result') and len(result['result']) > 0:
+                val = float(result['result'][0]['value'][1])
+                if val > 0:
+                    logger.info(
+                        f"✅ Network RTT ({self.cluster_name}): {val:.1f} ms "
+                        f"[targets: {targets_regex}]"
+                    )
+                    return val
+                else:
+                    logger.debug(
+                        f"ping_exporter: RTT=0 ({self.cluster_name}) — "
+                        f"ping_exporter non ancora scrappato o target non raggiungibili"
+                    )
+        except Exception as e:
+            logger.debug(f"ping_exporter query exception ({self.cluster_name}): {e}")
+
+        logger.debug(
+            f"ping_exporter non disponibile ({self.cluster_name}), "
+            f"RTT fallback a 5.0 ms (LAN baseline senza netem)"
+        )
+        return 5.0  # fallback: latenza LAN senza delay simulato
+
+    def get_ingress_rate(self, namespace: str = "online-boutique") -> float:
+        """
+        Misura il traffico in ingresso nel cluster via Cilium Ingress Controller (Envoy).
+
+        Con Cilium Ingress:
+          Locust → Cilium Ingress Envoy (NodePort 30080) → frontend pod
+                            ↑
+          Hubble L7 (abilitato dalla CNP con rules: http su fromEntities: ingress)
+          esporta hubble_http_requests_total con traffic_direction="ingress".
+
+        Label strategy:
+          La configurazione Hubble usa labelsContext=source_namespace,source_workload,...
+          Per il traffico da reserved:ingress, source_namespace e source_workload sono
+          vuoti (identità riservata). Il filtro corretto è:
+            reporter="server"          → il frontend pod è il destinatario
+            traffic_direction="ingress"→ traffico in arrivo al frontend
+          Questo cattura tutto il traffico inbound al frontend (utenti via ingress +
+          health check kubelet), ma la componente esterna è dominante durante il test.
+          Poiché Φ_demand usa quote relative (rate_i / Σ_j rate_j), il rumore
+          costante dei health check si cancella nella normalizzazione.
+
+        NOTA [5m]: stesso rationale di get_request_rate() — Hubble scrape interval
+          15s (scrape_interval configurato nel job 'hubble' di prometheus-helm-values.yaml).
+          Con 15s interval, rate()[1m] ha ~4 campioni → stabile e reattivo.
+          Lag ridotto da ~5min ([5m] con 60s scrape) a ~60s ([1m] con 15s scrape).
+
+        Uso:
+          Level 1 (WHERE): Φ_demand(i) = ingress_rate_i / Σ_j ingress_rate_j
+          → cluster con più traffico ingresso = più utenti → più repliche.
+
+        Returns:
+            req/s in ingresso per questo cluster, o 0.0 se Hubble L7 non disponibile.
+        """
+        query = (
+            f'sum(rate(hubble_http_requests_total{{'
+            f'destination_workload="frontend",'
+            f'destination_namespace="{namespace}",'
+            f'reporter="server",'
+            f'traffic_direction="ingress"'
+            f'}}[1m]))'
+        )
+        try:
+            result = self.query(query)
+            if result and result.get('result') and len(result['result']) > 0:
+                rps = float(result['result'][0]['value'][1])
+                if rps > 0:
+                    logger.info(
+                        f"✅ Ingress rate ({self.cluster_name}): {rps:.1f} req/s "
+                        f"[hubble L7 ingress traffic_direction]"
+                    )
+                    return rps
+        except Exception as e:
+            logger.debug(f"Hubble ingress query exception ({self.cluster_name}): {e}")
+
+        logger.debug(
+            f"hubble L7 ingress non disponibile ({self.cluster_name}), "
+            f"Φ_demand userà il fallback uniforme"
+        )
+        return 0.0
+
     def get_cpu_usage_percent(self, deployment: str, namespace: str = "online-boutique") -> Optional[float]:
         """Get CPU usage percentage on THIS cluster"""
         query = f'''

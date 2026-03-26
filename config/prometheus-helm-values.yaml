@@ -41,7 +41,13 @@ server:
     # ── Hubble metrics (Cilium L7 HTTP) ─────────────────────────────
     # Hubble espone metriche sulla porta 9091 tramite il DaemonSet cilium.
     # Questo job scrape tutti i pod cilium-agent nel namespace kube-system.
+    #
+    # IMPORTANTE: scrape_interval: 15s (override del default 60s globale).
+    # Con 15s interval, rate()[1m] ha 4 campioni → stabile e reattivo.
+    # Con 60s (default), rate()[1m] aveva 1 solo campione → rate()=0 intermittente.
+    # Effetto: DMOS vede lo spike di traffico con ~60s di ritardo invece di ~5min.
     - job_name: 'hubble'
+      scrape_interval: 15s
       honor_labels: true
       kubernetes_sd_configs:
         - role: pod

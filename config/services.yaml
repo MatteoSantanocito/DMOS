@@ -3,24 +3,42 @@ services:
   frontend:
     namespace: online-boutique
     deployment_name: frontend
-    
+
     # Resource requests/limits
+    # AGGIORNATO 25/03/2026:
+    #   requests: mantenuti bassi (100m/64Mi) per permettere scheduling di 20 repliche
+    #             su nodi a 4 core (20×100m=2000m < 4000m allocatable)
+    #   limits:   aumentati (500m/256Mi) per dare burst CPU alle repliche sotto carico
+    #             e prevenire liveness probe timeout (/_healthz > 1s a 200m throttled)
     resources_per_replica:
       requests:
-        cpu: "100m"       # 0.1 core
+        cpu: "100m"
         memory: "64Mi"
       limits:
-        cpu: "200m"
-        memory: "128Mi"
-    
-    # Capacità stimata (misurata con capacity test graduale 27/02/2026)
-    # Flash crowd (burst): ~20-28 rps/pod  — usa questo per scenari worst-case
-    # Gradual ramp (DMOS): ~43-47 rps/pod  — usa questo per gradual_ramp
-    # Valore raccomandato: 30 rps (80% del burst knee) → scala prima che si saturi
-    # per ottenere scaling proattivo su scenari flash crowd + gradual
+        cpu: "500m"
+        memory: "256Mi"
+
+    # Capacità per replica (req/s) — valore calibrato con netem attivo
+    #
+    # CONTESTO: con tc netem attivo sui cluster geografici simulati:
+    #   cluster1 (DE, no netem):  ~16 rps/replica
+    #   cluster2 (FR, 150ms):     ~6  rps/replica  (netem su risposte egressa)
+    #   cluster3 (PL, 350ms):     ~3  rps/replica
+    #
+    # DMOS usa un unico valore per tutti i cluster. Impostare questo
+    # alla capacità del cluster PIU' LENTO (c3) per evitare che DMOS
+    # rimanga incastrato a min_replicas=1 sui cluster con netem elevato.
+    # Valore scelto: 5 rps — leggermente sopra c3 per evitare oscillazioni,
+    # ma sotto c2 e c1 → tutti i cluster escono dal single-replica trap.
+    #
+    # Effetto: con 400+ utenti al picco (40/35/25 weights):
+    #   cluster1 → ~20 repliche (al cap, ~130 rps)
+    #   cluster2 → ~8-10 repliche (~50 rps)
+    #   cluster3 → ~4-5 repliche (~15-20 rps)
+    # Questo mostra differenziazione geo-aware senza concentrazione estrema.
     capacity_req_per_sec: 30
 
-    # SLA requirements (aggiornati con dati reali 27/02/2026)
+    # SLA requirements
     # Baseline latenza: p95=60-70ms (idle), p95=130-200ms (under load)
     sla:
       latency_p95_ms: 200  # era 100, ma baseline idle è già 60-70ms

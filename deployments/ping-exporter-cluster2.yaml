@@ -1,0 +1,115 @@
+---
+# ping_exporter — cluster2 (Paris/FR, 192.168.1.246)
+# Misura RTT verso cluster1 (Frankfurt) e cluster3 (Warsaw)
+#
+# Deploy: kubectl apply -f deployments/ping-exporter-cluster2.yaml --context cluster2
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ping-exporter-config
+  namespace: observability
+data:
+  config.yml: |
+    targets:
+      - host: 192.168.1.245
+        name: cluster1-frankfurt-de
+      - host: 192.168.1.247
+        name: cluster3-warsaw-pl
+
+    dns:
+      refresh: 15m
+
+    ping:
+      interval: 1s
+      timeout: 3s
+      history-size: 42
+      payload-size: 56
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ping-exporter
+  namespace: observability
+  labels:
+    app: ping-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ping-exporter
+  template:
+    metadata:
+      labels:
+        app: ping-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9427"
+    spec:
+      containers:
+        - name: ping-exporter
+          image: czerwonk/ping_exporter:latest
+          command: ["/app/ping_exporter"]
+          args:
+            - --config.path=/config/config.yml
+          ports:
+            - containerPort: 9427
+              name: metrics
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+          securityContext:
+            capabilities:
+              add: ["NET_RAW"]   # necessario per inviare pacchetti ICMP
+      volumes:
+        - name: config
+          configMap:
+            name: ping-exporter-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ping-exporter
+  namespace: observability
+  labels:
+    app: ping-exporter
+spec:
+  selector:
+    app: ping-exporter
+  ports:
+    - name: metrics
+      port: 9427
+      targetPort: 9427
+  type: ClusterIP
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ping-exporter
+  namespace: observability
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ping-exporter
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

@@ -165,11 +165,30 @@ def scrape_locust_stats(locust_url: str) -> dict:
         # during the idle phase, inflating success metrics artificially.
         _zero_users = (stats["current_users"] == 0)
 
-        # Aggregated row is the last one with name "Aggregated"
+        # In Locust 2.x, aggregated stats are in stats_total (not in stats[])
+        agg = data.get("stats_total", {})
+        if agg:
+            raw_rps = agg.get("current_rps", 0)
+            stats["total_rps"] = 0.0 if _zero_users else raw_rps
+            stats["avg_response_time_ms"] = agg.get("avg_response_time", 0)
+            stats["median_response_time_ms"] = agg.get("median_response_time", 0)
+            fail_ratio = 0
+            if agg.get("num_requests", 0) > 0:
+                fail_ratio = agg["num_failures"] / agg["num_requests"]
+            stats["total_fail_ratio"] = fail_ratio
+
+        # p95/p99 are available directly in the root JSON (Locust 2.x)
+        p95_direct = data.get("current_response_time_percentile_95", 0)
+        p99_direct = data.get("current_response_time_percentile_99", 0)
+        if p95_direct:
+            stats["p95_response_time_ms"] = p95_direct
+        if p99_direct:
+            stats["p99_response_time_ms"] = p99_direct
+
+        # Per-endpoint stats
         for entry in data.get("stats", []):
             name = entry.get("name", "")
             method = entry.get("method", "")
-
             endpoint_data = {
                 "num_requests": entry.get("num_requests", 0),
                 "num_failures": entry.get("num_failures", 0),
@@ -178,18 +197,7 @@ def scrape_locust_stats(locust_url: str) -> dict:
                 "current_rps": entry.get("current_rps", 0),
                 "current_fail_per_sec": entry.get("current_fail_per_sec", 0),
             }
-
-            if name == "Aggregated":
-                # If no active users, force rps=0 regardless of stale rolling avg
-                raw_rps = entry.get("current_rps", 0)
-                stats["total_rps"] = 0.0 if _zero_users else raw_rps
-                stats["avg_response_time_ms"] = entry.get("avg_response_time", 0)
-                stats["median_response_time_ms"] = entry.get("median_response_time", 0)
-                fail_ratio = 0
-                if entry.get("num_requests", 0) > 0:
-                    fail_ratio = entry["num_failures"] / entry["num_requests"]
-                stats["total_fail_ratio"] = fail_ratio
-            else:
+            if name and name != "Aggregated":
                 stats["per_endpoint"][f"{method} {name}"] = endpoint_data
 
         # Fetch percentiles from /stats/requests (response_time_percentiles)
@@ -255,14 +263,15 @@ def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
     """
     Build a unified snapshot combining DMOS + Locust data.
     All services, all clusters, all metrics in one JSON object.
+    Robust to empty/failed DMOS scrape: all missing fields default to 0.
     """
-    p = dmos["parsed"]
+    p = dmos.get("parsed", {})  # {} when DMOS unreachable — don't crash
 
     # Per-service metrics
     services_data = {}
     for svc in KNOWN_SERVICES:
         svc_data = {
-            "actual_traffic": p["actual_traffic"].get(svc, 0.0),
+            "actual_traffic": p.get("actual_traffic", {}).get(svc, 0.0),
             "predicted_traffic_total": 0.0,
             "clusters": {}
         }
@@ -270,12 +279,12 @@ def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
         total_replicas = 0
         for cluster in KNOWN_CLUSTERS:
             key = (cluster, svc)
-            cr = p["current_replicas"].get(key, 0)
-            tr = p["target_replicas"].get(key, 0)
-            sc = p["cluster_score"].get(key, 0.0)
-            pt = p["predicted_traffic"].get(key, 0.0)
-            su = p["scaling_events"].get((cluster, svc, "scale_up"), 0)
-            sd = p["scaling_events"].get((cluster, svc, "scale_down"), 0)
+            cr = p.get("current_replicas", {}).get(key, 0)
+            tr = p.get("target_replicas", {}).get(key, 0)
+            sc = p.get("cluster_score", {}).get(key, 0.0)
+            pt = p.get("predicted_traffic", {}).get(key, 0.0)
+            su = p.get("scaling_events", {}).get((cluster, svc, "scale_up"), 0)
+            sd = p.get("scaling_events", {}).get((cluster, svc, "scale_down"), 0)
 
             svc_data["clusters"][cluster] = {
                 "current_replicas": cr,
@@ -291,8 +300,8 @@ def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
         svc_data["total_replicas"] = total_replicas
 
         # Scheduling duration (average from histogram)
-        sched_sum = p["scheduling_duration_sum"].get(svc, 0.0)
-        sched_count = p["scheduling_duration_count"].get(svc, 0)
+        sched_sum = p.get("scheduling_duration_sum", {}).get(svc, 0.0)
+        sched_count = p.get("scheduling_duration_count", {}).get(svc, 0)
         svc_data["avg_scheduling_duration_s"] = (
             sched_sum / sched_count if sched_count > 0 else 0.0
         )
@@ -337,7 +346,7 @@ def print_summary(snap: dict, iteration: int, total: int):
         p95 = loc.get("p95_response_time_ms", 0)
         rps = loc.get("total_rps", 0)
         users = loc.get("current_users", 0)
-        fail = loc.get("failure_ratio", 0)
+        fail = loc.get("total_fail_ratio", 0)
         locust_str = f"p95={p95:.0f}ms rps={rps:.1f} users={users} fail={fail:.1%}"
     else:
         locust_str = "locust: waiting..."
@@ -372,7 +381,7 @@ def print_summary(snap: dict, iteration: int, total: int):
 
 # ─── Main Collector Loop ─────────────────────────────────────────────────────
 
-def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL, scenario: str = "test"):
+def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL, scenario: str = "test", skip_dmos: bool = False):
     """
     Main collection loop.
     Outputs:
@@ -409,12 +418,42 @@ def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL,
     print("=" * 80)
     print()
 
+    # ── Wait for DMOS to be reachable (max 60s) ──
+    if skip_dmos:
+        print("  DMOS endpoint skipped (--no-dmos) — baseline/OFF run, DMOS metrics = 0")
+    else:
+        print("  Waiting for DMOS metrics endpoint...", end="", flush=True)
+        for _attempt in range(20):
+            try:
+                r = __import__("requests").get(DMOS_METRICS_URL, timeout=3)
+                if r.status_code == 200:
+                    print(" ✅ ready")
+                    break
+            except Exception:
+                pass
+            print(".", end="", flush=True)
+            time.sleep(3)
+        else:
+            print(" ⚠ DMOS not reachable after 60s — collecting anyway (zeros until it starts)")
+
+    # Auto-stop con cooldown post-test:
+    #   1. Rileva fine Locust: users=0 e rps≈0 per LOCUST_IDLE_DETECT campioni
+    #   2. Continua a raccogliere per COOLDOWN_SAMPLES campioni extra (per vedere
+    #      DMOS scalare giù — ogni ciclo di scheduling è 30s, quindi 8×15s = 120s
+    #      copre ~4 cicli di scale-down)
+    #   3. Poi ferma
+    LOCUST_IDLE_DETECT  = 3   # campioni per confermare che Locust è fermo
+    COOLDOWN_SAMPLES    = 8   # campioni extra dopo rilevamento idle (= 120s extra)
+    _locust_ever_active = False
+    _locust_idle_streak = 0
+    _cooldown_remaining = -1  # -1 = cooldown non ancora iniziato
+
     with open(jsonl_file, 'w') as fj, open(legacy_file, 'w') as ft:
         for i in range(iterations):
             timestamp = datetime.now().isoformat()
 
             # Scrape both sources
-            dmos = scrape_dmos_metrics()
+            dmos = {"raw": "", "parsed": {}} if skip_dmos else scrape_dmos_metrics()
             locust = scrape_locust_stats(locust_url)
 
             # Build unified snapshot
@@ -428,19 +467,50 @@ def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL,
             ft.write(f"\n{'='*70}\n")
             ft.write(f"Timestamp: {timestamp}\n")
             ft.write(f"{'='*70}\n")
-            ft.write(dmos["raw"])
+            ft.write(dmos.get("raw", ""))
             ft.write("\n")
             ft.flush()
 
             # Console
             print_summary(snap, i + 1, iterations)
 
+            # ── Auto-stop con cooldown post-test ──────────────────────
+            loc = snap.get("locust", {})
+            if _cooldown_remaining > 0:
+                # Siamo in fase di cooldown: aspettiamo che DMOS scala giù
+                _cooldown_remaining -= 1
+                remaining_skip = iterations - i - 1 - _cooldown_remaining
+                print(f"           [cooldown] {_cooldown_remaining * SCRAPE_INTERVAL}s rimasti "
+                      f"— osservazione scale-down DMOS "
+                      f"({remaining_skip} iter risparmiate al termine)")
+            elif _cooldown_remaining == 0:
+                # Cooldown finito → ferma il collector
+                remaining = iterations - i - 1
+                print(f"\n  [auto-stop] Cooldown completato — "
+                      f"fine collezione ({remaining} iter risparmiate)")
+                break
+            elif loc.get("available"):
+                users = loc.get("current_users", 0)
+                rps   = loc.get("total_rps", 0.0)
+                if users > 0 or rps > 1.0:
+                    _locust_ever_active = True
+                    _locust_idle_streak = 0
+                elif _locust_ever_active:
+                    # Locust era attivo e ora è fermo (users=0, rps≈0)
+                    _locust_idle_streak += 1
+                    if _locust_idle_streak >= LOCUST_IDLE_DETECT:
+                        # Test confermato finito → avvia cooldown
+                        _cooldown_remaining = COOLDOWN_SAMPLES
+                        print(f"\n  [cooldown] Locust terminato — "
+                              f"raccolta per {COOLDOWN_SAMPLES * SCRAPE_INTERVAL}s extra "
+                              f"per osservare scale-down DMOS...")
+
             if i < iterations - 1:
                 time.sleep(SCRAPE_INTERVAL)
 
     print()
     print("=" * 80)
-    print("✅ Collection complete!")
+    print("  Collection complete!")
     print(f"  JSONL: {jsonl_file}")
     print(f"  TXT:   {legacy_file}")
     print("=" * 80)
@@ -458,9 +528,11 @@ if __name__ == "__main__":
                         help="Nome scenario per il file output (es. flash_crowd, sinusoidal)")
     parser.add_argument("--locust-host", default=LOCUST_API_URL,
                         help="Locust web UI URL (default: http://localhost:8089)")
+    parser.add_argument("--no-dmos", action="store_true",
+                        help="Skip DMOS endpoint wait (use for baseline/DMOS-OFF runs)")
     args = parser.parse_args()
 
     print(f"\nStarting in 3 seconds...")
     time.sleep(3)
     run_collector(duration_seconds=args.duration, locust_url=args.locust_host,
-                  scenario=args.scenario)
+                  scenario=args.scenario, skip_dmos=args.no_dmos)

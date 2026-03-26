@@ -1,0 +1,47 @@
+# ping_exporter Helm values — cluster2 (Paris/FR, 192.168.1.246)
+#
+# SCOPO:
+#   Configura ping_exporter per misurare la RTT dal cluster2 verso i nodi
+#   degli altri cluster (cluster1 = Frankfurt, cluster3 = Warsaw).
+#
+# DEPLOY:
+#   helm upgrade --install ping-exporter czerwonk/ping-exporter \
+#     --namespace observability --create-namespace \
+#     --context cluster2 \
+#     -f config/ping-exporter-cluster2-values.yaml
+#
+# OUTPUT ATTESO (dopo setup tc netem):
+#   ping_rtt_mean_seconds{target="192.168.1.245"} 0.150  ← Frankfurt, 150ms
+#     (delay outgoing di cluster2 → probe ritarda 150ms all'andata,
+#      cluster1 risponde immediatamente → RTT ≈ 150ms)
+#   ping_rtt_mean_seconds{target="192.168.1.247"} 0.500  ← Warsaw, ~500ms
+#     (cluster2 delay 150ms outgoing + cluster3 delay 350ms reply → 500ms)
+
+config:
+  targets:
+    - host: 192.168.1.245
+      name: "cluster1-frankfurt-de"
+    - host: 192.168.1.247
+      name: "cluster3-warsaw-pl"
+
+  interval: 1s
+  timeout: 3s
+  payload-size: 56
+
+serviceMonitor:
+  enabled: true
+  namespace: observability
+  labels:
+    release: prometheus
+
+service:
+  type: ClusterIP
+  port: 9427
+
+resources:
+  requests:
+    memory: "32Mi"
+    cpu: "10m"
+  limits:
+    memory: "64Mi"
+    cpu: "50m"

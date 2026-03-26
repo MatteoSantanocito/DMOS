@@ -1,0 +1,79 @@
+# ping_exporter Helm values — cluster1 (Frankfurt/DE, 192.168.1.245)
+#
+# SCOPO:
+#   Configura ping_exporter per misurare la RTT dal cluster1 verso i nodi
+#   degli altri cluster (cluster2 = Paris, cluster3 = Warsaw).
+#   La metrica ping_rtt_mean_seconds viene usata da DMOS per Φ_net.
+#
+# DEPLOY:
+#   helm repo add czerwonk https://charts.0l.de
+#   helm repo update
+#   helm upgrade --install ping-exporter czerwonk/ping-exporter \
+#     --namespace observability --create-namespace \
+#     --context cluster1 \
+#     -f config/ping-exporter-cluster1-values.yaml
+#
+# VERIFICA METRICHE:
+#   kubectl port-forward -n observability svc/ping-exporter 9427:9427 --context cluster1
+#   curl -s http://localhost:9427/metrics | grep ping_rtt_mean_seconds
+#
+# OUTPUT ATTESO (dopo setup tc netem su cluster2 e cluster3):
+#   ping_rtt_mean_seconds{target="192.168.1.246"} 0.150  ← Paris, 150ms
+#   ping_rtt_mean_seconds{target="192.168.1.247"} 0.350  ← Warsaw, 350ms
+#
+# PROMETHEUS SCRAPE:
+#   Prometheus di cluster1 (porta 30090) deve scrapare ping-exporter.
+#   ServiceMonitor auto-creato se prometheus-operator è installato.
+#   Altrimenti: aggiungere scrape job manuale (vedi sotto).
+
+# Target da pingare: IP nodi degli altri cluster
+# cluster2 (Paris/FR): 192.168.1.246
+# cluster3 (Warsaw/PL): 192.168.1.247
+config:
+  targets:
+    - host: 192.168.1.246
+      name: "cluster2-paris-fr"
+    - host: 192.168.1.247
+      name: "cluster3-warsaw-pl"
+
+  # Intervallo tra i ping (default: 1s — buona granularità per RTT stabili)
+  interval: 1s
+
+  # Timeout per singolo ping
+  timeout: 3s
+
+  # Numero di pacchetti ICMP per misurazione (aumenta per maggiore accuratezza)
+  payload-size: 56
+
+# ServiceMonitor per Prometheus Operator (kube-prometheus-stack)
+# Se il cluster usa prometheus-operator, questo abilita lo scraping automatico.
+serviceMonitor:
+  enabled: true
+  namespace: observability
+  labels:
+    release: prometheus  # deve matchare il label del Prometheus CR
+
+# Service per esposizione metriche
+service:
+  type: ClusterIP
+  port: 9427
+
+# Risorse contenute (ping_exporter è leggero)
+resources:
+  requests:
+    memory: "32Mi"
+    cpu: "10m"
+  limits:
+    memory: "64Mi"
+    cpu: "50m"
+
+# ── Aggiunta scrape job manuale (se NON si usa prometheus-operator) ──────────
+#
+# Se Prometheus è configurato con scrape_configs statici, aggiungere:
+#
+# scrape_configs:
+#   - job_name: 'ping-exporter-cluster1'
+#     static_configs:
+#       - targets: ['ping-exporter.observability.svc.cluster.local:9427']
+#     metrics_path: /metrics
+#     scrape_interval: 15s

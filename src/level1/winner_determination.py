@@ -54,95 +54,139 @@ class WinnerDetermination:
         """
         Alloca le repliche PROPORZIONALMENTE tra i cluster in base allo score.
 
-        Policy per le rimanze: dopo l'allocazione proporzionale, le repliche non
-        assegnate (dovute all'arrotondamento intero) vengono redistribuite a partire
-        dal cluster con score più alto che ha ancora capacità residua. Questo evita
-        di inviare repliche extra al cluster con score più basso, che potrebbe essere
-        già sovraccarico o con risorse limitate.
+        Algoritmo: Hamilton method (Largest Remainder Method) con multi-pass
+        per gestire i vincoli di capacità.
+
+        Fase 1 — multi-pass capacity-aware:
+          Calcola la quota ideale proporzionale per ogni cluster attivo.
+          Se un cluster supera la propria capacità residua, viene cappato
+          e rimosso dagli attivi. La domanda eccedente viene redistribuita
+          proporzionalmente ai cluster rimanenti (loop fino a stabilità).
+
+        Fase 2 — Largest Remainder Method (Hamilton):
+          Quando nessun cluster è over-capacity, usa floor() per le quote
+          intere e assegna le repliche rimanenti (rimanze da arrotondamento)
+          una alla volta ai cluster con la parte frazionaria più alta.
+
+        Proprietà:
+          - Ogni cluster riceve almeno floor(quota_proporzionale) repliche
+          - Ogni cluster riceve al massimo floor(quota_proporzionale) + 1
+          - Le repliche extra vanno ai cluster con la frazione più alta
+            (= quelli che hanno "più credito" proporzionale non ancora soddisfatto)
+          - La concentrazione su un singolo cluster avviene SOLO quando gli
+            altri sono effettivamente a piena capacità (non per arrotondamento)
         """
         if not bids or total_replicas <= 0:
             return [], False
 
         logger.info(f"Allocating {total_replicas} replicas among {len(bids)} clusters")
 
-        # Sort by score descending
+        # Sort by score descending (log + tie-breaking LRM)
         sorted_bids = sorted(bids, key=lambda b: b.score, reverse=True)
 
-        # Total score
         total_score = sum(bid.score for bid in sorted_bids)
-
         if total_score == 0:
             logger.error("Total score is zero")
             return [], False
 
-        # ── Fase 1: allocazione proporzionale (tutti i cluster, nessun caso speciale) ──
+        # ── Multi-pass: redistribuisci la domanda quando un cluster è over-capacity ──
+        assigned: Dict[str, int] = {bid.cluster_name: 0 for bid in sorted_bids}
+        capped: set = set()
+        active = list(sorted_bids)
+        demand = total_replicas
+
+        while demand > 0 and active:
+            active_score = sum(bid.score for bid in active)
+            if active_score == 0:
+                break
+
+            # Quota ideale (reale, non intera) per ogni cluster attivo
+            ideal: Dict[str, float] = {
+                bid.cluster_name: demand * bid.score / active_score
+                for bid in active
+            }
+
+            # Cluster la cui quota ideale supera la capacità residua
+            over_cap = [
+                bid for bid in active
+                if ideal[bid.cluster_name] > (bid.capacity - assigned[bid.cluster_name]) + 1e-9
+            ]
+
+            if over_cap:
+                # Cappa i cluster over-capacity e ricalcola la domanda residua
+                for bid in over_cap:
+                    spare = bid.capacity - assigned[bid.cluster_name]
+                    if spare > 0:
+                        assigned[bid.cluster_name] = bid.capacity
+                        demand -= spare
+                        logger.info(
+                            f"  Capped {bid.cluster_name} → {bid.capacity} replicas "
+                            f"(ideal={ideal[bid.cluster_name]:.2f}, assigned={spare}, "
+                            f"excess={ideal[bid.cluster_name]-spare:.2f} redistributed to remaining clusters)"
+                        )
+                    capped.add(bid.cluster_name)
+                active = [b for b in active if b.cluster_name not in capped]
+
+            else:
+                # ── Largest Remainder Method (Hamilton): nessuno over-capacity ──
+                # Fase 2a: floor allocation
+                for bid in active:
+                    floored = int(ideal[bid.cluster_name])
+                    spare = bid.capacity - assigned[bid.cluster_name]
+                    add = min(floored, spare)
+                    assigned[bid.cluster_name] += add
+                    demand -= add
+
+                # Fase 2b: distribuisci le rimanze ai cluster con frazione più alta
+                fractions = sorted(
+                    active,
+                    key=lambda b: ideal[b.cluster_name] - int(ideal[b.cluster_name]),
+                    reverse=True
+                )
+                for bid in fractions:
+                    if demand <= 0:
+                        break
+                    spare = bid.capacity - assigned[bid.cluster_name]
+                    if spare > 0:
+                        assigned[bid.cluster_name] += 1
+                        demand -= 1
+                        frac = ideal[bid.cluster_name] - int(ideal[bid.cluster_name])
+                        logger.info(
+                            f"  +1 LRM remainder (frac={frac:.3f}) → {bid.cluster_name}"
+                        )
+
+                break  # allocazione completata
+
+        # ── Costruisci risultato ──────────────────────────────────────────────
         alloc_map: Dict[str, Allocation] = {}
-        remaining = total_replicas
-
         for bid in sorted_bids:
-            quota = bid.score / total_score
-            allocated = int(round(total_replicas * quota))
-
-            # Almeno 1 se c'è capacità
-            if allocated == 0 and remaining > 0 and bid.capacity > 0:
-                allocated = 1
-
-            # Limita a capacità e rimanenti
-            allocated = min(allocated, bid.capacity, remaining)
-
-            if allocated > 0:
+            a = assigned.get(bid.cluster_name, 0)
+            if a > 0:
                 alloc_map[bid.cluster_name] = Allocation(
                     cluster_name=bid.cluster_name,
-                    replicas=allocated,
-                    quota=allocated / total_replicas,
+                    replicas=a,
+                    quota=a / total_replicas,
                     score=bid.score
                 )
-                remaining -= allocated
-
-                logger.info(f"  Allocated {allocated} replicas to {bid.cluster_name} "
-                            f"(quota={allocated/total_replicas*100:.1f}%, score={bid.score:.3f})")
-
-        # ── Fase 2: redistribuisci le rimanze ai cluster migliori con capacità residua ──
-        # Itera dal cluster con score più alto verso il basso: assegna le rimanze
-        # ai cluster che hanno ancora spazio (allocato < capacità). Questo evita
-        # di sovraccaricare il cluster con score più basso (potenzialmente saturo).
-        if remaining > 0:
-            logger.info(f"  Distributing {remaining} remainder replica(s) "
-                        f"starting from highest-score cluster")
-
-            for bid in sorted_bids:          # già ordinati dal migliore al peggiore
-                if remaining <= 0:
-                    break
-                alloc = alloc_map.get(bid.cluster_name)
-                current = alloc.replicas if alloc else 0
-                spare = bid.capacity - current
-                if spare <= 0:
-                    continue
-
-                add = min(remaining, spare)
-                if alloc:
-                    alloc.replicas += add
-                    alloc.quota = alloc.replicas / total_replicas
-                else:
-                    alloc_map[bid.cluster_name] = Allocation(
-                        cluster_name=bid.cluster_name,
-                        replicas=add,
-                        quota=add / total_replicas,
-                        score=bid.score
-                    )
-                remaining -= add
-                logger.info(f"  +{add} remainder → {bid.cluster_name} "
-                            f"(score={bid.score:.3f}, spare={spare})")
+                logger.info(
+                    f"  Allocated {a} replicas to {bid.cluster_name} "
+                    f"(quota={a/total_replicas*100:.1f}%, score={bid.score:.3f})"
+                )
 
         allocations = list(alloc_map.values())
-        success = remaining == 0
+        success = demand == 0
 
         if success:
-            logger.info(f"Successfully allocated all {total_replicas} replicas "
-                        f"across {len(allocations)} clusters")
+            logger.info(
+                f"Successfully allocated all {total_replicas} replicas "
+                f"across {len(allocations)} clusters"
+            )
         else:
-            logger.warning(f"  Could not allocate {remaining} replicas")
-        
+            logger.warning(
+                f"  Could not allocate {demand} replicas "
+                f"(clusters at full capacity)"
+            )
+
         return allocations, success
 
     def allocate_with_vickrey_pricing(

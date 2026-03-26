@@ -2,48 +2,114 @@
 # DMOS Score Weights Configuration
 # ============================================================================
 #
-# Score formula: score_i = ω₁·Φ_lat + ω₂·Φ_cap + ω₃·Φ_load + ω₄·Φ_carbon
-# All weights must sum to 1.0
+# Score formula:
+#   score_i = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_load·Φ_load
+#           + ω_carbon·Φ_carbon + ω_net·Φ_net
 #
-# For the thesis, run experiments with BOTH profiles to show carbon impact:
-#   1. "carbon_agnostic" - ω_carbon = 0.0 (baseline, no carbon consideration)
-#   2. "balanced"        - ω_carbon = 0.2 (default, moderate carbon awareness)
-#   3. "carbon_priority" - ω_carbon = 0.4 (aggressive carbon optimization)
+# Tutti i pesi devono sommare a 1.0.
+#
+# Per la tesi, eseguire esperimenti con profili diversi per mostrare
+# l'impatto della geo-awareness e della carbon-awareness:
+#   1. "carbon_agnostic" — ω_carbon=0.0  (baseline, senza carbon)
+#   2. "balanced"        — ω_carbon=0.20 (default, moderata carbon+geo awareness)
+#   3. "carbon_priority" — ω_carbon=0.40 (ottimizzazione aggressiva carbon)
+#   4. "latency_priority"— ω_latency alt (per SLO latency-critici)
+#   5. "geo_aware"       — ω_network alt (massima geo-awareness, tesi principal)
 # ============================================================================
 
 # ── Score function weights (Level 1 - Cluster Selection) ──────────────────
+#
+# Score formula (aggiornata con Φ_demand):
+#   score_i = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_load·Φ_load
+#           + ω_carbon·Φ_carbon + ω_net·Φ_net + ω_demand·Φ_demand
+#
+# Φ_demand(i) = ingress_rate_i / Σ_j ingress_rate_j
+#   Misura la domanda geografica: frazione di traffico ingress su questo cluster.
+#   Fonte: nginx_ingress_controller_requests{ingress="frontend-ingress"}
+#   Equivalente funzionale di source="reserved:ingress" (Romano) con Nginx Ingress.
+#
+# Tutti i pesi (incluso omega_demand) devono sommare a 1.0.
 
 score_weights:
-  # Profile 1: Carbon-agnostic (for baseline comparison)
+  # Profile 0: Cold-start / blind allocation (Phase 1, primi 120s)
+  # Usato dallo scheduler nella FASE 1 prima che le metriche osservate
+  # siano statisticamente significative.
+  #
+  # Segnali affidabili a freddo (disponibili al primo request):
+  #   Φ_demand  → ingress rates Nginx (stabili dal primo request)
+  #   Φ_net     → RTT inter-cluster ping_exporter (non dipende dal traffico)
+  #   Φ_carbon  → carbon intensity statica per regione
+  #
+  # Segnali DISABILITATI a freddo (ω=0):
+  #   Φ_response_time → p95 su [5m] con pochi campioni → stima rumorosa
+  #   Φ_cap           → CPU pod appena avviati → letture instabili
+  #   Φ_load          → pochi campioni nella finestra
+  cold_start:
+    omega_latency:  0.00   # Φ_response_time disabilitato: nessun campione affidabile
+    omega_capacity: 0.00   # Φ_cap disabilitato: CPU instabile a cold start
+    omega_load:     0.00   # Φ_load disabilitato: pochi campioni nella finestra
+    omega_carbon:   0.30   # statico per regione, sempre affidabile
+    omega_network:  0.35   # RTT inter-cluster stabile, non dipende dal traffico
+    omega_demand:   0.35   # Nginx ingress rate, disponibile al primo request
+
+  # Profile 1: Carbon-agnostic (baseline comparison — senza carbon)
   carbon_agnostic:
-    omega_latency: 0.45
-    omega_capacity: 0.35
-    omega_load: 0.20
-    omega_carbon: 0.00      # <-- No carbon consideration
-  
-  # Profile 2: Balanced (default - moderate carbon awareness)
-  balanced:
-    omega_latency: 0.35
+    omega_latency:  0.35
     omega_capacity: 0.25
-    omega_load: 0.15
-    omega_carbon: 0.25      # <-- 25% weight on carbon
-    
+    omega_load:     0.15
+    omega_carbon:   0.00    # <-- Nessuna considerazione carbon
+    omega_network:  0.15    # <-- Geo-awareness via RTT inter-cluster
+    omega_demand:   0.10    # <-- Domanda geografica via Nginx ingress
+
+  # Profile 2: Balanced (default — moderate carbon + geo + demand awareness)
+  balanced:
+    omega_latency:  0.25
+    omega_capacity: 0.20
+    omega_load:     0.15
+    omega_carbon:   0.20    # <-- 20% peso sul carbon
+    omega_network:  0.10    # <-- 10% peso sulla geo-awareness (RTT inter-cluster)
+    omega_demand:   0.10    # <-- 10% peso sulla domanda geografica (Nginx ingress)
+
   # Profile 3: Carbon-priority (aggressive green scheduling)
   carbon_priority:
-    omega_latency: 0.25
-    omega_capacity: 0.20
-    omega_load: 0.15
-    omega_carbon: 0.40      # <-- 40% weight on carbon
-  
-  # Profile 4: Latency-priority (for latency-critical SLOs)
-  latency_priority:
-    omega_latency: 0.50
-    omega_capacity: 0.25
-    omega_load: 0.15
-    omega_carbon: 0.10
+    omega_latency:  0.15
+    omega_capacity: 0.15
+    omega_load:     0.10
+    omega_carbon:   0.40    # <-- 40% peso sul carbon
+    omega_network:  0.10
+    omega_demand:   0.10    # <-- Mantiene awareness della domanda geografica
 
-  # Active profile (change this to switch between experiments)
-  active: "balanced"
+  # Profile 4: Latency-priority (per SLO latency-critici)
+  latency_priority:
+    omega_latency:  0.40
+    omega_capacity: 0.15
+    omega_load:     0.10
+    omega_carbon:   0.05
+    omega_network:  0.20    # <-- Peso significativo su geo (latenza utente-cluster)
+    omega_demand:   0.10    # <-- Domanda geografica: repliche vicino agli utenti
+
+  # Profile 5: Geo-aware (massima sensibilità alla posizione geografica)
+  # Pensato per dimostrare l'effetto combinato di Φ_net + Φ_demand nella tesi.
+  # Con tc netem attivo: cluster1 (DE) ha RTT bassa → Φ_net alto.
+  # Con flash crowd su cluster1: Φ_demand(1) alto → score dominante → più repliche.
+  geo_aware:
+    omega_latency:  0.15
+    omega_capacity: 0.10
+    omega_load:     0.10
+    omega_carbon:   0.15
+    omega_network:  0.35    # <-- 35% peso sulla geo-awareness via RTT
+    omega_demand:   0.15    # <-- 15% peso sulla domanda geografica (più alto qui)
+
+romano_like:
+  omega_latency:  0.10   # Romano non usa P95 Hubble, ma lascia un minimo
+  omega_capacity: 0.05   # quasi ignorato come Romano
+  omega_load:     0.10
+  omega_carbon:   0.00   # Romano non ha carbon
+  omega_network:  0.40   # Romano basa tutto su ping RTT inter-cluster
+  omega_demand:   0.35   # Romano basa tutto su ingress rate per cluster
+
+  # Profilo attivo (cambia questo per switchare tra esperimenti)
+  active: "latency_priority"
 
 # ── Objective weights (Level 2 - Autoscaling decisions) ───────────────────
 
@@ -60,3 +126,29 @@ carbon_parameters:
   nu: 0.5          # Carbon penalty coefficient in Φ_carbon = exp(-ν·CI/CI_max)
   ci_max: 800.0    # Max carbon intensity for normalization (gCO2/kWh)
                    # Raised to 800 to accommodate Poland's high CI (~650)
+
+# ── Network score parameters (geo-awareness via ping_exporter) ────────────
+#
+# Φ_net(i) = exp(-ρ × RTT_avg_i / RTT_max)
+#
+# RTT_avg_i: RTT media dal cluster i verso tutti i peer cluster (ms)
+#            misurata da ping_exporter (czerwonk/ping_exporter via Helm)
+#            con target = IP nodi degli altri cluster.
+#
+# Simulazione geografica (tc netem su ens18):
+#   cluster2 (Paris):  netem delay 150ms ±20ms → RTT cluster1↔cluster2 ≈ 150ms
+#   cluster3 (Warsaw): netem delay 350ms ±20ms → RTT cluster1↔cluster3 ≈ 350ms
+#
+# RTT attese (con netem attivo):
+#   cluster1: avg(150, 350) = 250ms → Φ_net = exp(-2×250/500) ≈ 0.368
+#   cluster2: avg(150, 500) = 325ms → Φ_net = exp(-2×325/500) ≈ 0.272
+#   cluster3: avg(350, 500) = 425ms → Φ_net = exp(-2×425/500) ≈ 0.183
+#
+# → cluster1 (Frankfurt) favorito: è il più centrale in Europa.
+
+network_parameters:
+  rho: 2.0              # Esponente di penalità (più alto = più penalizza alta RTT)
+  rtt_max_ms: 500.0     # RTT massima attesa per normalizzazione (ms)
+                        # cluster2+cluster3 netem sommate = 150+350 = 500ms
+  fallback_rtt_ms: 5.0  # RTT di fallback se ping_exporter non è disponibile
+                        # (latenza LAN baseline senza netem)

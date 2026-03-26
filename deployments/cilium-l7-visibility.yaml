@@ -32,12 +32,23 @@ spec:
       app: frontend
 
   ingress:
-    # Permette traffico HTTP da QUALSIASI sorgente (Locust, altri pod, etc.)
+    # Permette traffico HTTP da pod interni (altri servizi)
     - fromEndpoints:
         - {}  # qualsiasi endpoint
       toPorts:
         - ports:
-            - port: "8080"   # porta container del frontend online-boutique
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - {}
+    # Permette traffico HTTP da Locust/esterno (world) via NodePort
+    - fromEntities:
+        - world
+        - host   # NodePort: il nodo stesso fa DNAT verso il pod
+      toPorts:
+        - ports:
+            - port: "8080"
               protocol: TCP
           rules:
             http:
@@ -96,3 +107,9 @@ spec:
   egress:
     - toEndpoints:
         - {}
+    - toEntities:
+        - cluster  # FIX: copre IP del cluster la cui identità Cilium non è ancora risolta
+        # Necessario per le risposte gRPC verso pod appena rischedulati da DMOS:
+        # quando un pod client viene scalato e il suo IP cambia, Cilium classifica
+        # temporaneamente il vecchio/nuovo IP come "world" → i pacchetti di risposta
+        # venivano droppati. toEntities: cluster bypassa la risoluzione identità.

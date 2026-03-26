@@ -67,9 +67,13 @@ class ScoreWeightsConfig:
     omega_capacity: float
     omega_load: float
     omega_carbon: float
-    
+    omega_network: float = 0.0   # Geo-awareness via ping_exporter RTT (Φ_net)
+    omega_demand: float = 0.0    # Domanda geografica via Nginx ingress (Φ_demand)
+
     def __post_init__(self):
-        total = self.omega_latency + self.omega_capacity + self.omega_load + self.omega_carbon
+        total = (self.omega_latency + self.omega_capacity +
+                 self.omega_load + self.omega_carbon +
+                 self.omega_network + self.omega_demand)
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"Score weights must sum to 1.0, got {total}")
 
@@ -194,16 +198,57 @@ class ConfigLoader:
             delta=weights_scenario.get('delta', 0.25)
         )
         
-        # Parse score weights
-        score_weights_data = self.weights_raw.get('score_weights', {})
+        # Parse score weights — legge il profilo attivo da score_weights.active
+        score_weights_raw = self.weights_raw.get('score_weights', {})
+        active_profile = score_weights_raw.get('active', 'balanced')
+        score_weights_data = score_weights_raw.get(active_profile, {})
+        if not score_weights_data:
+            logger.warning(
+                f"Profilo score '{active_profile}' non trovato in weights.yaml, "
+                f"uso defaults hardcoded"
+            )
+            score_weights_data = {}
+        else:
+            logger.info(f"Score profile attivo: '{active_profile}'")
+
         self.score_weights = ScoreWeightsConfig(
-            omega_latency=score_weights_data.get('omega_latency', 0.4),
-            omega_capacity=score_weights_data.get('omega_capacity', 0.3),
-            omega_load=score_weights_data.get('omega_load', 0.1),
-            omega_carbon=score_weights_data.get('omega_carbon', 0.2)
+            omega_latency=score_weights_data.get('omega_latency', 0.25),
+            omega_capacity=score_weights_data.get('omega_capacity', 0.20),
+            omega_load=score_weights_data.get('omega_load', 0.15),
+            omega_carbon=score_weights_data.get('omega_carbon', 0.20),
+            omega_network=score_weights_data.get('omega_network', 0.10),
+            omega_demand=score_weights_data.get('omega_demand', 0.10),
         )
-        
-        # Parse score parameters
+
+        # Parse cold_start weights (Phase 1 — blind allocation)
+        # Usato dallo scheduler nei primi COLD_START_SECONDS secondi,
+        # quando le metriche osservate (latenza p95, CPU, load) non sono affidabili.
+        cold_start_data = score_weights_raw.get('cold_start', {})
+        if cold_start_data:
+            self.cold_start_weights = ScoreWeightsConfig(
+                omega_latency=cold_start_data.get('omega_latency', 0.00),
+                omega_capacity=cold_start_data.get('omega_capacity', 0.00),
+                omega_load=cold_start_data.get('omega_load', 0.00),
+                omega_carbon=cold_start_data.get('omega_carbon', 0.30),
+                omega_network=cold_start_data.get('omega_network', 0.35),
+                omega_demand=cold_start_data.get('omega_demand', 0.35),
+            )
+            logger.info("Cold-start weights caricati (Phase 1 blind allocation)")
+        else:
+            # Fallback: stessi pesi del profilo attivo (nessuna distinzione di fase)
+            self.cold_start_weights = self.score_weights
+            logger.warning("Profilo 'cold_start' non trovato in weights.yaml, "
+                           "Phase 1 userà gli stessi pesi di Phase 2")
+
+        # Parse network parameters (geo-awareness via ping_exporter)
+        net_params = self.weights_raw.get('network_parameters', {})
+        self.network_params = {
+            'rho': net_params.get('rho', 2.0),
+            'rtt_max_ms': net_params.get('rtt_max_ms', 500.0),
+            'fallback_rtt_ms': net_params.get('fallback_rtt_ms', 5.0),
+        }
+
+        # Parse score parameters (legacy key)
         self.score_params = self.weights_raw.get('parameters', {})
         
         # Parse services (FIX: stessa logica)
