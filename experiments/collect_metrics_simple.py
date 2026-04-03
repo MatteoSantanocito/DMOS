@@ -38,6 +38,14 @@ KNOWN_SERVICES = [
 ]
 KNOWN_CLUSTERS = ["cluster1", "cluster2", "cluster3"]
 
+# Prometheus endpoints per cluster (for CPU/memory collection via cAdvisor)
+CLUSTER_PROMETHEUS = {
+    "cluster1": "http://192.168.1.245:30090",
+    "cluster2": "http://192.168.1.246:30090",
+    "cluster3": "http://192.168.1.247:30090",
+}
+RESOURCE_NAMESPACE = "online-boutique"
+
 
 # ─── DMOS Metrics Parser ─────────────────────────────────────────────────────
 
@@ -127,6 +135,104 @@ def scrape_dmos_metrics() -> dict:
             continue
 
     return {"raw": raw_text, "parsed": parsed}
+
+
+# ─── Cluster Resource Scraper (CPU / Memory via cAdvisor → Prometheus) ───────
+
+def _prom_instant_query(prom_url: str, query: str) -> float | None:
+    """Execute a Prometheus instant query. Returns scalar value or None."""
+    try:
+        r = requests.get(
+            f"{prom_url}/api/v1/query",
+            params={"query": query},
+            timeout=5,
+        )
+        data = r.json()
+        if data.get("status") == "success":
+            results = data["data"]["result"]
+            if results:
+                return float(results[0]["value"][1])
+    except Exception:
+        pass
+    return None
+
+
+def scrape_cluster_resources() -> dict:
+    """
+    Query per-cluster Prometheus for CPU, memory and network traffic of
+    online-boutique pods. Metrics come from cAdvisor.
+
+    Returns:
+        {cluster: {
+            service: {
+                "cpu_cores": float,
+                "memory_mb": float,
+                "traffic_bytes_s": float,   # network receive bytes/s
+            },
+            "_traffic_pct": {               # % of total frontend traffic per cluster
+                "frontend": float,
+            }
+        }}
+
+    Traffic distribution notes
+    --------------------------
+    container_network_receive_bytes_total measures bytes *received* by the pod
+    (= incoming HTTP requests from the load balancer).  All clusters serve the
+    same app so average request size is identical → the bytes/s ratio gives the
+    exact traffic share without any conversion factor.
+    """
+    result = {}
+    ns = RESOURCE_NAMESPACE
+    for cluster, prom_url in CLUSTER_PROMETHEUS.items():
+        cluster_data = {}
+        for svc in KNOWN_SERVICES:
+            # CPU: sum of 1-minute rate across all containers of this service.
+            # Online Boutique names ALL containers "server" in cAdvisor, so we
+            # must filter by pod name prefix instead of container name.
+            cpu_q = (
+                f'sum(rate(container_cpu_usage_seconds_total{{'
+                f'namespace="{ns}",container="server",pod=~"{svc}-.*"}}[1m]))'
+            )
+            # Memory: sum of working set (RSS + cache pages) in bytes
+            mem_q = (
+                f'sum(container_memory_working_set_bytes{{'
+                f'namespace="{ns}",container="server",pod=~"{svc}-.*"}})'
+            )
+            # Network traffic: bytes/s received by all pods of this service.
+            # Used to compute cross-cluster traffic distribution (%).
+            # No conversion factor needed — ratio is accurate as-is.
+            # Window [1m]: kubelet/cAdvisor scrape interval is typically 30s,
+            # so [15s] would find only 1 data point → rate() returns empty.
+            # [1m] guarantees ≥2 points and stable values.
+            traffic_q = (
+                f'sum(rate(container_network_receive_bytes_total{{'
+                f'namespace="{ns}",pod=~"{svc}-.*"}}[1m]))'
+            )
+            cpu_val     = _prom_instant_query(prom_url, cpu_q)
+            mem_val     = _prom_instant_query(prom_url, mem_q)
+            traffic_val = _prom_instant_query(prom_url, traffic_q)
+            cluster_data[svc] = {
+                "cpu_cores":      round(cpu_val, 4)                    if cpu_val     is not None else None,
+                "memory_mb":      round(mem_val / (1024 * 1024), 1)   if mem_val     is not None else None,
+                "traffic_bytes_s": round(traffic_val, 1)               if traffic_val is not None else None,
+            }
+        result[cluster] = cluster_data
+
+    # ── Compute frontend traffic share (%) across clusters ───────────────────
+    # Collect frontend bytes/s from every cluster that returned a value.
+    fe_bytes = {
+        cn: result[cn].get("frontend", {}).get("traffic_bytes_s")
+        for cn in KNOWN_CLUSTERS
+    }
+    valid = {cn: v for cn, v in fe_bytes.items() if v is not None}
+    total_bytes = sum(valid.values())
+    for cn in KNOWN_CLUSTERS:
+        pct = None
+        if total_bytes > 0 and fe_bytes.get(cn) is not None:
+            pct = round(fe_bytes[cn] / total_bytes * 100, 1)
+        result[cn]["_traffic_pct"] = {"frontend": pct}
+
+    return result
 
 
 # ─── Locust Stats Fetcher ────────────────────────────────────────────────────
@@ -259,7 +365,7 @@ def scrape_locust_stats(locust_url: str) -> dict:
 
 # ─── Snapshot Builder ────────────────────────────────────────────────────────
 
-def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
+def build_snapshot(dmos: dict, locust: dict, timestamp: str, resources: dict | None = None) -> dict:
     """
     Build a unified snapshot combining DMOS + Locust data.
     All services, all clusters, all metrics in one JSON object.
@@ -315,6 +421,7 @@ def build_snapshot(dmos: dict, locust: dict, timestamp: str) -> dict:
             "services": services_data,
         },
         "locust": locust,
+        "resources": resources or {},
     }
 
     return snapshot
@@ -367,11 +474,20 @@ def print_summary(snap: dict, iteration: int, total: int):
         backend_parts.append(f"{short}={svc_total}({'/'.join(parts)})")
     backend_str = " ".join(backend_parts)
     
+    # Traffic distribution % from Prometheus network bytes
+    resources = snap.get("resources", {})
+    traffic_parts = []
+    for c in KNOWN_CLUSTERS:
+        pct = resources.get(c, {}).get("_traffic_pct", {}).get("frontend")
+        traffic_parts.append(f"{pct:.0f}%" if pct is not None else "?%")
+    traffic_str = "/".join(traffic_parts)  # e.g. "42%/38%/20%"
+
     # Print
     print(
         f"  [{iteration:3d}/{total}] {ts[11:19]} | "
         f"FE: {fe_traffic:5.1f}rps→{fe_predicted:5.1f}pred "
-        f"replicas={fe_total}(c1/c2/c3={fe_cluster_str}) | "
+        f"replicas={fe_total}(c1/c2/c3={fe_cluster_str}) "
+        f"traffic={traffic_str} | "
         f"{locust_str}"
     )
     if iteration == 1 or iteration % 5 == 0:
@@ -452,12 +568,13 @@ def run_collector(duration_seconds: int = 300, locust_url: str = LOCUST_API_URL,
         for i in range(iterations):
             timestamp = datetime.now().isoformat()
 
-            # Scrape both sources
-            dmos = {"raw": "", "parsed": {}} if skip_dmos else scrape_dmos_metrics()
-            locust = scrape_locust_stats(locust_url)
+            # Scrape all sources
+            dmos      = {"raw": "", "parsed": {}} if skip_dmos else scrape_dmos_metrics()
+            locust    = scrape_locust_stats(locust_url)
+            resources = scrape_cluster_resources()
 
             # Build unified snapshot
-            snap = build_snapshot(dmos, locust, timestamp)
+            snap = build_snapshot(dmos, locust, timestamp, resources)
 
             # Write structured JSONL
             fj.write(json.dumps(snap) + "\n")

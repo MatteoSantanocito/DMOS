@@ -1,0 +1,111 @@
+# Global Services — Backend (Cilium ClusterMesh)
+#
+# SCOPO: Rendere i servizi backend visibili agli altri cluster della mesh
+#        per abilitare fault-tolerance automatica (failover cross-cluster).
+#
+# PREREQUISITI:
+#   - Cilium ClusterMesh attivo e connesso su tutti i cluster
+#   - global-service-frontend.yaml già applicato
+#   - cnp-backends-l7.yaml aggiornato con fromEntities: remote-node
+#
+# ANNOTAZIONI:
+#   io.cilium/global-service: "true"
+#     → rende il Service visibile e raggiungibile da tutti i cluster della mesh
+#   io.cilium/shared-service: NON IMPOSTATO (default: false)
+#     → Cilium mantiene AFFINITÀ LOCALE: il frontend di cluster-N chiama
+#       i backend di cluster-N per default (bassa latenza intra-cluster).
+#       Il failover cross-cluster scatta SOLO se il backend locale ha 0 pod
+#       disponibili (crash totale del servizio su quel cluster).
+#
+# DIFFERENZA con frontend:
+#   Il frontend ha shared-service=false per evitare il feedback loop su
+#   Phi_demand (misurata via hubble_http_request_total{source="reserved:ingress"}).
+#   I backend NON generano metriche di tipo ingress → nessun rischio di feedback
+#   loop, ma condividendo il pool attivamente si avrebbe latenza cross-cluster
+#   anche in condizioni normali. Affinità locale è la scelta corretta.
+#
+# COMPORTAMENTO:
+#   Normale:   frontend-c1 → cartservice-c1 (locale, bassa latenza)
+#   Failover:  frontend-c1 → cartservice-c2 o c3 (se c1 ha 0 pod cartservice)
+#
+# Applicare su tutti i cluster (stessa definizione, stesso nome):
+#   kubectl apply -f deployments/global-service-backends.yaml --context cluster1
+#   kubectl apply -f deployments/global-service-backends.yaml --context cluster2
+#   kubectl apply -f deployments/global-service-backends.yaml --context cluster3
+#
+# Verifica global service attivo (es. cartservice):
+#   kubectl get svc cartservice -n online-boutique \
+#     -o jsonpath='{.metadata.annotations}' --context cluster1
+
+---
+# ── cartservice ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: cartservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+    # shared-service NON impostato → affinità locale + failover solo se 0 pod locali
+spec:
+  selector:
+    app: cartservice
+  ports:
+    - name: grpc
+      port: 7070
+      targetPort: 7070
+  type: ClusterIP
+
+---
+# ── productcatalogservice ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: productcatalogservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+spec:
+  selector:
+    app: productcatalogservice
+  ports:
+    - name: grpc
+      port: 3550
+      targetPort: 3550
+  type: ClusterIP
+
+---
+# ── checkoutservice ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkoutservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+spec:
+  selector:
+    app: checkoutservice
+  ports:
+    - name: grpc
+      port: 5050
+      targetPort: 5050
+  type: ClusterIP
+
+---
+# ── recommendationservice ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendationservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+spec:
+  selector:
+    app: recommendationservice
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

@@ -21,6 +21,7 @@ import os
 import time
 import threading
 import requests as http_requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import PriorityQueue
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -134,7 +135,8 @@ class DMOSOrchestrator:
                     min_replicas=svc_cfg.min_replicas,
                     max_replicas=svc_cfg.max_replicas,
                     safety_margin=0.15,
-                    max_delta_per_cycle=4
+                    max_delta_per_cycle=6,  # [FIX G] scale-UP aggressivo: 2 cicli per raggiungere max invece di 3 (-30s ramp-up)
+                    max_delta_down=2        # [FIX I] scale-DOWN conservativo: max 2 pod per ciclo, evita terminazioni massive durante decline
                 )
         
         # All cluster names for scale-down of non-allocated clusters
@@ -161,8 +163,14 @@ class DMOSOrchestrator:
         # But at the *same* polling cycle the actual reading may still be below
         # low_threshold (Hubble [5m] lags), so a scale-down event is queued
         # immediately after. Adding a protection window avoids this oscillation.
+        #
+        # NOTA: questa finestra blocca solo lo scale-DOWN, NON blocca scale-up
+        # multipli consecutivi (quelli sono limitati solo da max_delta + polling_interval).
+        # Ridotto 120 → 45s: con Hubble scrape interval=15s e finestra [1m],
+        # la lettura del traffico è stabile già dopo ~45s. 120s era eccessivo e
+        # causava scale-down prematuri durante la fase di cooldown del flash crowd.
         self.last_scale_up: Dict[str, datetime] = {}
-        self.scale_up_protection_seconds = 120  # seconds
+        self.scale_up_protection_seconds = 45  # seconds (era 120)
         
         # [FIX C] Dead zone: track previous traffic for stability check
         self.previous_traffic: Dict[str, float] = {}
@@ -204,7 +212,7 @@ class DMOSOrchestrator:
         logger.info(f"📋 Monitored services: {self.monitored_services}")
         logger.info(f"🌐 Clusters: {self.all_cluster_names}")
         logger.info(f"🔧 Anti-oscillation: debounce={self.debounce_seconds}s, "
-                     f"max_delta=4, dead_zone={self.dead_zone_pct*100:.0f}%, "
+                     f"max_delta_up=6, max_delta_down=2, dead_zone={self.dead_zone_pct*100:.0f}%, "
                      f"scale_down_cooldown={self.scale_down_cooldown}s, "
                      f"scale_up_protection={self.scale_up_protection_seconds}s")
         if self.colocation_enabled:
@@ -259,12 +267,14 @@ class DMOSOrchestrator:
             Dict {cluster_name: rps} — traffico reale per-cluster
         """
         per_cluster: Dict[str, float] = {}
-        for cname, prom in self.prom_map.items():
-            rps = prom.get_request_rate(
-                service=service_name,
-                namespace="online-boutique"
-            )
-            per_cluster[cname] = max(0.0, rps or 0.0)
+        with ThreadPoolExecutor(max_workers=len(self.prom_map)) as pool:
+            futures = {
+                pool.submit(prom.get_request_rate, service_name, "online-boutique"): cname
+                for cname, prom in self.prom_map.items()
+            }
+            for fut in as_completed(futures):
+                cname = futures[fut]
+                per_cluster[cname] = max(0.0, fut.result() or 0.0)
 
         total = sum(per_cluster.values())
         if total > 0:
@@ -329,6 +339,20 @@ class DMOSOrchestrator:
         """
         if not self.colocation_enabled:
             return
+
+        # [FIX P] In Phase 2 (dopo startup_grace_seconds), L2 ha dati di traffico
+        # per cluster e scala ogni servizio in base al traffico reale. La colocation
+        # usa una proporzione basata sul frontend share (euristica Phase 1) che
+        # CONFLIGGE con L2 in Phase 2:
+        #   - L2: cluster3 ha 175 req/s → 10-12 repliche
+        #   - Colocation: cluster3 ha 42% frontend → 42%×42=16 repliche
+        # Con max_replicas=12 (vecchio) entrambi concordavano a 12 (cap). Con
+        # max_replicas=16, il conflitto è libero: oscillazione 16↔14 ogni ~90s,
+        # terminazione di 2 pod per ciclo con richieste in volo → 5xx.
+        # Fix: in Phase 2 la colocation non gira — L2 controlla tutto.
+        elapsed_startup = (datetime.now() - self.startup_time).total_seconds()
+        if elapsed_startup >= self.startup_grace_seconds:
+            return  # Phase 2: L2 ha il controllo, colocation non interferisce
         
         deps = self.service_dependencies.get(parent_service, [])
         if not deps:
@@ -358,7 +382,25 @@ class DMOSOrchestrator:
             dep_cfg = self.config.get_service(dep_svc_name)
             if dep_cfg is None:
                 continue
-            
+
+            # [FIX N] Non sovrascrivere le decisioni di scale-down di L2.
+            # Problema: L2 scala cluster3/productcatalogservice 16→14 (traffico calo),
+            # poi la colocation legge il valore fresco (14) e lo riporta a 16 perché
+            # frontend_share=38% × total=42 ≈ 16. Ciclo ogni ~60s per tutta la durata
+            # del picco: ogni ciclo terminazione di 2 pod con richieste in volo → 5xx.
+            # Fix: se L2 ha eseguito uno scale-DOWN di questo servizio entro il cooldown,
+            # salta la colocation — il servizio è in fase di riduzione voluta, non
+            # interferire. La colocation torna attiva dopo scale_down_cooldown secondi.
+            last_down = self.last_scale_down.get(dep_svc_name)
+            if last_down is not None:
+                elapsed_since_down = (datetime.now() - last_down).total_seconds()
+                if elapsed_since_down < self.scale_down_cooldown:
+                    logger.debug(
+                        f"Co-location skip {dep_svc_name}: scale-down cooldown "
+                        f"({elapsed_since_down:.0f}s < {self.scale_down_cooldown}s)"
+                    )
+                    continue
+
             total_dep_reps = 0
             cluster_dep_current = {}
             for cluster_name in self.all_cluster_names:
@@ -374,17 +416,34 @@ class DMOSOrchestrator:
             
             for cluster_name in self.all_cluster_names:
                 parent_reps = cluster_parent_reps[cluster_name]
-                current_dep = cluster_dep_current[cluster_name]
-                
+
                 if parent_reps == 0:
                     continue
-                
+
                 frontend_share = parent_reps / total_parent_reps
-                proportional_target = max(
-                    dep_cfg.min_replicas,
-                    int(round(target_total * frontend_share))
+                proportional_target = min(
+                    dep_cfg.max_replicas,  # mai superare il cap hardware del servizio
+                    max(
+                        dep_cfg.min_replicas,
+                        int(round(target_total * frontend_share))
+                    )
                 )
-                
+
+                # [FIX M] Rilegge il conteggio attuale dal k8s API RIGHT BEFORE
+                # la decisione, NON dal valore cachato all'inizio del metodo.
+                # Problema: L2 (schedule_service per productcatalogservice) e
+                # _enforce_colocation (chiamata da altri servizi come checkoutservice)
+                # girano concorrenti su thread diversi. Se L2 scala cluster1 da 10
+                # a 13, la colocation che usa il valore cachato (10) calcola
+                # proportional=11, vede 10<11=True e SOVRASCRIVE con 11, annullando
+                # il lavoro di L2. Con la rilettura fresca, il confronto usa 13<11=False
+                # → la colocation lascia stare il valore che L2 ha appena impostato.
+                current_dep = self.k8s.get_deployment_replicas(
+                    cluster=cluster_name,
+                    deployment=dep_cfg.deployment_name,
+                    namespace=dep_cfg.namespace
+                ) or 0
+
                 if current_dep < proportional_target:
                     logger.info(
                         f"Co-location: {cluster_name} — {dep_svc_name}: "
@@ -398,7 +457,13 @@ class DMOSOrchestrator:
                         replicas=proportional_target,
                         namespace=dep_cfg.namespace
                     )
-                    
+
+                    # [FIX F] Aggiorna last_scale_up per dep_svc_name:
+                    # senza questo, il ciclo di scheduling del servizio dipendente
+                    # chiama _can_scale_down() e trova last_scale_up stale →
+                    # scala subito giù le repliche appena aumentate dalla co-location.
+                    self.last_scale_up[dep_svc_name] = datetime.now()
+
                     self.scaling_events.labels(
                         cluster=cluster_name,
                         service=dep_svc_name,
@@ -482,55 +547,70 @@ class DMOSOrchestrator:
         
         allocated_cluster_names: Set[str] = set()
         any_scale_down = False
-        
+
+        # ── Step 1: leggi repliche correnti su tutti i cluster in parallelo ──
+        # Solo la LETTURA è parallelizzata (operazione idempotente e sicura).
+        # Le SCRITTURE (scale_deployment) restano sequenziali per garantire che
+        # last_scale_up venga aggiornato prima che _can_scale_down venga valutato
+        # per i cluster non allocati nello stesso ciclo: se cluster2 viene
+        # scalato UP prima, last_scale_up[service] viene settato e blocca lo
+        # scale-down di cluster3 per i successivi scale_up_protection_seconds.
+        all_relevant_clusters = list({a.cluster_name for a in allocations} |
+                                     set(self.all_cluster_names))
+        with ThreadPoolExecutor(max_workers=len(all_relevant_clusters)) as pool:
+            rep_futures = {
+                pool.submit(
+                    self.k8s.get_deployment_replicas,
+                    cname, svc_cfg.deployment_name, svc_cfg.namespace
+                ): cname
+                for cname in all_relevant_clusters
+            }
+            current_reps_map: Dict[str, int] = {
+                rep_futures[f]: (f.result() or 0)
+                for f in as_completed(rep_futures)
+            }
+
+        # ── Step 2: decisioni e scale-ops sequenziali (SCALE-UP prima) ───────
         for allocation in allocations:
             cluster_name = allocation.cluster_name
             allocated_cluster_names.add(cluster_name)
-            
+
             self.cluster_score.labels(
                 cluster=cluster_name,
                 service=service_name
             ).set(allocation.score)
-            
-            current_reps = self.k8s.get_deployment_replicas(
-                cluster=cluster_name,
-                deployment=svc_cfg.deployment_name,
-                namespace=svc_cfg.namespace
-            ) or 0
-            
+
+            current_reps = current_reps_map.get(cluster_name, 0)
             self.current_replicas.labels(
                 cluster=cluster_name,
                 service=service_name
             ).set(current_reps)
-            
-            # Traffico misurato per questo cluster (non più stima proporzionale)
-            cluster_traffic = per_cluster_traffic.get(cluster_name, 0.0)
 
+            cluster_traffic = per_cluster_traffic.get(cluster_name, 0.0)
             decision = self.scalers[service_name][cluster_name].compute_target_replicas(
                 current_replicas=current_reps,
                 current_traffic=cluster_traffic
             )
-            
+
             self.target_replicas.labels(
                 cluster=cluster_name,
                 service=service_name
             ).set(decision.target_replicas)
-            
             self.prediction_traffic.labels(
                 cluster=cluster_name,
                 service=service_name
             ).set(decision.predicted_traffic)
-            
+
             delta = decision.delta_replicas
-            
-            # [FIX C] Dead zone: skip ±1 changes when traffic is stable
+
+            # [FIX C] Dead zone
             if (abs(delta) <= 1
                     and traffic_stable
                     and current_reps >= svc_cfg.min_replicas):
                 logger.info(f" {cluster_name}: Δ={delta:+d} in dead zone — skipping")
                 continue
-            
-            # [FIX D] Asymmetric cooldown: block rapid scale-downs
+
+            # [FIX D] Asymmetric cooldown
             if delta < 0 and not self._can_scale_down(service_name):
                 elapsed = (datetime.now() - self.last_scale_down.get(
                     service_name, datetime.now())).total_seconds()
@@ -538,10 +618,10 @@ class DMOSOrchestrator:
                 logger.info(f"  ⏳ {cluster_name}: scale-down Δ={delta:+d} "
                             f"blocked by cooldown ({remaining:.0f}s left)")
                 continue
-            
+
             logger.info(f"{cluster_name}: {current_reps} → {decision.target_replicas} "
                         f"(Δ={delta:+d})")
-            
+
             if delta != 0:
                 action = 'scale_up' if delta > 0 else 'scale_down'
                 self.scaling_events.labels(
@@ -549,55 +629,59 @@ class DMOSOrchestrator:
                     service=service_name,
                     action=action
                 ).inc()
-                
+
                 self.k8s.scale_deployment(
                     cluster=cluster_name,
                     deployment=svc_cfg.deployment_name,
                     replicas=decision.target_replicas,
                     namespace=svc_cfg.namespace
                 )
-                
+
                 if delta < 0:
                     any_scale_down = True
                 elif delta > 0:
-                    # [FIX E] Record scale-up timestamp to activate protection window
+                    # [FIX E] Aggiorna SUBITO last_scale_up: il loop sui cluster
+                    # non-allocati (qui sotto) chiama _can_scale_down che legge
+                    # questo valore — deve trovarlo già aggiornato per bloccare
+                    # eventuali scale-down nello stesso ciclo di scheduling.
                     self.last_scale_up[service_name] = datetime.now()
 
-        if any_scale_down:
-            self.last_scale_down[service_name] = datetime.now()
-        
-        # Scale down clusters NOT in allocations
+        # ── Step 3: scale-down cluster non allocati ───────────────────────────
+        # Eseguito DOPO il loop degli allocated, così last_scale_up è già
+        # aggiornato dagli scale-up precedenti e _can_scale_down funziona correttamente.
         for cluster_name in self.all_cluster_names:
             if cluster_name not in allocated_cluster_names:
-                current_reps = self.k8s.get_deployment_replicas(
-                    cluster=cluster_name,
-                    deployment=svc_cfg.deployment_name,
-                    namespace=svc_cfg.namespace
-                ) or 0
-                
+                current_reps = current_reps_map.get(cluster_name, 0)
                 target = svc_cfg.min_replicas
-                
+
+                self.current_replicas.labels(
+                    cluster=cluster_name,
+                    service=service_name
+                ).set(current_reps)
+                self.target_replicas.labels(
+                    cluster=cluster_name,
+                    service=service_name
+                ).set(min(current_reps, target))
+
                 if current_reps > target:
                     if self._can_scale_down(service_name):
                         logger.info(
                             f"📉 {cluster_name}: not in allocation → "
                             f"scaling {current_reps} → {target} (min_replicas)"
                         )
-                        
                         self.scaling_events.labels(
                             cluster=cluster_name,
                             service=service_name,
                             action='scale_down'
                         ).inc()
-                        
                         self.k8s.scale_deployment(
                             cluster=cluster_name,
                             deployment=svc_cfg.deployment_name,
                             replicas=target,
                             namespace=svc_cfg.namespace
                         )
-                        
                         self.last_scale_down[service_name] = datetime.now()
+                        any_scale_down = True
                     else:
                         logger.debug(f"  ⏳ {cluster_name}: non-alloc scale-down blocked by cooldown")
                 else:
@@ -605,17 +689,9 @@ class DMOSOrchestrator:
                         f"✓ {cluster_name}: not in allocation, "
                         f"already at {current_reps} ≤ {target}"
                     )
-                
-                # Always update gauges so collector sees real values
-                self.current_replicas.labels(
-                    cluster=cluster_name,
-                    service=service_name
-                ).set(current_reps)
-                
-                self.target_replicas.labels(
-                    cluster=cluster_name,
-                    service=service_name
-                ).set(min(current_reps, target))
+
+        if any_scale_down:
+            self.last_scale_down[service_name] = datetime.now()
         
         # ── Co-location enforcement ──────────────────────────────────────
         self._enforce_colocation(service_name)
@@ -630,12 +706,23 @@ class DMOSOrchestrator:
         if not self.should_process(event.service):
             logger.debug(f"Skipping {event.service} (debounced)")
             return
-        
+
         logger.info(f"Processing: {event.action} {event.service}")
-        
+
+        # [FIX L] Aggiorna last_processed PRIMA di chiamare schedule_service,
+        # non dopo. Con più worker in parallelo, se due worker dequeue-ano eventi
+        # per lo stesso servizio quasi contemporaneamente, entrambi passano il
+        # controllo should_process() prima che il primo abbia finito (last_processed
+        # veniva aggiornato solo al completamento). Il risultato era una doppia
+        # esecuzione concorrente di schedule_service sullo stesso servizio:
+        # le due k8s calls scrivevano target diversi e l'ultima sovrascriveva
+        # la prima (es. cluster2/productcatalogservice: 8 → 3 a 13:20:14).
+        # Settando last_processed subito, il secondo worker vedrà che il debounce
+        # è già scattato e salterà il processing.
+        self.last_processed[event.service] = datetime.now()
+
         try:
             self.schedule_service(event.service, reason=event.reason)
-            self.last_processed[event.service] = datetime.now()
         except Exception as e:
             logger.error(f"Errore nell'elaborazione di {event.service}: {e}")
     
@@ -810,7 +897,17 @@ class DMOSOrchestrator:
                             )
                         logger.info(f"  {backend_name} resettato a {min_per_cluster} per cluster")
                     
-                    elif not fe_at_minimum and be_total > fe_total * 2:
+                    # [FIX K+O] Guard scale-down graduale:
+                    # (K) Moltiplicatore 2→4: productcatalogservice ha amplificazione ~3.5x.
+                    # (O) Guard traffico HIGH: se il servizio backend è sotto carico elevato
+                    #     (previous_traffic > high_threshold), la logica non deve intervenire.
+                    #     Caso: ramp iniziale con fe_total ancora stale=6 (reads pre-scaling)
+                    #     → be_total=25 > 6×4=24 → scattava di misura. Con il guard traffico
+                    #     HIGH, durante il picco non si attiva mai indipendentemente dai valori
+                    #     stale di fe_total/be_total causati dalla latenza del k8s API.
+                    elif (not fe_at_minimum
+                          and be_total > fe_total * 4
+                          and self.previous_traffic.get(backend_name, 0) <= self.high_threshold):
                         target_total = max(be_cfg.min_replicas * len(self.config.clusters),
                                           fe_total)
                         if be_total > target_total + 2:

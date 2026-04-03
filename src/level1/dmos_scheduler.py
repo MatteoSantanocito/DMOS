@@ -179,20 +179,46 @@ class DMOSScheduler:
             return None
         
         try:
-            # ── CPU metrics ───────────────────────────────────────────
-            cpu_available = prom.get_cpu_available() or 0.0
-            cpu_total = cluster_cfg.cpu_cores
-            
-            # ── Memory metrics ────────────────────────────────────────
-            memory_available = prom.get_memory_available_gb() or 0.0
-            memory_total = cluster_cfg.memory_gb
-            
-            # ── Traffic metrics ───────────────────────────────────────
             svc_cfg = self.config.get_service(service_name)
             namespace = svc_cfg.namespace if svc_cfg else "online-boutique"
             capacity_per_core = svc_cfg.capacity_req_per_sec if svc_cfg else 50
+            peer_ips = self._peer_ips.get(cluster_name, [])
+            carbon_region = cluster_cfg.carbon.get('region_code', 'DE')
+
+            # ── Parallel Prometheus queries ───────────────────────────
+            # Le query CPU, memoria, traffico, latenza e RTT vengono lanciate
+            # in parallelo sullo stesso Prometheus per ridurre il tempo di
+            # raccolta da ~5s (sequenziale) a ~1s (bottleneck = query più lenta).
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                fut_cpu    = pool.submit(prom.get_cpu_available)
+                fut_mem    = pool.submit(prom.get_memory_available_gb)
+                fut_rtt    = pool.submit(prom.get_network_rtt_ms, peer_ips)
+                fut_carbon = pool.submit(
+                    self.carbon_client.get_carbon_intensity, carbon_region
+                )
+                # In Phase 1 request_rate e latency vengono dai valori di config,
+                # non da Hubble → non serve fare query.
+                if cold_start_mode:
+                    fut_rate    = None
+                    fut_latency = None
+                else:
+                    fut_rate    = pool.submit(
+                        prom.get_request_rate, service_name, namespace
+                    )
+                    fut_latency = pool.submit(
+                        prom.get_latency_p95, service_name, namespace
+                    )
+
+            # ── Raccolta risultati ────────────────────────────────────
+            cpu_available  = fut_cpu.result()    or 0.0
+            cpu_total      = cluster_cfg.cpu_cores
+            memory_available = fut_mem.result()  or 0.0
+            memory_total   = cluster_cfg.memory_gb
+            network_rtt_ms = fut_rtt.result()
+            carbon_intensity = fut_carbon.result() or 300.0
             request_rate_max = cpu_total * capacity_per_core
 
+            # ── Traffic metrics ───────────────────────────────────────
             if cold_start_mode:
                 # Phase 1: ingress rate Cilium Ingress come proxy del traffico sui pod.
                 # Hubble non ha campioni sufficienti in questa fase.
@@ -203,10 +229,7 @@ class DMOSScheduler:
                 )
             else:
                 # Phase 2: Hubble destination_workload → carico effettivo sui pod.
-                request_rate = prom.get_request_rate(
-                    service=service_name,
-                    namespace=namespace
-                )
+                request_rate = fut_rate.result()
                 if request_rate is None:
                     # Fallback: stima da CPU usage
                     cpu_usage_pct = prom.get_cpu_usage_percent(
@@ -234,10 +257,7 @@ class DMOSScheduler:
                 )
             else:
                 # Phase 2: Hubble p95 histogram su [1m] → abbastanza campioni.
-                latency_p95 = prom.get_latency_p95(
-                    service=service_name,
-                    namespace=namespace
-                )
+                latency_p95 = fut_latency.result()
                 # Guard contro +Inf (histogram_quantile lo ritorna quando tutto il
                 # traffico cade nell'ultimo bucket) e NaN.
                 # math.isfinite() cattura entrambi i casi.
@@ -264,20 +284,9 @@ class DMOSScheduler:
                         f"[Phase 2] {cluster_name}: Hubble p95 non disponibile, "
                         f"fallback baseline={latency_mean:.1f}ms"
                     )
-            
-            # ── Carbon intensity ──────────────────────────────────────
-            carbon_region = cluster_cfg.carbon.get('region_code', 'DE')
-            carbon_intensity = self.carbon_client.get_carbon_intensity(carbon_region) or 300.0
 
             # ── Cost ──────────────────────────────────────────────────
             cost_per_replica = cluster_cfg.cost_per_replica_hour
-
-            # ── Network RTT (geo-awareness via ping_exporter) ─────────
-            # Interroga ping_rtt_mean_seconds verso i peer cluster.
-            # Richiede ping_exporter (Helm) + tc netem sui nodi per la simulazione.
-            # Fallback: 5.0 ms (latenza LAN baseline senza delay simulato).
-            peer_ips = self._peer_ips.get(cluster_name, [])
-            network_rtt_ms = prom.get_network_rtt_ms(peer_ips)
 
             metrics = ClusterMetrics(
                 cpu_available_cores=cpu_available,
@@ -487,8 +496,13 @@ class DMOSScheduler:
         svc_cfg = self.config.get_service(service_name)
         namespace = svc_cfg.namespace if svc_cfg else "online-boutique"
         ingress_rates: Dict[str, float] = {}
-        for cluster_name, prom in self.prom_map.items():
-            ingress_rates[cluster_name] = prom.get_ingress_rate(namespace=namespace)
+        with ThreadPoolExecutor(max_workers=len(self.prom_map)) as executor:
+            futures_ingress = {
+                executor.submit(prom.get_ingress_rate, namespace): cluster_name
+                for cluster_name, prom in self.prom_map.items()
+            }
+            for future in as_completed(futures_ingress):
+                ingress_rates[futures_ingress[future]] = future.result()
 
         total_ingress = sum(ingress_rates.values())
         n = len(self.prom_map) or 1
@@ -512,30 +526,37 @@ class DMOSScheduler:
         bids = []
         excluded = []
 
-        # Calcola score per ogni cluster
-        for cluster_name in self.cluster_configs.keys():
-            result = self._compute_cluster_score(
-                cluster_name, service_name, predicted_load,
-                ingress_rate_rps=ingress_rates.get(cluster_name, 0.0),
-                ingress_demand_share=demand_shares.get(cluster_name, 1.0 / n),
-                cold_start_mode=cold_start,
-                active_score_func=active_score_func,
-            )
-            
-            if result is None:
-                logger.warning(f"Nessun risultato per  {cluster_name}")
-                continue
-            
-            if not result.get('eligible', True):
-                excluded.append(cluster_name)
-                continue
-            
-            if result['score'] > 0 and result['capacity'] > 0:
-                bids.append(ClusterBid(
-                    cluster_name=result['cluster_name'],
-                    score=result['score'],
-                    capacity=result['capacity']
-                ))
+        # Calcola score per ogni cluster in parallelo
+        with ThreadPoolExecutor(max_workers=len(self.cluster_configs)) as executor:
+            futures_scores = {
+                executor.submit(
+                    self._compute_cluster_score,
+                    cluster_name, service_name, predicted_load,
+                    ingress_rates.get(cluster_name, 0.0),
+                    demand_shares.get(cluster_name, 1.0 / n),
+                    cold_start,
+                    active_score_func,
+                ): cluster_name
+                for cluster_name in self.cluster_configs.keys()
+            }
+            for future in as_completed(futures_scores):
+                cluster_name = futures_scores[future]
+                result = future.result()
+
+                if result is None:
+                    logger.warning(f"Nessun risultato per  {cluster_name}")
+                    continue
+
+                if not result.get('eligible', True):
+                    excluded.append(cluster_name)
+                    continue
+
+                if result['score'] > 0 and result['capacity'] > 0:
+                    bids.append(ClusterBid(
+                        cluster_name=result['cluster_name'],
+                        score=result['score'],
+                        capacity=result['capacity']
+                    ))
         
         if excluded:
             logger.warning(f"Cluster esclusi: {excluded}")

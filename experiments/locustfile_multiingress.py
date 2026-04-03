@@ -1,11 +1,42 @@
 """
-DMOS Multi-Ingress Scenario Load Test — v3
-============================================
-Uses TaskSet + 3 separate User classes for proper connection pooling.
+DMOS Global-Ingress Scenario Load Test — v5
+=============================================
+Supporta due modalità di ingress:
+
+1. SINGLE INGRESS (default)
+   Usa il Cilium Ingress globale su cluster1 (192.168.1.245:30080).
+   Cilium Cluster Mesh distribuisce le richieste ai pod in base al numero
+   di endpoint attivi (= repliche scalate da DMOS).
+   → Scenari: flash_crowd, flash_crowd_netem, gradual_ramp, double_wave, sinusoidal
+
+2. MULTI INGRESS (Romano-like)
+   Usa 3 ingress separati (uno per cluster). Locust seleziona l'ingress
+   di destinazione in modo probabilistico, simulando utenti geograficamente
+   distribuiti — replica esattamente il setup di Romano 2025 (§5.3).
+   Con netem attivo: cluster2 risponde con +150ms, cluster3 con +350ms
+   anche sul percorso k6→ingress (non solo interno cross-cluster).
+   → Scenari: flash_crowd_multiingress, flash_crowd_geo
+
+Pesi ingress configurabili via env vars (DMOS_INGRESS_W1/W2/W3).
+Tracking per-ingress automatico per scenari multi-ingress.
+
+Con DMOS ON:  DMOS scala più repliche sul cluster col maggiore ingress rate
+              (Φ_demand) e migliore RTT (Φ_net) → Cilium privilegia pod locali.
+Con DMOS OFF: repliche fisse → distribuzione proporzionale agli endpoint attivi.
 
 Usage (PowerShell):
+  # Single ingress (default)
   $env:DMOS_SCENARIO="flash_crowd"
-  locust -f locustfile_multiingress.py
+  locust -f experiments/locustfile_multiingress.py
+
+  # Multi-ingress uniforme (Romano-like, 33/33/33)
+  $env:DMOS_SCENARIO="flash_crowd_multiingress"
+  locust -f experiments/locustfile_multiingress.py
+
+  # Multi-ingress geo-skewed (flash crowd su DE, 60/25/15)
+  $env:DMOS_SCENARIO="flash_crowd_geo"
+  $env:DMOS_INGRESS_W1="0.60"; $env:DMOS_INGRESS_W2="0.25"; $env:DMOS_INGRESS_W3="0.15"
+  locust -f experiments/locustfile_multiingress.py
 """
 
 import netrc  # pre-import per evitare AssertionError gevent al primo uso di requests
@@ -44,13 +75,101 @@ def _blocking_post(url, data):
     resp = _get_session().post(url, data=data, timeout=10, allow_redirects=True)
     return resp.elapsed.total_seconds() * 1000, resp.status_code
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SCENARIO = os.environ.get("DMOS_SCENARIO", "flash_crowd").lower()
-_raw_weights = os.environ.get("DMOS_WEIGHTS", "40,35,25")
-WEIGHTS = [int(w) for w in _raw_weights.split(",")]
+
+# ── Single-ingress (default) ───────────────────────────────────────────────────
+# Cilium Ingress globale su cluster1; distribuisce ai pod in base agli endpoint.
+GLOBAL_INGRESS = "http://192.168.1.245:30080"
+
+# ── Multi-ingress configuration (Romano-like) ──────────────────────────────────
+# Un ingress per cluster. La selezione avviene probabilisticamente per simulare
+# utenti distribuiti geograficamente — replica il setup di Romano 2025 §5.3.
+#
+# Con netem attivo (ms02=150ms, ms03=350ms), un utente che entra da cluster2
+# subisce già 150ms di RTT prima che la risposta arrivi; da cluster3, 350ms.
+#
+# I pesi di default sono definiti PER SCENARIO qui sotto.
+# Possono essere sovrascritti a runtime via env vars:
+#   DMOS_INGRESS_W1  cluster1 (DE, Frankfurt, 0ms netem)
+#   DMOS_INGRESS_W2  cluster2 (FR, Paris,    150ms netem)
+#   DMOS_INGRESS_W3  cluster3 (PL, Warsaw,   350ms netem)
+
+# Pesi di default per scenario: (w1_DE, w2_FR, w3_PL)
+# Vengono usati se le env vars non sono impostate.
+_SCENARIO_DEFAULT_WEIGHTS = {
+    "flash_crowd_multiingress": (1/3, 1/3, 1/3),   # Romano-like: distribuzione uniforme
+    "flash_crowd_geo":          (0.45, 0.25, 0.30), # Flash crowd su DE, PL pesante (142ms avg penalty)
+    # Perché 45/25/30 e non 60/25/15:
+    #   - PL al 30% → baseline OFF più pesante (+52ms vs 60/25/15) → miglioramento DMOS più visibile
+    #   - DE al 45% → flash crowd riconoscibile ma non banale per Φ_demand
+    #   - DMOS deve bilanciare Φ_demand(c1=0.45) vs Φ_net(c3 penalizzato) → scenario più ricco
+}
+_dw = _SCENARIO_DEFAULT_WEIGHTS.get(SCENARIO, (1/3, 1/3, 1/3))
+
+MULTI_INGRESS_CONFIG = [
+    {
+        "url":    "http://192.168.1.245:30080",
+        "name":   "c1-DE",
+        "region": "DE",
+        "netem":  0,
+        "weight": float(os.environ.get("DMOS_INGRESS_W1", str(_dw[0]))),
+    },
+    {
+        "url":    "http://192.168.1.246:30080",
+        "name":   "c2-FR",
+        "region": "FR",
+        "netem":  150,
+        "weight": float(os.environ.get("DMOS_INGRESS_W2", str(_dw[1]))),
+    },
+    {
+        "url":    "http://192.168.1.247:30080",
+        "name":   "c3-PL",
+        "region": "PL",
+        "netem":  350,
+        "weight": float(os.environ.get("DMOS_INGRESS_W3", str(_dw[2]))),
+    },
+]
+
+# Attivo solo per scenari il cui nome contiene "multiingress" o "geo"
+IS_MULTI_INGRESS = any(kw in SCENARIO for kw in ("multiingress", "geo"))
+
+# Pesi cumulativi per selezione probabilistica O(1).
+# Esempio con flash_crowd_geo (0.60 / 0.25 / 0.15):
+#   _ingress_cumulative = [0.60, 0.85, 1.00]
+#   r = random() * 1.00
+#   r ∈ [0.00, 0.60) → cluster1 (DE)   ← 60% delle volte
+#   r ∈ [0.60, 0.85) → cluster2 (FR)   ← 25% delle volte
+#   r ∈ [0.85, 1.00) → cluster3 (PL)   ← 15% delle volte
+_ingress_cumulative = []
+_running = 0.0
+for _cfg in MULTI_INGRESS_CONFIG:
+    _running += _cfg["weight"]
+    _ingress_cumulative.append(_running)
+_ingress_total = _running  # somma pesi (normalizzazione automatica se ≠ 1.0)
+
+# Tracking latenza per-ingress (popolato solo in modalità IS_MULTI_INGRESS)
+_per_ingress_stats = {
+    cfg["url"]: {
+        "name": cfg["name"],
+        "netem": cfg["netem"],
+        "count": 0,
+        "failures": 0,
+        "slo_violations": 0,
+        "response_times": [],
+    }
+    for cfg in MULTI_INGRESS_CONFIG
+}
+
+
+# _pick_ingress() rimosso: la selezione dell'ingress ora avviene a livello di
+# user class (DEUser/FRUser/PLUser), non per singola richiesta. Questo è più
+# realistico: un utente parigino resta sempre su cluster2, non salta cluster
+# a ogni request. I pesi diventano il `weight` di ogni HttpUser class.
 
 PRODUCTS = [
     "OLJCESPC7Z", "66VCHSJNUP", "1YMWWN1N4O", "L9ECAV7KIM",
@@ -59,38 +178,38 @@ PRODUCTS = [
 CURRENCIES = ["EUR", "USD", "JPY", "GBP", "CAD"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Per-Cluster Latency Tracking
+# Global Latency Tracking
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _stats_lock = threading.Lock()
-_cluster_stats = defaultdict(lambda: {"count": 0, "failures": 0, "slo_violations": 0, "response_times": []})
+_global_stats = {"count": 0, "failures": 0, "slo_violations": 0, "response_times": []}
 _WINDOW_SIZE = 10
-_windowed_stats = defaultdict(lambda: defaultdict(lambda: {"count": 0, "slo_violations": 0, "response_times": []}))
+_windowed_stats = defaultdict(lambda: {"count": 0, "failures": 0, "slo_violations": 0, "response_times": []})
 
-# SLO threshold: 1s (allineato con Romano p95 ~1.0–1.5s "buono", Cilantro latency SLO 2s)
+# SLO threshold: 1s
 SLO_THRESHOLD_MS = 1000
-CLUSTER_NAMES = ["cluster1", "cluster2", "cluster3"]
-CLUSTER_REGIONS = {"cluster1": "DE", "cluster2": "FR", "cluster3": "PL"}
 
 # Safety: ferma il test se il p95 globale supera questa soglia per N check consecutivi
-SAFETY_P95_LIMIT_MS = float(os.environ.get("SAFETY_P95_MS", "8000"))  # default 8s
-SAFETY_CONSECUTIVE  = int(os.environ.get("SAFETY_CONSECUTIVE", "3"))  # 3 × 30s = 90s
-SAFETY_CHECK_SEC    = 30  # intervallo check (secondi)
+SAFETY_P95_LIMIT_MS = float(os.environ.get("SAFETY_P95_MS", "8000"))
+SAFETY_CONSECUTIVE  = int(os.environ.get("SAFETY_CONSECUTIVE", "3"))
+SAFETY_CHECK_SEC    = 30
 
 
-def track_request(cluster_name, response_time_ms, is_failure=False):
+def track_request(response_time_ms, is_failure=False):
     window = int(time.time()) // _WINDOW_SIZE
     with _stats_lock:
-        _cluster_stats[cluster_name]["count"] += 1
-        _cluster_stats[cluster_name]["response_times"].append(response_time_ms)
+        _global_stats["count"] += 1
+        _global_stats["response_times"].append(response_time_ms)
         if is_failure:
-            _cluster_stats[cluster_name]["failures"] += 1
+            _global_stats["failures"] += 1
         if response_time_ms > SLO_THRESHOLD_MS:
-            _cluster_stats[cluster_name]["slo_violations"] += 1
-        _windowed_stats[window][cluster_name]["count"] += 1
-        _windowed_stats[window][cluster_name]["response_times"].append(response_time_ms)
+            _global_stats["slo_violations"] += 1
+        _windowed_stats[window]["count"] += 1
+        _windowed_stats[window]["response_times"].append(response_time_ms)
+        if is_failure:
+            _windowed_stats[window]["failures"] += 1
         if response_time_ms > SLO_THRESHOLD_MS:
-            _windowed_stats[window][cluster_name]["slo_violations"] += 1
+            _windowed_stats[window]["slo_violations"] += 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -99,9 +218,6 @@ def track_request(cluster_name, response_time_ms, is_failure=False):
 
 SCENARIOS = {
     "gradual_ramp": [
-        # Picco 300 utenti calibrato per netem (capacity_per_sec=5):
-        #   c1(DE) → ~12 repliche, c2(FR) → ~7, c3(PL) → ~4
-        # Durata totale: 120+600+300+300+120 = 1440s = 24min
         {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
         {"duration": 600, "users_start": 10,  "users_end": 300, "spawn_rate": 5,  "label": "ramp-up"},
         {"duration": 300, "users_start": 300, "users_end": 300, "spawn_rate": 10, "label": "peak"},
@@ -109,20 +225,34 @@ SCENARIOS = {
         {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "cooldown"},
     ],
     "flash_crowd": [
-        # Spike 320 utenti in 60s → test reattività DMOS
-        # Durata totale: 180+60+300+180+180+120 = 1020s ≈ 17min
-        {"duration": 180, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
-        {"duration": 60,  "users_start": 10,  "users_end": 320, "spawn_rate": 60, "label": "flash-spike"},
-        {"duration": 300, "users_start": 320, "users_end": 320, "spawn_rate": 10, "label": "sustained-peak"},
-        {"duration": 180, "users_start": 320, "users_end": 160, "spawn_rate": 8,  "label": "partial-decline"},
-        {"duration": 180, "users_start": 160, "users_end": 10,  "spawn_rate": 8,  "label": "full-decline"},
+        # Spike 400 utenti in 60s → plateau 10 min → declino
+        # Durata totale: 120+60+600+300+120 = 1200s = 20min
+        # Con global ingress: Cilium distribuisce agli endpoint attivi.
+        # DMOS ON:  scala repliche su FR → più endpoint FR → più traffico a FR
+        # DMOS OFF: 1 replica/cluster → ~33%/33%/33% fisso
+        # ⚠️  Usare solo SENZA netem (LAN pura). Con netem usare flash_crowd_netem.
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
+        {"duration": 60,  "users_start": 10,  "users_end": 400, "spawn_rate": 60, "label": "flash-spike"},
+        {"duration": 600, "users_start": 400, "users_end": 400, "spawn_rate": 10, "label": "sustained-peak"},
+        {"duration": 300, "users_start": 400, "users_end": 10,  "spawn_rate": 8,  "label": "decline"},
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "cooldown"},
+    ],
+    "flash_crowd_netem": [
+        # Flash crowd con picco 150 utenti — calibrato per test CON netem attivo
+        # (ms02=150ms, ms03=350ms). Equivalente allo Scenario 2 di Romano 2025
+        # (~150 req/s, 3 minuti di plateau).
+        # Durata totale: 120+60+600+180+120 = 1080s ≈ 18min
+        # DMOS OFF: distribuzione uniforme 33/33/33 + penalità cross-cluster netem
+        # DMOS ON:  concentra repliche su cluster1 (no netem) → riduce penalità
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
+        {"duration": 60,  "users_start": 10,  "users_end": 150, "spawn_rate": 30, "label": "flash-spike"},
+        {"duration": 600, "users_start": 150, "users_end": 150, "spawn_rate": 10, "label": "sustained-peak"},
+        {"duration": 180, "users_start": 150, "users_end": 10,  "spawn_rate": 8,  "label": "decline"},
         {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "cooldown"},
     ],
     "double_wave": [
-        # Due ondate: wave1 picco 200, valley 50, wave2 picco 250
-        # Durata totale: 120+180+240+180+120+180+240+180+120 = 1560s = 26min
-        {"duration": 120, "users_start": 20, "users_end": 20,  "spawn_rate": 5,  "label": "warm-up"},
-        {"duration": 180, "users_start": 20, "users_end": 200, "spawn_rate": 8,  "label": "wave1-ramp"},
+        {"duration": 120, "users_start": 20,  "users_end": 20,  "spawn_rate": 5,  "label": "warm-up"},
+        {"duration": 180, "users_start": 20,  "users_end": 200, "spawn_rate": 8,  "label": "wave1-ramp"},
         {"duration": 240, "users_start": 200, "users_end": 200, "spawn_rate": 10, "label": "wave1-peak"},
         {"duration": 180, "users_start": 200, "users_end": 50,  "spawn_rate": 5,  "label": "valley-descent"},
         {"duration": 120, "users_start": 50,  "users_end": 50,  "spawn_rate": 10, "label": "valley"},
@@ -132,12 +262,64 @@ SCENARIOS = {
         {"duration": 120, "users_start": 20,  "users_end": 20,  "spawn_rate": 5,  "label": "cooldown"},
     ],
     "sinusoidal": [
-        # Sinusoide: min 40, max 200, periodo 360s
-        # Durata totale: 120+1800+120 = 2040s = 34min
-        {"duration": 120, "users_start": 40, "users_end": 40, "spawn_rate": 5, "label": "warm-up"},
+        {"duration": 120,  "users_start": 40, "users_end": 40,  "spawn_rate": 5,  "label": "warm-up"},
         {"duration": 1800, "users_start": 40, "users_end": 200, "spawn_rate": 10, "label": "sinusoidal",
          "type": "sinusoidal", "period": 360, "min_users": 40, "max_users": 200},
-        {"duration": 120, "users_start": 40, "users_end": 40, "spawn_rate": 5, "label": "cooldown"},
+        {"duration": 120,  "users_start": 40, "users_end": 40,  "spawn_rate": 5,  "label": "cooldown"},
+    ],
+
+    # ── Multi-ingress scenarios (Romano-like, 3 ingress separati) ──────────────
+    #
+    # PREREQUISITI:
+    #   - netem ATTIVO su ms02 (150ms) e ms03 (350ms)
+    #   - Online Boutique esposto su NodePort 30080 anche su cluster2 e cluster3
+    #     (o tramite Cilium Ingress locale per ogni cluster)
+    #
+    # In questi scenari Locust invia le richieste probabilisticamente ai 3 ingress,
+    # simulando utenti che entrano da cluster geograficamente diversi. Questo
+    # replica fedelmente il setup di Romano 2025 §5.3 (k6 + lista ingress).
+    #
+    # Il tracking per-ingress (latenza, fail%, SLO) viene riportato nel summary
+    # finale e nel CSV, permettendo di vedere l'effetto di DMOS cluster per cluster.
+
+    "flash_crowd_multiingress": [
+        # Romano-like flash crowd con 3 ingress — distribuzione UNIFORME 33/33/33.
+        # Uso: confronto diretto con Romano 2025 Scenario 2 (~150 req/s, netem attivo).
+        # Peak: 150 utenti (come Romano). Durata totale: 1080s ≈ 18min.
+        #
+        # Con DMOS OFF: ogni cluster riceve ~33% del traffico. Gli utenti che
+        #   entrano da c2/c3 subiscono 150/350ms solo per ricevere la risposta.
+        # Con DMOS ON: DMOS concentra repliche su c1 (Φ_demand alto, Φ_net basso) →
+        #   Cilium serve localmente chi entra da c1, riducendo il p95 globale.
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
+        {"duration": 60,  "users_start": 10,  "users_end": 150, "spawn_rate": 30, "label": "flash-spike"},
+        {"duration": 600, "users_start": 150, "users_end": 150, "spawn_rate": 10, "label": "sustained-peak"},
+        {"duration": 180, "users_start": 150, "users_end": 10,  "spawn_rate": 8,  "label": "decline"},
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "cooldown"},
+    ],
+
+    "flash_crowd_geo": [
+        # Geo-aware flash crowd: distribuzione ASIMMETRICA (default 45/25/30).
+        # DE riceve il 45% (flash crowd), PL il 30% (penalità alta 350ms).
+        #
+        # Perché 45/25/30 e non 60/25/15:
+        #   - Penalità netem media entrata: 142ms vs 90ms → baseline OFF più pesante
+        #   - PL al 30% amplifica il danno del routing cross-cluster in OFF
+        #   - DE al 45% è ancora un flash crowd riconoscibile per Φ_demand
+        #   - DMOS deve bilanciare Φ_demand(c1=0.45) vs ridurre routing verso PL
+        #     → scenario più ricco di quello banale con c1=0.60 dominante
+        #
+        # Pesi sovrascrivibili via env vars se necessario:
+        #   $env:DMOS_INGRESS_W1="0.45"   # già default
+        #   $env:DMOS_INGRESS_W2="0.25"   # già default
+        #   $env:DMOS_INGRESS_W3="0.30"   # già default
+        #   $env:DMOS_SCENARIO="flash_crowd_geo"
+        # Peak: 150 utenti. Durata totale: 1080s ≈ 18min.
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "warm-up"},
+        {"duration": 60,  "users_start": 10,  "users_end": 150, "spawn_rate": 30, "label": "flash-spike"},
+        {"duration": 600, "users_start": 150, "users_end": 150, "spawn_rate": 10, "label": "sustained-peak"},
+        {"duration": 180, "users_start": 150, "users_end": 10,  "spawn_rate": 8,  "label": "decline"},
+        {"duration": 120, "users_start": 10,  "users_end": 10,  "spawn_rate": 5,  "label": "cooldown"},
     ],
 }
 
@@ -156,11 +338,22 @@ class DMOSScenarioShape(LoadTestShape):
             self._phase_offsets.append(offset)
             offset += p["duration"]
         self._total_duration = offset
-        weight_strs = [f"cluster{i+1}={WEIGHTS[i]}" for i in range(3)]
         print(f"\n{'='*70}")
-        print(f"  DMOS Multi-Ingress Load Test v3")
-        print(f"  Scenario: {SCENARIO} | Duration: {self._total_duration/60:.0f} min")
-        print(f"  Weights:  {', '.join(weight_strs)}")
+        print(f"  DMOS Global-Ingress Load Test v5")
+        print(f"  Scenario:      {SCENARIO} | Duration: {self._total_duration/60:.0f} min")
+        if IS_MULTI_INGRESS:
+            print(f"  Ingress mode:  MULTI-INGRESS (3 user classes con host fisso)")
+            total_w = sum(c["weight"] for c in MULTI_INGRESS_CONFIG)
+            classes = ["DEUser", "FRUser", "PLUser"]
+            for cfg, cls in zip(MULTI_INGRESS_CONFIG, classes):
+                pct = cfg["weight"] / total_w * 100
+                w   = max(1, round(cfg["weight"] / total_w * 100))
+                netem_str = f"+{cfg['netem']}ms netem" if cfg["netem"] > 0 else "0ms (no netem)"
+                print(f"    {cls:8s} ({cfg['name']}): {cfg['url']}  {pct:4.1f}%  weight={w}  [{netem_str}]")
+        else:
+            print(f"  Ingress mode:  SINGLE (Cilium global ingress, cluster1)")
+            print(f"  Ingress URL:   {GLOBAL_INGRESS}")
+        print(f"  Traffic split:  controlled by Cilium Cluster Mesh (proportional to replicas)")
         print(f"{'='*70}\n")
 
     def tick(self):
@@ -169,7 +362,7 @@ class DMOSScenarioShape(LoadTestShape):
             return None
         for i, phase in enumerate(self.phases):
             phase_start = self._phase_offsets[i]
-            phase_end = phase_start + phase["duration"]
+            phase_end   = phase_start + phase["duration"]
             if run_time < phase_end:
                 t_in_phase = run_time - phase_start
                 if t_in_phase < 1:
@@ -178,19 +371,19 @@ class DMOSScenarioShape(LoadTestShape):
                           f"Duration: {phase['duration']}s")
                 if phase.get("type") == "sinusoidal":
                     period = phase["period"]
-                    amp = (phase["max_users"] - phase["min_users"]) / 2
-                    mid = (phase["max_users"] + phase["min_users"]) / 2
+                    amp    = (phase["max_users"] - phase["min_users"]) / 2
+                    mid    = (phase["max_users"] + phase["min_users"]) / 2
                     return (int(mid + amp * math.sin(2 * math.pi * t_in_phase / period)),
                             phase["spawn_rate"])
                 progress = t_in_phase / phase["duration"]
-                current = int(phase["users_start"] +
-                              (phase["users_end"] - phase["users_start"]) * progress)
+                current  = int(phase["users_start"] +
+                               (phase["users_end"] - phase["users_start"]) * progress)
                 return (current, phase["spawn_rate"])
         return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TaskSet with browsing behavior
+# Endpoints & Request Logic
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _CHECKOUT_DATA = {
@@ -208,13 +401,13 @@ _CHECKOUT_DATA = {
 
 # (path, weight, method, data)
 _ENDPOINTS = [
-    ("/",                       0.40, "GET",  None),
-    ("/product/OLJCESPC7Z",     0.15, "GET",  None),
-    ("/product/66VCHSJNUP",     0.10, "GET",  None),
-    ("/cart",                   0.10, "GET",  None),
-    ("/cart",                   0.15, "POST", {"product_id": "OLJCESPC7Z", "quantity": 1}),
-    ("/setCurrency",            0.05, "POST", {"currency_code": "EUR"}),
-    ("/cart/checkout",          0.05, "POST", _CHECKOUT_DATA),
+    ("/",                   0.40, "GET",  None),
+    ("/product/OLJCESPC7Z", 0.15, "GET",  None),
+    ("/product/66VCHSJNUP", 0.10, "GET",  None),
+    ("/cart",               0.10, "GET",  None),
+    ("/cart",               0.15, "POST", {"product_id": "OLJCESPC7Z", "quantity": 1}),
+    ("/setCurrency",        0.05, "POST", {"currency_code": "EUR"}),
+    ("/cart/checkout",      0.05, "POST", _CHECKOUT_DATA),
 ]
 
 
@@ -229,10 +422,14 @@ def _weighted_choice():
     return path, method, data
 
 
-def _do_request(cluster_name, base_url):
-    """Richiesta in thread OS reale — r.elapsed accurato su Windows."""
+def _do_request(base_url=None):
+    """Esegue una richiesta HTTP verso base_url (o GLOBAL_INGRESS se None).
+    Chiamato da ogni user class con il proprio host fisso."""
+    if base_url is None:
+        base_url = GLOBAL_INGRESS
     path, method, data = _weighted_choice()
     url = base_url + path
+
     try:
         if method == "POST":
             elapsed_ms, status = _request_pool.submit(_blocking_post, url, data).result()
@@ -240,66 +437,99 @@ def _do_request(cluster_name, base_url):
             elapsed_ms, status = _request_pool.submit(_blocking_get, url).result()
     except Exception:
         elapsed_ms, status = 10000.0, 500
-    track_request(cluster_name, elapsed_ms, status >= 500)
+
+    is_failure = status >= 500
+    track_request(elapsed_ms, is_failure)
+
+    # Tracking per-ingress (solo modalità multi-ingress)
+    if IS_MULTI_INGRESS and base_url in _per_ingress_stats:
+        with _stats_lock:
+            s = _per_ingress_stats[base_url]
+            s["count"] += 1
+            s["response_times"].append(elapsed_ms)
+            if is_failure:
+                s["failures"] += 1
+            if elapsed_ms > SLO_THRESHOLD_MS:
+                s["slo_violations"] += 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Three User classes — one per cluster
+# User Classes
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# SINGLE INGRESS: GlobalUser — tutti gli utenti verso cluster1.
+#
+# MULTI INGRESS:  3 classi separate (DEUser / FRUser / PLUser).
+#   Ogni classe ha host fisso → un utente "parigino" resta sempre su cluster2,
+#   non salta cluster a ogni request (sessione geograficamente vincolata).
+#   Il `weight` di ogni classe determina la proporzione di utenti allocati
+#   da Locust, riflettendo i pesi di MULTI_INGRESS_CONFIG.
+#
+#   Locust UI mostra le 3 classi separate con stats indipendenti.
 
-class Cluster1User(HttpUser):
-    host = "http://192.168.1.245:30080"
-    weight = WEIGHTS[0]
-    wait_time = between(1, 3)
+if IS_MULTI_INGRESS:
+    _w_total = sum(c["weight"] for c in MULTI_INGRESS_CONFIG)
 
-    @task
-    def browse(self):
-        _do_request("cluster1", "http://192.168.1.245:30080")
+    class DEUser(HttpUser):
+        """Utenti geograficamente vincolati a cluster1 (DE/Frankfurt, 0ms netem)."""
+        host      = MULTI_INGRESS_CONFIG[0]["url"]
+        wait_time = between(0.5, 1.5)
+        weight    = max(1, round(MULTI_INGRESS_CONFIG[0]["weight"] / _w_total * 100))
 
+        @task
+        def browse(self):
+            _do_request(self.host)
 
-class Cluster2User(HttpUser):
-    host = "http://192.168.1.246:30080"
-    weight = WEIGHTS[1]
-    wait_time = between(1, 3)
+    class FRUser(HttpUser):
+        """Utenti geograficamente vincolati a cluster2 (FR/Paris, +150ms netem)."""
+        host      = MULTI_INGRESS_CONFIG[1]["url"]
+        wait_time = between(0.5, 1.5)
+        weight    = max(1, round(MULTI_INGRESS_CONFIG[1]["weight"] / _w_total * 100))
 
-    @task
-    def browse(self):
-        _do_request("cluster2", "http://192.168.1.246:30080")
+        @task
+        def browse(self):
+            _do_request(self.host)
 
+    class PLUser(HttpUser):
+        """Utenti geograficamente vincolati a cluster3 (PL/Warsaw, +350ms netem)."""
+        host      = MULTI_INGRESS_CONFIG[2]["url"]
+        wait_time = between(0.5, 1.5)
+        weight    = max(1, round(MULTI_INGRESS_CONFIG[2]["weight"] / _w_total * 100))
 
-class Cluster3User(HttpUser):
-    host = "http://192.168.1.247:30080"
-    weight = WEIGHTS[2]
-    wait_time = between(1, 3)
+        @task
+        def browse(self):
+            _do_request(self.host)
 
-    @task
-    def browse(self):
-        _do_request("cluster3", "http://192.168.1.247:30080")
+else:
+    class GlobalUser(HttpUser):
+        """Utente singolo per scenari single-ingress (tutti su cluster1)."""
+        host      = GLOBAL_INGRESS
+        wait_time = between(0.5, 1.5)
+
+        @task
+        def browse(self):
+            _do_request()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Reporting
+# Safety Watchdog
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _safety_watchdog(environment):
-    """Ferma il test se il p95 globale supera SAFETY_P95_LIMIT_MS per SAFETY_CONSECUTIVE check."""
     consecutive = 0
     while not environment.runner.state == "stopped":
         time.sleep(SAFETY_CHECK_SEC)
         with _stats_lock:
-            all_rts = []
-            for s in _cluster_stats.values():
-                all_rts.extend(s["response_times"])
+            all_rts = list(_global_stats["response_times"])
         if len(all_rts) < 50:
-            continue  # troppo pochi dati, salta
+            continue
         p95 = sorted(all_rts)[int(len(all_rts) * 0.95)]
         if p95 > SAFETY_P95_LIMIT_MS:
             consecutive += 1
-            print(f"\n  ⚠️  SAFETY: p95 globale = {p95:.0f}ms > {SAFETY_P95_LIMIT_MS:.0f}ms "
+            print(f"\n  ⚠️  SAFETY: p95 = {p95:.0f}ms > {SAFETY_P95_LIMIT_MS:.0f}ms "
                   f"({consecutive}/{SAFETY_CONSECUTIVE})")
             if consecutive >= SAFETY_CONSECUTIVE:
-                print(f"\n  🛑 SAFETY STOP: p95 troppo alto per {SAFETY_CONSECUTIVE} check consecutivi "
-                      f"— test fermato per proteggere le VM\n")
+                print(f"\n  🛑 SAFETY STOP: p95 troppo alto per {SAFETY_CONSECUTIVE} check — stop\n")
                 environment.runner.quit()
                 return
         else:
@@ -310,12 +540,23 @@ def _safety_watchdog(environment):
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    print(f"\n  Test started: {SCENARIO} | Per-cluster tracking: ACTIVE\n")
-    print(f"  Safety watchdog: p95 limit={SAFETY_P95_LIMIT_MS:.0f}ms, "
-          f"stop after {SAFETY_CONSECUTIVE} consecutive checks ({SAFETY_CONSECUTIVE*SAFETY_CHECK_SEC}s)\n")
+    print(f"\n  Test started: {SCENARIO} | Global tracking: ACTIVE")
+    if IS_MULTI_INGRESS:
+        total_w = sum(c["weight"] for c in MULTI_INGRESS_CONFIG)
+        classes = ["DEUser", "FRUser", "PLUser"]
+        weights_str = " | ".join(
+            f"{cls}({c['name']})={c['weight']/total_w*100:.1f}%"
+            for c, cls in zip(MULTI_INGRESS_CONFIG, classes)
+        )
+        print(f"  User classes:    {weights_str}")
+    print(f"  Per-cluster distribution: via Prometheus in collect_metrics_simple.py\n")
     t = threading.Thread(target=_safety_watchdog, args=(environment,), daemon=True)
     t.start()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Reporting
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
@@ -323,90 +564,143 @@ def on_test_stop(environment, **kwargs):
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print(f"\n{'='*78}")
-    print(f"  PER-CLUSTER LATENCY COMPARISON — {SCENARIO}")
-    print(f"{'='*78}")
-    print(f"\n  {'Cluster':<12} {'Region':<6} {'Requests':>10} {'Fail%':>8} "
-          f"{'Avg':>8} {'p50':>8} {'p90':>8} {'p95':>8} {'p99':>8} {f'SLO>{SLO_THRESHOLD_MS}ms':>12}")
-    print(f"  {'-'*86}")
+    stats = _global_stats
+    rts   = sorted(stats["response_times"]) if stats["response_times"] else []
+    n     = len(rts)
 
-    summary_rows = []
-    for cname in CLUSTER_NAMES:
-        region = CLUSTER_REGIONS[cname]
-        stats = _cluster_stats.get(cname)
-        if not stats or not stats["response_times"]:
-            print(f"  {cname:<12} {region:<6} {'No data':>10}")
-            continue
-        rts = sorted(stats["response_times"])
-        n = len(rts)
-        avg = sum(rts) / n
-        p50 = rts[int(n * 0.50)]
-        p90 = rts[int(n * 0.90)]
-        p95 = rts[int(n * 0.95)]
-        p99 = rts[min(int(n * 0.99), n - 1)]
-        fail_pct = stats["failures"] / stats["count"] * 100 if stats["count"] > 0 else 0
-        slo_pct = stats["slo_violations"] / stats["count"] * 100 if stats["count"] > 0 else 0
-        print(f"  {cname:<12} {region:<6} {stats['count']:>10} "
-              f"{fail_pct:>7.1f}% {avg:>7.0f}ms {p50:>7.0f}ms "
-              f"{p90:>7.0f}ms {p95:>7.0f}ms {p99:>7.0f}ms "
-              f"SLO>{SLO_THRESHOLD_MS}ms:{slo_pct:>5.1f}%")
-        summary_rows.append({
-            "cluster": cname, "region": region,
-            "requests": stats["count"], "failures": stats["failures"],
-            "fail_pct": round(fail_pct, 2),
-            "avg_ms": round(avg, 1), "p50_ms": round(p50, 1),
-            "p90_ms": round(p90, 1), "p95_ms": round(p95, 1),
-            "p99_ms": round(p99, 1),
-            "slo_pct": round(slo_pct, 2),   # % richieste > SLO_THRESHOLD_MS
-        })
+    print(f"\n{'='*70}")
+    print(f"  GLOBAL LATENCY — {SCENARIO}")
+    print(f"{'='*70}")
 
-    all_rts = []
-    total_reqs = total_fails = total_slo_viol = 0
-    for s in _cluster_stats.values():
-        all_rts.extend(s["response_times"])
-        total_reqs += s["count"]
-        total_fails += s["failures"]
-        total_slo_viol += s["slo_violations"]
-    if all_rts:
-        all_rts.sort()
-        n = len(all_rts)
-        global_slo_pct = total_slo_viol / total_reqs * 100 if total_reqs > 0 else 0
-        print(f"  {'-'*86}")
-        print(f"  {'GLOBAL':<12} {'ALL':<6} {total_reqs:>10} "
-              f"{total_fails/total_reqs*100:>7.1f}% "
-              f"{sum(all_rts)/n:>7.0f}ms {all_rts[int(n*0.50)]:>7.0f}ms "
-              f"{all_rts[int(n*0.90)]:>7.0f}ms {all_rts[int(n*0.95)]:>7.0f}ms "
-              f"{all_rts[min(int(n*0.99),n-1)]:>7.0f}ms {global_slo_pct:>11.1f}%")
-    print(f"\n{'='*86}\n")
+    if n > 0:
+        avg      = sum(rts) / n
+        p50      = rts[int(n * 0.50)]
+        p90      = rts[int(n * 0.90)]
+        p95      = rts[int(n * 0.95)]
+        p99      = rts[min(int(n * 0.99), n - 1)]
+        fail_pct = stats["failures"]      / n * 100
+        slo_pct  = stats["slo_violations"] / n * 100
 
-    summary_file = output_dir / f"{SCENARIO}_cluster_latency_{timestamp}.csv"
-    if summary_rows:
+        print(f"\n  Requests : {n}")
+        print(f"  Fail%    : {fail_pct:.1f}%")
+        print(f"  Avg      : {avg:.0f}ms")
+        print(f"  p50      : {p50:.0f}ms")
+        print(f"  p90      : {p90:.0f}ms")
+        print(f"  p95      : {p95:.0f}ms")
+        print(f"  p99      : {p99:.0f}ms")
+        print(f"  SLO>1000ms: {slo_pct:.1f}%")
+        print(f"\n  Note: per-cluster traffic split in collect_metrics_simple.py JSONL")
+        print(f"        (resources._traffic_pct.frontend per ogni cluster)")
+    else:
+        print("  No data collected.")
+
+    # ── Per-ingress breakdown (solo scenari multi-ingress) ───────────────────
+    if IS_MULTI_INGRESS:
+        print(f"\n  PER-INGRESS LATENCY BREAKDOWN")
+        print(f"  {'─'*66}")
+        print(f"  {'Ingress':<10} {'netem':>7}  {'n':>7}  {'avg':>7}  {'p95':>7}  {'fail%':>6}  {'SLO%':>6}")
+        print(f"  {'─'*66}")
+        for url, s in _per_ingress_stats.items():
+            rts_i = sorted(s["response_times"]) if s["response_times"] else []
+            ni = len(rts_i)
+            if ni > 0:
+                avg_i  = sum(rts_i) / ni
+                p95_i  = rts_i[int(ni * 0.95)]
+                fail_i = s["failures"]       / ni * 100
+                slo_i  = s["slo_violations"] / ni * 100
+                print(
+                    f"  {s['name']:<10} {s['netem']:>5}ms  {ni:>7}  "
+                    f"{avg_i:>6.0f}ms  {p95_i:>6.0f}ms  {fail_i:>5.1f}%  {slo_i:>5.1f}%"
+                )
+            else:
+                print(f"  {s['name']:<10} {s['netem']:>5}ms  {'(no data)':>7}")
+        print(f"  {'─'*66}")
+
+    print(f"\n{'='*70}\n")
+
+    # ── Summary CSV ──────────────────────────────────────────────────────────
+    summary_file = output_dir / f"{SCENARIO}_summary_{timestamp}.csv"
+    if n > 0:
         with open(summary_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+            writer = csv.DictWriter(f, fieldnames=[
+                "scenario", "requests", "failures", "fail_pct",
+                "avg_ms", "p50_ms", "p90_ms", "p95_ms", "p99_ms", "slo_pct",
+            ])
             writer.writeheader()
-            writer.writerows(summary_rows)
-        print(f"  Summary CSV:    {summary_file}")
+            writer.writerow({
+                "scenario":  SCENARIO,
+                "requests":  n,
+                "failures":  stats["failures"],
+                "fail_pct":  round(fail_pct, 2),
+                "avg_ms":    round(avg, 1),
+                "p50_ms":    round(p50, 1),
+                "p90_ms":    round(p90, 1),
+                "p95_ms":    round(p95, 1),
+                "p99_ms":    round(p99, 1),
+                "slo_pct":   round(slo_pct, 2),
+            })
+        print(f"  Summary CSV:     {summary_file}")
 
+    # ── Timeseries CSV ───────────────────────────────────────────────────────
+    # Colonne: timestamp, count, avg_ms, p95_ms, slo_pct, fail_pct
+    # Per-cluster traffic %: nel JSONL di collect_metrics_simple.py
     ts_file = output_dir / f"{SCENARIO}_timeseries_{timestamp}.csv"
     with open(ts_file, "w", newline="") as f:
         writer = csv.writer(f)
-        header = ["timestamp"]
-        for cn in CLUSTER_NAMES:
-            # count, avg_ms, p95_ms, slo_pct (% req > SLO_THRESHOLD_MS in this window)
-            header.extend([f"{cn}_count", f"{cn}_avg_ms", f"{cn}_p95_ms", f"{cn}_slo_pct"])
-        writer.writerow(header)
+        writer.writerow(["timestamp", "count", "avg_ms", "p95_ms", "slo_pct", "fail_pct"])
         for window_ts in sorted(_windowed_stats.keys()):
-            row = [datetime.fromtimestamp(window_ts * _WINDOW_SIZE).strftime("%H:%M:%S")]
-            for cn in CLUSTER_NAMES:
-                ws = _windowed_stats[window_ts].get(cn)
-                if ws and ws["response_times"]:
-                    rts = sorted(ws["response_times"])
-                    nw = len(rts)
-                    p95_w = round(rts[int(nw * 0.95)], 1) if nw >= 2 else round(rts[-1], 1)
-                    slo_pct_w = round(ws["slo_violations"] / nw * 100, 1)
-                    row.extend([nw, round(sum(rts) / nw, 1), p95_w, slo_pct_w])
+            ws = _windowed_stats[window_ts]
+            if ws["response_times"]:
+                wrts  = sorted(ws["response_times"])
+                nw    = len(wrts)
+                p95_w      = round(wrts[int(nw * 0.95)], 1) if nw >= 2 else round(wrts[-1], 1)
+                slo_pct_w  = round(ws["slo_violations"] / nw * 100, 1)
+                fail_pct_w = round(ws["failures"]       / nw * 100, 1)
+                writer.writerow([
+                    datetime.fromtimestamp(window_ts * _WINDOW_SIZE).strftime("%H:%M:%S"),
+                    nw,
+                    round(sum(wrts) / nw, 1),
+                    p95_w,
+                    slo_pct_w,
+                    fail_pct_w,
+                ])
+    print(f"  Timeseries CSV:  {ts_file}")
+
+    # ── Per-ingress CSV (solo scenari multi-ingress) ──────────────────────────
+    if IS_MULTI_INGRESS:
+        ingress_file = output_dir / f"{SCENARIO}_per_ingress_{timestamp}.csv"
+        with open(ingress_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                "ingress_name", "region", "netem_ms", "weight_pct",
+                "requests", "failures", "fail_pct",
+                "avg_ms", "p95_ms", "slo_pct",
+            ])
+            writer.writeheader()
+            total_w = sum(c["weight"] for c in MULTI_INGRESS_CONFIG)
+            for cfg in MULTI_INGRESS_CONFIG:
+                url = cfg["url"]
+                s   = _per_ingress_stats[url]
+                rts_i = sorted(s["response_times"]) if s["response_times"] else []
+                ni = len(rts_i)
+                if ni > 0:
+                    avg_i  = round(sum(rts_i) / ni, 1)
+                    p95_i  = round(rts_i[int(ni * 0.95)], 1)
+                    fail_i = round(s["failures"]       / ni * 100, 2)
+                    slo_i  = round(s["slo_violations"] / ni * 100, 2)
                 else:
-                    row.extend([0, 0, 0, 0])
-            writer.writerow(row)
-    print(f"  Time-series CSV: {ts_file}")
-    print(f"\n  Done! Use plot_cluster_latency.py to generate graphs.\n")
+                    avg_i = p95_i = fail_i = slo_i = 0.0
+                writer.writerow({
+                    "ingress_name": cfg["name"],
+                    "region":       cfg["region"],
+                    "netem_ms":     cfg["netem"],
+                    "weight_pct":   round(cfg["weight"] / total_w * 100, 1),
+                    "requests":     ni,
+                    "failures":     s["failures"],
+                    "fail_pct":     fail_i,
+                    "avg_ms":       avg_i,
+                    "p95_ms":       p95_i,
+                    "slo_pct":      slo_i,
+                })
+        print(f"  Per-ingress CSV: {ingress_file}")
+
+    print(f"\n  Done! Per-cluster split: usa collect_metrics_simple.py JSONL\n")

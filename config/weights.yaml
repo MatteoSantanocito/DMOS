@@ -100,13 +100,16 @@ score_weights:
     omega_network:  0.35    # <-- 35% peso sulla geo-awareness via RTT
     omega_demand:   0.15    # <-- 15% peso sulla domanda geografica (più alto qui)
 
-romano_like:
-  omega_latency:  0.10   # Romano non usa P95 Hubble, ma lascia un minimo
-  omega_capacity: 0.05   # quasi ignorato come Romano
-  omega_load:     0.10
-  omega_carbon:   0.00   # Romano non ha carbon
-  omega_network:  0.40   # Romano basa tutto su ping RTT inter-cluster
-  omega_demand:   0.35   # Romano basa tutto su ingress rate per cluster
+  # Profile 6: Romano-like (replica approccio paper Romano et al.)
+  # Priorità massima a geo-awareness (RTT) e domanda geografica (ingress rate),
+  # nessun peso su carbon — per confronto diretto con il baseline della letteratura.
+  romano_like:
+    omega_latency:  0.10   # Romano non usa P95 Hubble, ma lascia un minimo
+    omega_capacity: 0.05   # quasi ignorato come Romano
+    omega_load:     0.10
+    omega_carbon:   0.00   # Romano non ha carbon
+    omega_network:  0.40   # Romano basa tutto su ping RTT inter-cluster
+    omega_demand:   0.35   # Romano basa tutto su ingress rate per cluster
 
   # Profilo attivo (cambia questo per switchare tra esperimenti)
   active: "latency_priority"

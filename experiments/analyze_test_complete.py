@@ -100,6 +100,12 @@ COLORS = {
 }
 CLUSTER_REGIONS = {"cluster1": "DE", "cluster2": "FR", "cluster3": "PL"}
 
+# Carbon intensity baselines (gCO2/kWh) — fallback se CarbonClient non disponibile
+# Basati su Electricity Maps medie diurne 2024-2025:
+#   DE:  ~350 (mix gas+carbone+rinnovabili)   FR:  ~80  (nucleare dominante)
+#   PL:  ~650 (carbone dominante)
+CARBON_INTENSITY_FALLBACK = {"DE": 350.0, "FR": 80.0, "PL": 650.0}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Data Loading
@@ -683,51 +689,87 @@ def compute_jain_fairness(data: List[dict], svc: str = "frontend") -> Tuple[list
     return timestamps, jain_values
 
 
-def load_locust_cluster_csv(scenario: str = None, results_dir: Path = None) -> dict:
+def load_locust_cluster_csv(scenario: str = None, results_dir: Path = None,
+                            after_dt: Optional[datetime] = None) -> dict:
     """
-    Legge il timeseries CSV per-cluster prodotto da locustfile_multiingress.py.
-    Compatibile sia con formato vecchio (3 colonne/cluster) che nuovo (4 colonne/cluster con slo_pct).
+    Legge il timeseries CSV prodotto da locustfile_multiingress.py.
 
-    Returns dict:
-        {cluster_name: {"timestamps": [...], "p95_ms": [...], "slo_pct": [...], "count": [...]}}
+    Supporta due formati:
+      - v3 (per-cluster): colonne cluster1_p95_ms, cluster2_p95_ms, ...
+      - v4 (global ingress): colonne globali p95_ms, slo_pct, count
+
+    Returns dict con chiavi per ogni cluster + "_global":
+        {cluster_name: {"timestamps": [...], "p95_ms": [...], "slo_pct": [...], "count": [...]},
+         "_global":    {"timestamps": [...], "p95_ms": [...], "slo_pct": [...], "count": [...]}}
     """
     empty = {c: {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []} for c in KNOWN_CLUSTERS}
+    empty["_global"] = {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []}
 
     search_dir = results_dir or Path("results/multiingress")
     if not search_dir.exists():
         print(f"  ℹ  Locust cluster dir not found: {search_dir}")
         return empty
 
-    pattern = f"{scenario}_timeseries_*.csv" if scenario else "*_timeseries_*.csv"
-    candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates and scenario:
-        # Fallback: strip _off / _on suffix (collector uses _off/_on, Locust CSV doesn't)
-        import re as _re
-        base_scenario = _re.sub(r'_(off|on)$', '', scenario)
-        if base_scenario != scenario:
-            pattern = f"{base_scenario}_timeseries_*.csv"
-            candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        print(f"  ℹ  No Locust timeseries CSV found (pattern: {pattern})")
+    import re as _re
+    base_scenario = _re.sub(r'_(off|on)$', '', scenario) if scenario else None
+
+    def _pick_csv(pat: str) -> Optional[Path]:
+        """
+        Trova il CSV che corrisponde al test analizzato:
+          - Se after_dt è noto: il più vecchio tra quelli con timestamp nel nome >= after_dt
+            (il CSV viene scritto a fine test → è sempre DOPO l'inizio del collector).
+          - Altrimenti: il più recente per mtime (comportamento legacy).
+        """
+        found = list(search_dir.glob(pat))
+        if not found:
+            return None
+        if after_dt is not None:
+            # Estrai timestamp dal nome file: *_YYYYMMDD_HHMMSS.csv
+            dated = []
+            for p in found:
+                m = _re.search(r'(\d{8})_(\d{6})\.csv$', p.name)
+                if m:
+                    try:
+                        file_dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                        dated.append((file_dt, p))
+                    except ValueError:
+                        pass
+            # Teniamo solo i file prodotti DOPO l'inizio del collector
+            after = [(dt, p) for dt, p in dated if dt >= after_dt]
+            if after:
+                # Il più vicino in avanti (test che è iniziato per primo dopo after_dt)
+                return min(after, key=lambda x: x[0])[1]
+            # Nessun file dopo after_dt → fallback al più recente
+        return max(found, key=lambda p: p.stat().st_mtime)
+
+    csv_path = _pick_csv(f"{scenario}_timeseries_*.csv" if scenario else "*_timeseries_*.csv")
+    if csv_path is None and base_scenario and base_scenario != scenario:
+        csv_path = _pick_csv(f"{base_scenario}_timeseries_*.csv")
+    if csv_path is None:
+        print(f"  ℹ  No Locust timeseries CSV found for scenario '{scenario}'")
         return empty
 
-    csv_path = candidates[0]
     print(f"  📄 Locust cluster CSV: {csv_path.name}")
 
     result = {c: {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []} for c in KNOWN_CLUSTERS}
+    result["_global"] = {"timestamps": [], "p95_ms": [], "slo_pct": [], "count": []}
     today = datetime.now().date()
 
     try:
         import csv as _csv
         with open(csv_path, "r", newline="") as f:
             reader = _csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            # Detect format: v3 has "cluster1_p95_ms", v4 has just "p95_ms"
+            is_per_cluster = any(f"{cn}_p95_ms" in fieldnames for cn in KNOWN_CLUSTERS)
+            is_global = "p95_ms" in fieldnames and not is_per_cluster
+
             prev_ts = None
             day_offset = 0
             for row in reader:
                 try:
                     t = datetime.strptime(row["timestamp"], "%H:%M:%S")
                     ts = t.replace(year=today.year, month=today.month, day=today.day)
-                    # Handle midnight rollover
                     if prev_ts and ts < prev_ts:
                         day_offset += 1
                     from datetime import timedelta as _td
@@ -736,27 +778,47 @@ def load_locust_cluster_csv(scenario: str = None, results_dir: Path = None) -> d
                 except ValueError:
                     continue
 
-                for cn in KNOWN_CLUSTERS:
+                if is_per_cluster:
+                    for cn in KNOWN_CLUSTERS:
+                        try:
+                            count = int(float(row.get(f"{cn}_count", 0) or 0))
+                            p95   = float(row.get(f"{cn}_p95_ms", 0) or 0)
+                            slo   = float(row.get(f"{cn}_slo_pct", 0) or 0)
+                            result[cn]["timestamps"].append(ts)
+                            result[cn]["count"].append(count)
+                            result[cn]["p95_ms"].append(p95)
+                            result[cn]["slo_pct"].append(slo)
+                        except (ValueError, KeyError):
+                            pass
+                elif is_global:
                     try:
-                        count = int(float(row.get(f"{cn}_count", 0) or 0))
-                        p95   = float(row.get(f"{cn}_p95_ms", 0) or 0)
-                        slo   = float(row.get(f"{cn}_slo_pct", 0) or 0)
-                        result[cn]["timestamps"].append(ts)
-                        result[cn]["count"].append(count)
-                        result[cn]["p95_ms"].append(p95)
-                        result[cn]["slo_pct"].append(slo)
+                        count = int(float(row.get("count", 0) or 0))
+                        p95   = float(row.get("p95_ms", 0) or 0)
+                        slo   = float(row.get("slo_pct", 0) or 0)
+                        result["_global"]["timestamps"].append(ts)
+                        result["_global"]["count"].append(count)
+                        result["_global"]["p95_ms"].append(p95)
+                        result["_global"]["slo_pct"].append(slo)
                     except (ValueError, KeyError):
                         pass
     except Exception as e:
         print(f"  ⚠  Error reading Locust cluster CSV: {e}")
         return empty
 
-    total_rows = len(result[KNOWN_CLUSTERS[0]]["timestamps"])
-    print(f"  ✅ Loaded {total_rows} windows from Locust per-cluster CSV")
+    if is_per_cluster:
+        total_rows = len(result[KNOWN_CLUSTERS[0]]["timestamps"])
+        print(f"  ✅ Loaded {total_rows} windows from Locust per-cluster CSV (v3 format)")
+        result["_format"] = "per_cluster"
+    else:
+        total_rows = len(result["_global"]["timestamps"])
+        print(f"  ✅ Loaded {total_rows} windows from Locust global CSV (v4 format)")
+        result["_format"] = "global"
     return result
 
 
-def load_locust_cluster_latency_csv(scenario: str = None, results_dir: Path = None) -> dict:
+def load_locust_cluster_latency_csv(scenario: str = None, results_dir: Path = None,
+                                    timeseries_format: str = "auto",
+                                    after_dt: Optional[datetime] = None) -> dict:
     """
     Legge il cluster_latency CSV prodotto da locustfile_multiingress.py.
     Contiene statistiche aggregate per-cluster sull'INTERA durata del test
@@ -776,21 +838,55 @@ def load_locust_cluster_latency_csv(scenario: str = None, results_dir: Path = No
     if not search_dir.exists():
         return empty
 
-    pattern = f"{scenario}_cluster_latency_*.csv" if scenario else "*_cluster_latency_*.csv"
-    candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates and scenario:
-        # Fallback: strip _off / _on suffix (collector uses _off/_on, Locust CSV doesn't)
-        import re as _re
-        base_scenario = _re.sub(r'_(off|on)$', '', scenario)
-        if base_scenario != scenario:
-            pattern = f"{base_scenario}_cluster_latency_*.csv"
-            candidates = sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        print(f"  ℹ  No Locust cluster_latency CSV found (pattern: {pattern})")
+    import re as _re
+    base_scenario = _re.sub(r'_(off|on)$', '', scenario) if scenario else None
+
+    def _pick(pat: str) -> Optional[Path]:
+        """Stessa logica di selezione di load_locust_cluster_csv: preferisce il
+        file con timestamp >= after_dt (test corrente), fallback al più recente."""
+        found = list(search_dir.glob(pat))
+        if not found:
+            return None
+        if after_dt is not None:
+            dated = []
+            for p in found:
+                m = _re.search(r'(\d{8})_(\d{6})\.csv$', p.name)
+                if m:
+                    try:
+                        file_dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                        dated.append((file_dt, p))
+                    except ValueError:
+                        pass
+            after = [(dt, p) for dt, p in dated if dt >= after_dt]
+            if after:
+                return min(after, key=lambda x: x[0])[1]
+        return max(found, key=lambda p: p.stat().st_mtime)
+
+    # Se il timeseries era v4 (global), cerca *_summary_*.csv PRIMA
+    if timeseries_format == "global":
+        csv_path = _pick(f"{scenario}_summary_*.csv" if scenario else "*_summary_*.csv")
+        fmt = "global"
+        if csv_path is None and base_scenario and base_scenario != scenario:
+            csv_path = _pick(f"{base_scenario}_summary_*.csv")
+        if csv_path is None:
+            csv_path = _pick(f"{scenario}_cluster_latency_*.csv" if scenario else "*_cluster_latency_*.csv")
+            fmt = "per_cluster"
+    else:
+        # v3 o auto: per-cluster prima
+        csv_path = _pick(f"{scenario}_cluster_latency_*.csv" if scenario else "*_cluster_latency_*.csv")
+        fmt = "per_cluster"
+        if csv_path is None and base_scenario and base_scenario != scenario:
+            csv_path = _pick(f"{base_scenario}_cluster_latency_*.csv")
+        if csv_path is None:
+            csv_path = _pick(f"{scenario}_summary_*.csv" if scenario else "*_summary_*.csv")
+            fmt = "global"
+            if csv_path is None and base_scenario and base_scenario != scenario:
+                csv_path = _pick(f"{base_scenario}_summary_*.csv")
+    if csv_path is None:
+        print(f"  ℹ  No Locust latency/summary CSV found for scenario '{scenario}'")
         return empty
 
-    csv_path = candidates[0]
-    print(f"  📄 Locust latency CSV: {csv_path.name}")
+    print(f"  📄 Locust latency CSV: {csv_path.name}  (format: {fmt})")
 
     result = {c: dict(empty[c]) for c in KNOWN_CLUSTERS}
     try:
@@ -798,42 +894,65 @@ def load_locust_cluster_latency_csv(scenario: str = None, results_dir: Path = No
         with open(csv_path, "r", newline="") as f:
             reader = _csv.DictReader(f)
             for row in reader:
-                cn = row.get("cluster", "").strip()
-                if cn not in KNOWN_CLUSTERS:
-                    continue
-                result[cn] = {
-                    "requests": int(float(row.get("requests", 0) or 0)),
-                    "failures": int(float(row.get("failures", 0) or 0)),
-                    "avg_ms":   float(row.get("avg_ms",  0) or 0),
-                    "p50_ms":   float(row.get("p50_ms",  0) or 0),
-                    "p90_ms":   float(row.get("p90_ms",  0) or 0),
-                    "p95_ms":   float(row.get("p95_ms",  0) or 0),
-                    "p99_ms":   float(row.get("p99_ms",  0) or 0),
-                    "slo_pct":  float(row.get("slo_pct", 0) or 0),
-                }
+                if fmt == "per_cluster":
+                    cn = row.get("cluster", "").strip()
+                    if cn not in KNOWN_CLUSTERS:
+                        continue
+                    result[cn] = {
+                        "requests": int(float(row.get("requests", 0) or 0)),
+                        "failures": int(float(row.get("failures", 0) or 0)),
+                        "avg_ms":   float(row.get("avg_ms",  0) or 0),
+                        "p50_ms":   float(row.get("p50_ms",  0) or 0),
+                        "p90_ms":   float(row.get("p90_ms",  0) or 0),
+                        "p95_ms":   float(row.get("p95_ms",  0) or 0),
+                        "p99_ms":   float(row.get("p99_ms",  0) or 0),
+                        "slo_pct":  float(row.get("slo_pct", 0) or 0),
+                    }
+                else:
+                    # v4 global ingress: un'unica riga globale, nessun breakdown per cluster.
+                    # Salviamo sotto la chiave speciale "_global" per distinguerlo dai
+                    # dati per-cluster (v3). I cluster individuali restano a 0 (no data).
+                    result["_global"] = {
+                        "requests": int(float(row.get("requests", 0) or 0)),
+                        "failures": int(float(row.get("failures", 0) or 0)),
+                        "avg_ms":   float(row.get("avg_ms",  0) or 0),
+                        "p50_ms":   float(row.get("p50_ms",  0) or 0),
+                        "p90_ms":   float(row.get("p90_ms",  0) or 0),
+                        "p95_ms":   float(row.get("p95_ms",  0) or 0),
+                        "p99_ms":   float(row.get("p99_ms",  0) or 0),
+                        "slo_pct":  float(row.get("slo_pct", 0) or 0),
+                    }
     except Exception as e:
         print(f"  ⚠  Error reading Locust latency CSV: {e}")
         return empty
 
-    loaded = [cn for cn in KNOWN_CLUSTERS if result[cn]["requests"] > 0]
-    print(f"  ✅ Loaded cluster_latency for: {', '.join(loaded)}")
+    if result.get("_global", {}).get("requests", 0) > 0:
+        print(f"  ✅ Loaded global latency (v4): {result['_global']['requests']} reqs, "
+              f"p95={result['_global']['p95_ms']:.0f}ms, slo={result['_global']['slo_pct']:.1f}%")
+    else:
+        loaded = [cn for cn in KNOWN_CLUSTERS if result[cn]["requests"] > 0]
+        print(f"  ✅ Loaded cluster_latency for: {', '.join(loaded)}")
     return result
 
 
 def compute_global_p95_flat(cluster_latency: dict) -> Optional[float]:
     """
-    P95 globale flat (stile k6/Romano): media pesata dei p95 per-cluster,
-    pesata per numero di request totali.
-    Approssima il vero p95 globale — comparabile con i risultati di Romano.
+    P95 globale flat (stile k6/Romano).
+    - v4 (global ingress): usa direttamente la chiave _global
+    - v3 (per-cluster): media pesata dei p95 per-cluster
     """
-    total_req = sum(v.get("requests", 0) for v in cluster_latency.values())
+    # v4: dato globale diretto
+    g = cluster_latency.get("_global", {})
+    if g.get("requests", 0) > 0:
+        return g.get("p95_ms")
+
+    # v3: weighted average per cluster
+    per_cluster = {k: v for k, v in cluster_latency.items()
+                   if k in KNOWN_CLUSTERS and v.get("requests", 0) > 0}
+    total_req = sum(v["requests"] for v in per_cluster.values())
     if total_req == 0:
         return None
-    weighted = sum(
-        v.get("p95_ms", 0.0) * v.get("requests", 0)
-        for v in cluster_latency.values()
-        if v.get("requests", 0) > 0
-    )
+    weighted = sum(v["p95_ms"] * v["requests"] for v in per_cluster.values())
     return weighted / total_req
 
 
@@ -842,7 +961,7 @@ def compute_global_p95_flat(cluster_latency: dict) -> Optional[float]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict,
-                 cluster_latency: dict = None):
+                 cluster_latency: dict = None, carbon: dict = None):
     """Print comprehensive statistical report to console."""
     W = 78
 
@@ -1062,27 +1181,64 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict,
 
     # ── SLO Violation Rate + Global P95 flat (da cluster_latency CSV) ──
     header("10b. GLOBAL P95 FLAT  (stile k6 / Romano — aggregato sull'intero test)")
-    kv("SLO threshold:", "1000 ms  (allineato Romano p95~1.0–1.5s, Cilantro 2s)")
+    kv("SLO threshold:", "1000 ms  (allineato Romano 2025 p95~1.3s ON, Cilantro 2s)")
     if cluster_latency:
         flat = compute_global_p95_flat(cluster_latency)
         if flat is not None:
             status = "✅" if flat < 1000 else ("⚠️" if flat < 2000 else "❌")
-            kv("p95 globale flat (pesato):", f"{flat:.0f} ms  {status}")
-            kv("  (Romano Scenario 2 rif.):", "~1320 ms  ON / ~2140 ms OFF")
+            kv("p95 globale flat:", f"{flat:.0f} ms  {status}")
+            kv("  (Romano 2025, Sc2 flash @150rps):", "p95: 1320ms ON / 1650ms OFF  (−20%)")
             print()
-            print(f"    {'Cluster':<12} {'Requests':>9}  {'p50':>7}  {'p90':>7}  {'p95':>7}  {'p99':>7}  {'SLO%':>7}")
-            print(f"    {'─'*58}")
-            for cn in KNOWN_CLUSTERS:
-                cl = cluster_latency[cn]
-                reg = CLUSTER_REGIONS.get(cn, "")
-                print(f"    {cn+' ('+reg+')':<17} {cl['requests']:>7}  "
-                      f"{cl['p50_ms']:>6.0f}ms  {cl['p90_ms']:>6.0f}ms  "
-                      f"{cl['p95_ms']:>6.0f}ms  {cl['p99_ms']:>6.0f}ms  "
-                      f"{cl['slo_pct']:>6.1f}%")
+            # v4 global ingress: mostra solo la riga globale
+            g = cluster_latency.get("_global", {})
+            if g.get("requests", 0) > 0:
+                print(f"    {'Source':<17} {'Requests':>9}  {'p50':>7}  {'p90':>7}  {'p95':>7}  {'p99':>7}  {'SLO%':>7}")
+                print(f"    {'─'*62}")
+                print(f"    {'GLOBAL (all clusters)':<17} {g['requests']:>9}  "
+                      f"{g['p50_ms']:>6.0f}ms  {g['p90_ms']:>6.0f}ms  "
+                      f"{g['p95_ms']:>6.0f}ms  {g['p99_ms']:>6.0f}ms  "
+                      f"{g['slo_pct']:>6.1f}%")
+                print(f"    ℹ  Per-cluster breakdown N/A (v4 global ingress — use Prometheus traffic_pct)")
+            else:
+                # v3 per-cluster
+                print(f"    {'Cluster':<17} {'Requests':>9}  {'p50':>7}  {'p90':>7}  {'p95':>7}  {'p99':>7}  {'SLO%':>7}")
+                print(f"    {'─'*62}")
+                for cn in KNOWN_CLUSTERS:
+                    cl = cluster_latency[cn]
+                    reg = CLUSTER_REGIONS.get(cn, "")
+                    print(f"    {cn+' ('+reg+')':<17} {cl['requests']:>9}  "
+                          f"{cl['p50_ms']:>6.0f}ms  {cl['p90_ms']:>6.0f}ms  "
+                          f"{cl['p95_ms']:>6.0f}ms  {cl['p99_ms']:>6.0f}ms  "
+                          f"{cl['slo_pct']:>6.1f}%")
         else:
             kv("p95 globale flat:", "N/A  (cluster_latency CSV senza request)")
     else:
         kv("p95 globale flat:", "N/A  (cluster_latency CSV non trovato)")
+
+    # ── Advanced QoS Metrics ──
+    header("10c. ADVANCED QoS METRICS (per-cluster)")
+    adv = stats.get("advanced_qos", {})
+    per_cl = adv.get("per_cluster", {})
+    if per_cl and any(per_cl.get(cn) for cn in KNOWN_CLUSTERS):
+        global_slo_dur = adv.get("global_slo_duration_s", 0)
+        kv("Global SLO violation duration:", f"{global_slo_dur:.0f} s  ({global_slo_dur/60:.1f} min)")
+        print()
+        hdr = f"    {'Cluster':<12} {'SLO dur(s)':>10}  {'Peak p95':>9}  {'Baseline p95':>13}  {'Recovery':>9}  {'Throughput CV':>13}"
+        print(hdr)
+        print(f"    {'─' * (len(hdr) - 4)}")
+        for cn in KNOWN_CLUSTERS:
+            m = per_cl.get(cn, {})
+            if not m:
+                print(f"    {cn:<12}  {'N/A':>10}  {'N/A':>9}  {'N/A':>13}  {'N/A':>9}  {'N/A':>13}")
+                continue
+            slo_d   = f"{m['slo_duration_s']:.0f}s"       if m.get('slo_duration_s') is not None else "N/A"
+            peak    = f"{m['peak_p95_ms']:.0f}ms"          if m.get('peak_p95_ms')    is not None else "N/A"
+            base    = f"{m['baseline_p95_ms']:.0f}ms"      if m.get('baseline_p95_ms') is not None else "N/A"
+            rec     = f"{m['recovery_seconds']:.0f}s"      if m.get('recovery_seconds') is not None else "N/A"
+            cv      = f"{m['throughput_cv_pct']:.1f}%"     if m.get('throughput_cv_pct') is not None else "N/A"
+            print(f"    {cn:<12}  {slo_d:>10}  {peak:>9}  {base:>13}  {rec:>9}  {cv:>13}")
+    else:
+        print("    ℹ  No per-cluster timeseries data available")
 
     # ── Backend Services ──
     header("11. BACKEND SERVICES")
@@ -1098,9 +1254,125 @@ def print_report(data: List[dict], fe_ts: dict, locust_ts: dict, stats: dict,
         else:
             kv(f"{svc}:", "no replicas observed (not yet scaled by DMOS)")
 
+    # ── Carbon Efficiency ──
+    header("12. CARBON EFFICIENCY (weighted CI)")
+    if carbon and carbon.get("active_snapshots", 0) > 0:
+        ci_map = carbon["ci"]
+        avg_t  = carbon["avg_traffic_pct"]
+        w_avg  = carbon["weighted_ci_avg"]
+        u_ci   = carbon["uniform_ci"]
+        saving = carbon["ci_savings_pct"]
+
+        # Per-cluster table
+        kv("Carbon intensities (realistic profile):", "")
+        for cn in KNOWN_CLUSTERS:
+            reg = CLUSTER_REGIONS.get(cn, "")
+            print(f"      {cn} ({reg}):  {ci_map[cn]:.1f} gCO2/kWh  "
+                  f"  avg traffic = {avg_t.get(cn, 0):.1f}%")
+
+        print()
+        kv("Weighted CI (this test):",
+           f"{w_avg:.1f} gCO2/kWh")
+        kv("Uniform baseline (33/33/33):",
+           f"{u_ci:.1f} gCO2/kWh")
+        arrow = "✅" if saving > 0 else "⚠️"
+        kv("CI savings vs uniform:",
+           f"{saving:+.1f}%  {arrow}  "
+           f"({'DMOS reduces carbon footprint' if saving > 0 else 'DMOS increases carbon footprint'})")
+        print()
+        # Interpretation note
+        lo_ci = min(ci_map.items(), key=lambda x: x[1])
+        hi_ci = max(ci_map.items(), key=lambda x: x[1])
+        lo_share = avg_t.get(lo_ci[0], 0)
+        hi_share = avg_t.get(hi_ci[0], 0)
+        lo_reg = CLUSTER_REGIONS.get(lo_ci[0], "")
+        hi_reg = CLUSTER_REGIONS.get(hi_ci[0], "")
+        print(f"    ℹ  Cleanest cluster: {lo_ci[0]} ({lo_reg}) = {lo_ci[1]:.0f} gCO2/kWh  "
+              f"→ received {lo_share:.1f}% of traffic")
+        print(f"    ℹ  Dirtiest cluster: {hi_ci[0]} ({hi_reg}) = {hi_ci[1]:.0f} gCO2/kWh  "
+              f"→ received {hi_share:.1f}% of traffic")
+        if carbon.get("weighted_ci_ts"):
+            ts_vals = carbon["weighted_ci_ts"]
+            print(f"    ℹ  WCI range over test: {min(ts_vals):.1f} – {max(ts_vals):.1f} gCO2/kWh")
+    else:
+        print("    ℹ  No traffic_pct data in JSONL — run collect_metrics_simple.py with traffic tracking")
+
     print(f"\n{'═' * W}")
     print(f"  ✅ Report complete")
     print(f"{'═' * W}\n")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Advanced QoS Metrics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_advanced_qos_metrics(locust_cluster: dict, window_seconds: int = 10) -> dict:
+    """
+    Compute advanced QoS metrics from per-cluster Locust timeseries:
+    - SLO violation duration (seconds with p95 > 1000ms)
+    - Peak window analysis (max p95, timestamp)
+    - Baseline p95 (first 20% of test)
+    - Recovery time (seconds after peak to return within 2x baseline)
+    - Throughput stability (coefficient of variation during peak phase)
+    """
+    SLO_MS = 1000
+    results = {}
+
+    for cn in KNOWN_CLUSTERS:
+        p95_vals   = locust_cluster[cn]["p95_ms"]
+        counts     = locust_cluster[cn].get("count", [])
+        timestamps = locust_cluster[cn]["timestamps"]
+
+        active = [(i, v) for i, v in enumerate(p95_vals) if v > 0]
+        if not active:
+            results[cn] = {}
+            continue
+
+        # 1. SLO violation duration
+        slo_windows   = sum(1 for v in p95_vals if v > SLO_MS)
+        slo_duration_s = slo_windows * window_seconds
+
+        # 2. Peak p95
+        peak_idx, peak_p95 = max(active, key=lambda x: x[1])
+        peak_ts = timestamps[peak_idx] if timestamps else None
+
+        # 3. Baseline: mean of first 20% active windows
+        n_warmup = max(1, len(active) // 5)
+        warmup_vals = [v for _, v in active[:n_warmup]]
+        baseline_p95 = sum(warmup_vals) / len(warmup_vals) if warmup_vals else None
+
+        # 4. Recovery time: windows after peak until p95 <= 2x baseline
+        recovery_seconds = None
+        if baseline_p95:
+            thresh = baseline_p95 * 2
+            for i in range(peak_idx + 1, len(p95_vals)):
+                v = p95_vals[i]
+                if 0 < v <= thresh:
+                    recovery_seconds = (i - peak_idx) * window_seconds
+                    break
+
+        # 5. Throughput CV (coefficient of variation) during peak phase
+        throughput_cv = None
+        if baseline_p95 and counts:
+            peak_counts = [counts[i] for i, v in enumerate(p95_vals)
+                           if v > baseline_p95 * 1.5 and i < len(counts)]
+            if len(peak_counts) > 1:
+                mean_c = sum(peak_counts) / len(peak_counts)
+                if mean_c > 0:
+                    var   = sum((c - mean_c) ** 2 for c in peak_counts) / len(peak_counts)
+                    throughput_cv = (var ** 0.5 / mean_c) * 100
+
+        results[cn] = {
+            "slo_duration_s":    slo_duration_s,
+            "peak_p95_ms":       peak_p95,
+            "peak_ts":           peak_ts,
+            "baseline_p95_ms":   baseline_p95,
+            "recovery_seconds":  recovery_seconds,
+            "throughput_cv_pct": throughput_cv,
+        }
+
+    global_slo = sum(r.get("slo_duration_s", 0) for r in results.values() if r)
+    return {"per_cluster": results, "global_slo_duration_s": global_slo}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1228,52 +1500,103 @@ def generate_page_scaling(fe_ts: dict, stats: dict, output_dir: Path, prefix: st
 
 def generate_page_qos(fe_ts: dict, locust_ts: dict, locust_cluster: dict,
                       stats: dict, output_dir: Path, prefix: str = "dmos",
-                      cluster_latency: dict = None):
+                      cluster_latency: dict = None, resource_ts: dict = None):
     """
     Thesis Page 2 — Quality of Service & Fairness.
-    Plots: p95 per cluster | SLO violation rate | Jain FI | KPI summary table.
+    Plots: p95 latency | SLO / traffic distribution | Jain FI | KPI summary table.
+
+    Supports two locustfile formats:
+      - v3 per-cluster: shows p95 per cluster + SLO per cluster
+      - v4 global ingress: shows global p95 + traffic distribution from JSONL
     """
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('DMOS Analysis — Quality of Service & Fairness', fontsize=14, fontweight='bold')
 
-    # ── [0,0] p95 latency per cluster over time ──
+    # Detect which format is available
+    has_per_cluster = any(
+        locust_cluster.get(cn, {}).get("timestamps") and
+        any(v > 0 for v in locust_cluster[cn].get("p95_ms", []))
+        for cn in KNOWN_CLUSTERS
+    )
+    has_global = bool(locust_cluster.get("_global", {}).get("timestamps"))
+
+    # ── [0,0] p95 latency ──────────────────────────────────────────────────
     ax = axes[0, 0]
-    has_data = False
-    for cn in KNOWN_CLUSTERS:
-        ts_c  = locust_cluster[cn]["timestamps"]
-        p95_c = locust_cluster[cn]["p95_ms"]
-        if ts_c and any(v > 0 for v in p95_c):
-            ax.plot(ts_c, p95_c, lw=2, color=COLORS[cn],
-                    label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
-            has_data = True
-    if has_data:
+    if has_per_cluster:
+        # v3: per-cluster lines
+        for cn in KNOWN_CLUSTERS:
+            ts_c  = locust_cluster[cn]["timestamps"]
+            p95_c = locust_cluster[cn]["p95_ms"]
+            if ts_c and any(v > 0 for v in p95_c):
+                ax.plot(ts_c, p95_c, lw=2, color=COLORS[cn],
+                        label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
         ax.axhline(y=1000, color='red', ls=':', lw=1.5, alpha=0.7, label='SLO 1 s')
         ax.legend(fontsize=7)
         _fmt_time(ax)
-    else:
-        ax.text(0.5, 0.5, 'No per-cluster latency data\n(run locustfile_multiingress.py)',
-                transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
-    ax.set_ylabel('p95 Latency (ms)')
-    ax.set_title('p95 Latency per Cluster Over Time')
-
-    # ── [0,1] SLO violation rate per cluster ──
-    ax = axes[0, 1]
-    has_slo = False
-    for cn in KNOWN_CLUSTERS:
-        ts_c  = locust_cluster[cn]["timestamps"]
-        slo_c = locust_cluster[cn]["slo_pct"]
-        if ts_c and any(v > 0 for v in slo_c):
-            ax.plot(ts_c, slo_c, lw=2, color=COLORS[cn],
-                    label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
-            has_slo = True
-    if has_slo:
-        ax.axhline(y=5, color='orange', ls='--', alpha=0.7, lw=1.5, label='5% threshold')
-        ax.set_ylim(bottom=0)
+        ax.set_title('p95 Latency per Cluster Over Time')
+    elif has_global:
+        # v4: single global line
+        g = locust_cluster["_global"]
+        ts_g  = g["timestamps"]
+        p95_g = g["p95_ms"]
+        if any(v > 0 for v in p95_g):
+            ax.plot(ts_g, p95_g, lw=2, color=COLORS['p95'], label='Global p95')
+        ax.axhline(y=1000, color='red', ls=':', lw=1.5, alpha=0.7, label='SLO 1 s')
         ax.legend(fontsize=7)
         _fmt_time(ax)
+        ax.set_title('p95 Latency (Global) Over Time')
     else:
-        ax.text(0.5, 0.5, 'SLO data not available\n(update locustfile and re-run)',
+        ax.text(0.5, 0.5, 'No latency data available',
                 transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+        ax.set_title('p95 Latency Over Time')
+    ax.set_ylabel('p95 Latency (ms)')
+
+    # ── [0,1] SLO violation rate OR traffic distribution ──────────────────
+    ax = axes[0, 1]
+    if has_per_cluster:
+        # v3: SLO per cluster
+        has_slo = False
+        for cn in KNOWN_CLUSTERS:
+            ts_c  = locust_cluster[cn]["timestamps"]
+            slo_c = locust_cluster[cn]["slo_pct"]
+            if ts_c and any(v > 0 for v in slo_c):
+                ax.plot(ts_c, slo_c, lw=2, color=COLORS[cn],
+                        label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
+                has_slo = True
+        if has_slo:
+            ax.axhline(y=5, color='orange', ls='--', alpha=0.7, lw=1.5, label='5% threshold')
+            ax.set_ylim(bottom=0)
+            ax.legend(fontsize=7)
+            _fmt_time(ax)
+        else:
+            ax.text(0.5, 0.5, 'SLO data not available',
+                    transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
+        ax.set_ylabel('SLO Violation Rate (%)')
+        ax.set_title('SLO Violation Rate per Cluster  (req > 1 s)')
+    else:
+        # v4: traffic distribution from JSONL resource_ts
+        ax.set_title('Traffic Distribution per Cluster (Cilium Cluster Mesh)')
+        ax.set_ylabel('Traffic Share (%)')
+        traffic_plotted = False
+        if resource_ts:
+            for cn in KNOWN_CLUSTERS:
+                ts_c   = resource_ts[cn]["timestamps"]
+                pct_c  = resource_ts[cn]["traffic_pct"]
+                # Filter out None
+                valid = [(t, p) for t, p in zip(ts_c, pct_c) if p is not None]
+                if valid:
+                    tv, pv = zip(*valid)
+                    ax.plot(tv, pv, lw=2, color=COLORS[cn],
+                            label=f"{cn} ({CLUSTER_REGIONS.get(cn, '')})")
+                    traffic_plotted = True
+        if traffic_plotted:
+            ax.axhline(y=33.3, color='gray', ls=':', lw=1, alpha=0.5, label='Equal split (33%)')
+            ax.set_ylim(0, 100)
+            ax.legend(fontsize=7)
+            _fmt_time(ax)
+        else:
+            ax.text(0.5, 0.5, 'Traffic distribution data not available\n(needs collect_metrics_simple.py v2)',
+                    transform=ax.transAxes, ha='center', va='center', fontsize=10, color='gray')
     ax.set_ylabel('SLO Violation Rate (%)')
     ax.set_title('SLO Violation Rate per Cluster  (req > 1 s)')
 
@@ -1339,6 +1662,19 @@ def generate_page_qos(fe_ts: dict, locust_ts: dict, locust_cluster: dict,
     # p95 flat globale (Romano/k6 style)
     p95_flat: Optional[float] = compute_global_p95_flat(cluster_latency) if cluster_latency else None
 
+    # Advanced QoS
+    adv      = stats.get("advanced_qos", {})
+    per_cl   = adv.get("per_cluster", {})
+    glob_slo_dur = adv.get("global_slo_duration_s", None)
+    # Peak spike p95: max across clusters
+    peak_vals = [per_cl[cn].get("peak_p95_ms") for cn in KNOWN_CLUSTERS
+                 if per_cl.get(cn) and per_cl[cn].get("peak_p95_ms")]
+    peak_max  = max(peak_vals) if peak_vals else None
+    # Recovery: max across clusters
+    rec_vals  = [per_cl[cn].get("recovery_seconds") for cn in KNOWN_CLUSTERS
+                 if per_cl.get(cn) and per_cl[cn].get("recovery_seconds")]
+    rec_max   = max(rec_vals) if rec_vals else None
+
     kpis = [
         ("Metric", "Value", "✓"),
         ("p95 latency (windowed mean)",
@@ -1347,9 +1683,18 @@ def generate_page_qos(fe_ts: dict, locust_ts: dict, locust_cluster: dict,
         ("p95 latency (flat / k6-style)",
          f"{p95_flat:.0f} ms" if p95_flat is not None else "N/A",
          "✅" if p95_flat is not None and p95_flat < 1000 else ("⚠️" if p95_flat is not None and p95_flat < 2000 else ("❌" if p95_flat else "—"))),
+        ("Peak spike p95 (worst cluster)",
+         f"{peak_max:.0f} ms" if peak_max else "N/A",
+         "✅" if peak_max and peak_max < 1000 else ("⚠️" if peak_max and peak_max < 2000 else ("❌" if peak_max else "—"))),
         ("SLO violation rate (mean)",
          f"{global_slo_mean:.1f}%" if global_slo_mean is not None else "N/A",
          _slo_status(global_slo_mean)),
+        ("SLO violation duration (total)",
+         f"{glob_slo_dur:.0f} s  ({glob_slo_dur/60:.1f} min)" if glob_slo_dur is not None else "N/A",
+         "✅" if glob_slo_dur is not None and glob_slo_dur == 0 else ("⚠️" if glob_slo_dur is not None and glob_slo_dur < 120 else ("❌" if glob_slo_dur else "—"))),
+        ("Recovery time (worst cluster)",
+         f"{rec_max:.0f} s" if rec_max else "N/A  (no spike detected)",
+         "✅" if rec_max and rec_max < 120 else ("⚠️" if rec_max else "—")),
         ("Jain Fairness Index (mean)",
          f"{jain_mean:.3f}   (1.0 = perfect)",
          "✅" if jain_mean > 0.85 else ("⚠️" if jain_mean > 0 else "—")),
@@ -1371,8 +1716,8 @@ def generate_page_qos(fe_ts: dict, locust_ts: dict, locust_cluster: dict,
         colWidths=[0.44, 0.34, 0.12],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.75)
+    table.set_fontsize(9)
+    table.scale(1, 1.45)
 
     # Style header row
     for j in range(3):
@@ -1507,6 +1852,252 @@ def export_analysis_json(data: List[dict], fe_ts: dict, locust_ts: dict, stats: 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
+def extract_resource_ts(data: List[dict]) -> dict:
+    """
+    Extract per-cluster CPU, memory and traffic distribution timeseries from
+    JSONL snapshots.
+    Returns:
+        {
+          cluster: {
+            "timestamps":   [datetime, ...],
+            "cpu_cores":    {service: [float|None, ...]},
+            "memory_mb":    {service: [float|None, ...]},
+            "traffic_pct":  [float|None, ...],   # % of global frontend traffic
+          }
+        }
+    """
+    result = {c: {"timestamps": [], "cpu_cores": {s: [] for s in KNOWN_SERVICES},
+                  "memory_mb": {s: [] for s in KNOWN_SERVICES},
+                  "traffic_pct": []}
+              for c in KNOWN_CLUSTERS}
+
+    for snap in data:
+        res = snap.get("resources", {})
+        if not res:
+            continue
+        ts = snap["_ts"]
+        for cluster in KNOWN_CLUSTERS:
+            cdata = res.get(cluster, {})
+            if not cdata:
+                continue
+            result[cluster]["timestamps"].append(ts)
+            for svc in KNOWN_SERVICES:
+                svc_data = cdata.get(svc, {})
+                result[cluster]["cpu_cores"][svc].append(svc_data.get("cpu_cores"))
+                result[cluster]["memory_mb"][svc].append(svc_data.get("memory_mb"))
+            # Traffic distribution % (from collect_metrics_simple scrape)
+            pct = cdata.get("_traffic_pct", {}).get("frontend")
+            result[cluster]["traffic_pct"].append(pct)
+
+    return result
+
+
+def compute_carbon_metrics(resource_ts: dict) -> dict:
+    """
+    Compute carbon efficiency metrics using per-cluster traffic distribution
+    from resource_ts (JSONL _traffic_pct) and realistic carbon intensities.
+
+    Returns:
+        {
+          "ci": {"cluster1": float, "cluster2": float, "cluster3": float},  # gCO2/kWh
+          "avg_traffic_pct": {"cluster1": float, ...},  # average % during active snapshots
+          "weighted_ci_ts": [float, ...],               # WCI per snapshot
+          "weighted_ci_avg": float,                     # mean WCI over test
+          "uniform_ci": float,                          # baseline (equal distribution)
+          "ci_savings_pct": float,                      # % reduction vs uniform
+          "timestamps": [datetime, ...],
+          "total_snapshots": int,
+          "active_snapshots": int,                      # snapshots with traffic data
+        }
+    """
+    # ── 1. Load carbon intensities ─────────────────────────────────────────────
+    ci_map: Dict[str, float] = {}
+    try:
+        _here = Path(__file__).parent.parent  # project root
+        import sys as _sys
+        if str(_here) not in _sys.path:
+            _sys.path.insert(0, str(_here))
+        import yaml as _yaml
+        with open(_here / "config" / "carbon.yaml", encoding="utf-8") as _f:
+            _carbon_raw = _yaml.safe_load(_f).get("carbon_intensity", {})
+        from src.metrics.carbon_client import CarbonClient as _CC
+        _cc = _CC(_carbon_raw)
+        for cn, region in CLUSTER_REGIONS.items():
+            ci_map[cn] = _cc.get_carbon_intensity(region)
+    except Exception:
+        # Fallback to static values
+        for cn, region in CLUSTER_REGIONS.items():
+            ci_map[cn] = CARBON_INTENSITY_FALLBACK.get(region, 400.0)
+
+    # ── 2. Collect traffic_pct timeseries (only snapshots with all 3 clusters) ─
+    # Use the cluster with most data as reference
+    ref = max(KNOWN_CLUSTERS, key=lambda c: len(resource_ts[c]["timestamps"]))
+    timestamps = resource_ts[ref]["timestamps"]
+
+    wci_ts: List[float] = []
+    active_pcts: Dict[str, List[float]] = {c: [] for c in KNOWN_CLUSTERS}
+    ts_out: List = []
+
+    for i, ts in enumerate(timestamps):
+        pcts = {}
+        for cn in KNOWN_CLUSTERS:
+            # find matching index in this cluster's timeseries
+            cl_ts = resource_ts[cn]["timestamps"]
+            cl_pct = resource_ts[cn]["traffic_pct"]
+            if i < len(cl_pct) and cl_pct[i] is not None:
+                pcts[cn] = cl_pct[i]
+
+        if len(pcts) == len(KNOWN_CLUSTERS):
+            # Normalize to sum=100% (in case of rounding)
+            total = sum(pcts.values())
+            if total > 0:
+                norm = {c: pcts[c] / total * 100.0 for c in KNOWN_CLUSTERS}
+                wci = sum(norm[c] / 100.0 * ci_map[c] for c in KNOWN_CLUSTERS)
+                wci_ts.append(wci)
+                ts_out.append(ts)
+                for cn in KNOWN_CLUSTERS:
+                    active_pcts[cn].append(norm[cn])
+
+    # ── 3. Aggregate ───────────────────────────────────────────────────────────
+    avg_traffic = {
+        cn: (sum(active_pcts[cn]) / len(active_pcts[cn])) if active_pcts[cn] else 0.0
+        for cn in KNOWN_CLUSTERS
+    }
+    weighted_ci_avg = sum(wci_ts) / len(wci_ts) if wci_ts else 0.0
+    n = len(KNOWN_CLUSTERS)
+    uniform_ci = sum(ci_map[cn] for cn in KNOWN_CLUSTERS) / n
+    ci_savings = (uniform_ci - weighted_ci_avg) / uniform_ci * 100.0 if uniform_ci else 0.0
+
+    return {
+        "ci": ci_map,
+        "avg_traffic_pct": avg_traffic,
+        "weighted_ci_ts": wci_ts,
+        "weighted_ci_avg": weighted_ci_avg,
+        "uniform_ci": uniform_ci,
+        "ci_savings_pct": ci_savings,
+        "timestamps": ts_out,
+        "total_snapshots": len(timestamps),
+        "active_snapshots": len(wci_ts),
+    }
+
+
+def generate_page_resources(resource_ts: dict, fe_ts: dict, output_dir: Path, prefix: str = "dmos"):
+    """
+    Plot 3 — Resource utilization (CPU and memory) per cluster over time.
+
+    Layout (2 rows × 3 cols):
+      Row 0: CPU usage (cores) per cluster for frontend service
+      Row 1: Memory usage (MB) per cluster for all services stacked
+    Plus a 4th column KPI summary table.
+    """
+    any_data = any(resource_ts[c]["timestamps"] for c in KNOWN_CLUSTERS)
+    if not any_data:
+        print("  ⚠ No resource data in JSONL (old collector?) — skipping resource plot")
+        return
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+    fig.suptitle("Resource Utilization per Cluster (cAdvisor via Prometheus)", fontsize=13, fontweight='bold')
+
+    cluster_colors = [COLORS["cluster1"], COLORS["cluster2"], COLORS["cluster3"]]
+
+    for col, cluster in enumerate(KNOWN_CLUSTERS):
+        rts = resource_ts[cluster]
+        if not rts["timestamps"]:
+            for row in range(2):
+                axes[row][col].text(0.5, 0.5, "No data", ha="center", va="center",
+                                    transform=axes[row][col].transAxes, color="gray")
+            continue
+
+        ts = rts["timestamps"]
+        t0 = ts[0]
+        mins = [(t - t0).total_seconds() / 60.0 for t in ts]
+        color = cluster_colors[col]
+        region = CLUSTER_REGIONS.get(cluster, cluster)
+
+        # ── Row 0: Frontend CPU (cores) ──────────────────────────────────────
+        ax_cpu = axes[0][col]
+        cpu_fe = rts["cpu_cores"]["frontend"]
+        valid_cpu = [v for v in cpu_fe if v is not None]
+
+        if valid_cpu:
+            # Fill None gaps for plotting
+            cpu_plot = [v if v is not None else float("nan") for v in cpu_fe]
+            ax_cpu.fill_between(mins, cpu_plot, alpha=0.25, color=color)
+            ax_cpu.plot(mins, cpu_plot, color=color, linewidth=1.5, label="frontend CPU")
+            # CPU limit line: 150m = 0.150 cores per replica × replicas
+            fe_replicas = [r for r in fe_ts.get(cluster, {}).get("replicas", []) if r is not None]
+            # Use total_replicas from fe_ts as reference
+            if fe_ts.get("total_replicas") and fe_ts.get("timestamps"):
+                # approximate per-cluster replica count from total
+                pass
+            ax_cpu.set_title(f"{cluster} ({region}) — CPU", fontsize=10)
+            ax_cpu.set_ylabel("CPU (cores)")
+            ax_cpu.set_xlabel("Time (min)")
+            cpu_limit_single = 0.150  # 150m per replica
+            ax_cpu.axhline(cpu_limit_single, color="red", linestyle="--", linewidth=0.8,
+                           alpha=0.6, label="150m limit (1 replica)")
+            ax_cpu.legend(fontsize=7)
+            ax_cpu.set_xlim(left=0)
+        else:
+            ax_cpu.text(0.5, 0.5, "No CPU data\n(cAdvisor unavailable)", ha="center",
+                        va="center", transform=ax_cpu.transAxes, color="gray", fontsize=9)
+            ax_cpu.set_title(f"{cluster} ({region}) — CPU")
+
+        # ── Row 1: Memory (MB) all services stacked ───────────────────────────
+        ax_mem = axes[1][col]
+        svc_colors_mem = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+        bottom = [0.0] * len(mins)
+        plotted_any = False
+        for si, svc in enumerate(KNOWN_SERVICES):
+            mem_vals = rts["memory_mb"][svc]
+            mem_clean = [v if v is not None else 0.0 for v in mem_vals]
+            if any(v > 0 for v in mem_clean):
+                axes[1][col].bar(
+                    range(len(mins)), mem_clean, bottom=bottom,
+                    color=svc_colors_mem[si], alpha=0.7,
+                    label=svc.replace("service", "").replace("productcatalog", "catalog"),
+                    width=0.8
+                )
+                bottom = [b + m for b, m in zip(bottom, mem_clean)]
+                plotted_any = True
+
+        if plotted_any:
+            ax_mem.set_xticks(range(0, len(mins), max(1, len(mins) // 6)))
+            ax_mem.set_xticklabels([f"{mins[i]:.0f}" for i in range(0, len(mins), max(1, len(mins) // 6))],
+                                   fontsize=7)
+            ax_mem.set_title(f"{cluster} ({region}) — Memory", fontsize=10)
+            ax_mem.set_ylabel("Memory (MB)")
+            ax_mem.set_xlabel("Time (min)")
+            ax_mem.legend(fontsize=6, ncol=2)
+        else:
+            ax_mem.text(0.5, 0.5, "No memory data\n(cAdvisor unavailable)", ha="center",
+                        va="center", transform=ax_mem.transAxes, color="gray", fontsize=9)
+            ax_mem.set_title(f"{cluster} ({region}) — Memory")
+
+    plt.tight_layout()
+    out = output_dir / f"{prefix}_page3_resources.png"
+    plt.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close()
+    print(f"  ✅ Resources plot → {out.name}")
+
+
+def _parse_jsonl_start_time(input_file: str) -> Optional[datetime]:
+    """
+    Estrae il datetime di inizio del collector dal nome del file JSONL.
+    Formato atteso: HHMMSS_YYYYMMDD_scenario.jsonl
+    Ritorna None se il formato non è riconoscibile.
+    """
+    stem = Path(input_file).stem
+    parts = stem.split("_")
+    try:
+        if len(parts) >= 2 and len(parts[0]) == 6 and parts[0].isdigit() \
+                and len(parts[1]) == 8 and parts[1].isdigit():
+            return datetime.strptime(f"{parts[1]}{parts[0]}", "%Y%m%d%H%M%S")
+    except ValueError:
+        pass
+    return None
+
+
 def _build_output_paths(input_file: str) -> tuple:
     """
     Estrae scenario e prefix dal nome del file input.
@@ -1561,6 +2152,7 @@ def analyze(filepath: str):
     # Extract timeseries
     fe_ts = extract_service_ts(data, "frontend")
     locust_ts = extract_locust_ts(data)
+    resource_ts = extract_resource_ts(data)
 
     # Compute all metrics
     print("  Computing metrics...")
@@ -1576,20 +2168,34 @@ def analyze(filepath: str):
     stats["oscillation"] = compute_scaling_oscillation(fe_ts["total_replicas"], fe_ts["timestamps"])
     stats["jain_data"] = compute_jain_fairness(data, "frontend")
 
-    # Load per-cluster Locust CSV (prodotto da locustfile_multiingress.py)
-    locust_cluster = load_locust_cluster_csv(scenario=scenario)
+    # Estrai il datetime di inizio dal nome del file JSONL — usato per trovare
+    # i CSV corretti anche quando ci sono più test dello stesso scenario.
+    after_dt = _parse_jsonl_start_time(filepath)
 
-    # Load cluster_latency CSV (aggregato sull'intero test — stile k6/Romano)
-    cluster_latency = load_locust_cluster_latency_csv(scenario=scenario)
+    # Load per-cluster Locust CSV (prodotto da locustfile_multiingress.py)
+    locust_cluster = load_locust_cluster_csv(scenario=scenario, after_dt=after_dt)
+    ts_format = locust_cluster.get("_format", "auto")
+
+    # Load cluster_latency/summary CSV — usa il formato rilevato e after_dt
+    cluster_latency = load_locust_cluster_latency_csv(scenario=scenario,
+                                                       timeseries_format=ts_format,
+                                                       after_dt=after_dt)
+
+    # Advanced QoS metrics (SLO duration, peak, recovery, throughput CV)
+    stats["advanced_qos"] = compute_advanced_qos_metrics(locust_cluster)
+
+    # Carbon efficiency metrics (weighted CI from traffic_pct × carbon intensities)
+    carbon = compute_carbon_metrics(resource_ts)
 
     # Console report
-    print_report(data, fe_ts, locust_ts, stats, cluster_latency=cluster_latency)
+    print_report(data, fe_ts, locust_ts, stats, cluster_latency=cluster_latency, carbon=carbon)
 
     # Generate plots (2 thesis pages)
     print("  Generating plots...")
     generate_page_scaling(fe_ts, stats, output_dir, prefix)
     generate_page_qos(fe_ts, locust_ts, locust_cluster, stats, output_dir, prefix,
-                      cluster_latency=cluster_latency)
+                      cluster_latency=cluster_latency, resource_ts=resource_ts)
+    generate_page_resources(resource_ts, fe_ts, output_dir, prefix)
 
     # Export JSON
     json_path = output_dir / f"{prefix}_analysis.json"
@@ -1601,6 +2207,7 @@ def analyze(filepath: str):
     print(f"   Output:   {output_dir}/")
     print(f"   Plots:    {prefix}_page1_scaling.png")
     print(f"             {prefix}_page2_qos.png")
+    print(f"             {prefix}_page3_resources.png")
     print(f"   JSON:     {json_path.name}")
     print(f"{'=' * 78}\n")
 

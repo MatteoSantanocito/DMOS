@@ -78,7 +78,7 @@ class PrometheusClient:
             response = requests.get(
                 f"{self.url}/api/v1/query",
                 params={'query': query_str},
-                timeout=10
+                timeout=self.timeout
             )
             
             if response.status_code != 200:

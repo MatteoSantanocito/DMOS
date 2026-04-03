@@ -31,11 +31,11 @@ services:
     # Valore scelto: 5 rps — leggermente sopra c3 per evitare oscillazioni,
     # ma sotto c2 e c1 → tutti i cluster escono dal single-replica trap.
     #
-    # Effetto: con 400+ utenti al picco (40/35/25 weights):
-    #   cluster1 → ~20 repliche (al cap, ~130 rps)
-    #   cluster2 → ~8-10 repliche (~50 rps)
-    #   cluster3 → ~4-5 repliche (~15-20 rps)
-    # Questo mostra differenziazione geo-aware senza concentrazione estrema.
+    # Effetto con max_replicas=8 e 400+ utenti al picco:
+    #   cluster1 (DE, 350 gCO2) → ~6-8 repliche  (limitato da carbon score)
+    #   cluster2 (FR,  80 gCO2) → ~8 repliche     (preferito, al cap → verde)
+    #   cluster3 (PL, 650 gCO2) → ~2-4 repliche   (penalizzato, meno traffico)
+    # Cap a 8: 8×500m=4000m = esattamente i 4 core del nodo → no saturazione.
     capacity_req_per_sec: 30
 
     # SLA requirements
@@ -49,11 +49,16 @@ services:
     power_watts: 50
     
     # Autoscaling constraints
+    # max_replicas=8: con 4 core/nodo e limit=500m/replica → 8×500m=4000m = esatto cap nodo.
+    # Evita saturazione fisica quando DMOS concentra repliche su cluster green (FR).
     autoscaling:
-      min_replicas: 1      
-      max_replicas: 20
+      # min_replicas=2: evita che il warmup silenzioso (t=120-240s) faccia
+      # scale-down a 1 replica. Con min=2, al flash-spike DMOS parte già da
+      # 2 rep/cluster → max_delta=4 raggiunge 6 in un ciclo invece di partire da 1.
+      min_replicas: 2
+      max_replicas: 8
       target_cpu_percent: 70
-  
+
   cartservice:
     namespace: online-boutique
     deployment_name: cartservice
@@ -72,9 +77,9 @@ services:
     power_watts: 60
     autoscaling:
       min_replicas: 1
-      max_replicas: 20
+      max_replicas: 8
       target_cpu_percent: 70
-  
+
   productcatalogservice:
     namespace: online-boutique
     deployment_name: productcatalogservice
@@ -85,17 +90,26 @@ services:
       limits:
         cpu: "250m"
         memory: "192Mi"
-    capacity_req_per_sec: 15
+    capacity_req_per_sec: 20  # [FIX H] was 15: 2 repliche baseline reggono 40 req/s senza triggerare HIGH durante warmup k6 (10 req/s k6 × 3.5x = 35 req/s < 40 cap)
     sla:
       latency_p95_ms: 75
       latency_p99_ms: 150
       availability_percent: 99.9
     power_watts: 55
     autoscaling:
-      min_replicas: 1
-      max_replicas: 20
+      # min_replicas=2: vedi commento frontend — stesso rationale.
+      # productcatalogservice è co-locato col frontend e riceve molto traffico
+      # (browsing prodotti = 25% degli endpoint), quindi beneficia allo stesso modo.
+      min_replicas: 2
+      # [FIX J] Aumentato da 12 a 16: cluster2 (FR, preferito dal carbon score) riceve
+      # 200-228 req/s al picco → serve 14-16 repliche (228/20×1.15=13.1). Con max=12
+      # era costantemente a tetto (base=14-16 vincolato=True nel log) → saturazione
+      # sostenuta per 600s → sorgente principale dei 19961 5xx.
+      # Limite CPU: 16×250m=4000m = esattamente 4 core del nodo → no saturazione.
+      # Memory: 16×96Mi=1536Mi → OK su nodo 8GB.
+      max_replicas: 16
       target_cpu_percent: 70
-  
+
   checkoutservice:
     namespace: online-boutique
     deployment_name: checkoutservice
@@ -114,9 +128,9 @@ services:
     power_watts: 70
     autoscaling:
       min_replicas: 1
-      max_replicas: 20
+      max_replicas: 8
       target_cpu_percent: 70
-  
+
   recommendationservice:
     namespace: online-boutique
     deployment_name: recommendationservice
@@ -135,7 +149,7 @@ services:
     power_watts: 65
     autoscaling:
       min_replicas: 1
-      max_replicas: 20
+      max_replicas: 8
       target_cpu_percent: 70
 
 # Global autoscaling parameters
@@ -144,7 +158,7 @@ global_autoscaling:
   safety_margin: 0.10  # 15%
   
   # Rate limiting
-  max_delta_per_cycle: 4  # Max ±3 repliche per ciclo (30s)
+  max_delta_per_cycle: 6  # [FIX G] was 4: 2 cicli per raggiungere max_replicas invece di 3 (-30s ramp-up)
   
   # PD Controller parameters
   pd_controller:

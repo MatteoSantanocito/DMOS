@@ -23,6 +23,16 @@
 #   o connessioni interrotte sui backend, rimuovere questa policy:
 #     kubectl delete cnp l7-visibility-backends -n online-boutique --context clusterX
 #
+# AGGIORNAMENTO (Global Service Backends):
+#   Con global-service-backends.yaml applicato, in caso di failover cross-cluster
+#   il frontend di un cluster remoto può chiamare i backend locali tramite
+#   ClusterMesh tunnel. Il traffico arriva con identità "remote-node" (Cilium
+#   assegna questa identità ai nodi dei cluster remoti che fanno da relay).
+#   La regola ingress "fromEntities: remote-node" permette questo traffico di
+#   failover mantenendo il controllo delle policy L7.
+#   In condizioni normali (nessun failover) il traffico è sempre locale e
+#   "fromEntities: remote-node" non viene mai invocata.
+#
 # Applicare su tutti i cluster:
 #   kubectl apply -f deployments/cnp-backends-l7.yaml --context cluster1
 #   kubectl apply -f deployments/cnp-backends-l7.yaml --context cluster2
@@ -52,6 +62,30 @@ spec:
   ingress:
     - fromEndpoints:
         - {}   # qualsiasi pod del namespace (frontend, altri backend)
+      toPorts:
+        - ports:
+            - port: "3550"    # productcatalogservice
+              protocol: TCP
+            - port: "5050"    # checkoutservice
+              protocol: TCP
+            - port: "7000"    # currencyservice
+              protocol: TCP
+            - port: "7070"    # cartservice
+              protocol: TCP
+            - port: "8080"    # recommendationservice, emailservice
+              protocol: TCP
+            - port: "9555"    # adservice
+              protocol: TCP
+            - port: "50051"   # paymentservice, shippingservice
+              protocol: TCP
+          rules:
+            http:
+              - {}   # match any HTTP/gRPC → abilita Hubble L7
+    # Traffico cross-cluster in failover (global-service-backends.yaml)
+    # Attivo SOLO quando il backend locale ha 0 pod disponibili.
+    # Cilium ClusterMesh instrada il pacchetto dal cluster remoto → nodo locale.
+    - fromEntities:
+        - remote-node  # nodi dei cluster remoti (ClusterMesh tunnel)
       toPorts:
         - ports:
             - port: "3550"    # productcatalogservice
