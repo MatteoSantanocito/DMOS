@@ -23,6 +23,7 @@ capacity_report.html
 results/
 logs/
 
+
 # ── Backup manuali ────────────────────────────────────────────────────────
 *.backup
 *.bak
@@ -30,6 +31,8 @@ logs/
 
 # ── Kubeconfig (dati sensibili) ───────────────────────────────────────────
 .kube/
+
+
 
 # ── Editor / OS ───────────────────────────────────────────────────────────
 .DS_Store
