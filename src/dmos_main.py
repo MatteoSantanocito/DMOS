@@ -17,6 +17,7 @@ Changes vs previous version:
      - CPU/memory: each cluster_estimator queries its own Prometheus
 """
 
+import math
 import os
 import time
 import threading
@@ -126,17 +127,27 @@ class DMOSOrchestrator:
         # per cluster — il predictor vede la serie storica di un solo cluster
         # e può calcolare trend corretti.
         # Struttura: self.scalers[service_name][cluster_name] = ReplicaScaler
+        #
+        # [FIX Q] Capacity per-cluster: con netem attivo la capacità reale del
+        # frontend varia 5× tra cluster (16/6/3 rps). Usando un valore globale
+        # (30 o 16) lo scaler sottostimava le repliche necessarie sui cluster
+        # lenti, producendo 5xx identici con/senza DMOS. Ora ogni scaler usa
+        # svc_cfg.get_capacity_for_cluster(cluster_name) che legge
+        # capacity_per_cluster da services.yaml se presente.
         self.scalers: Dict[str, Dict[str, ReplicaScaler]] = {}
         for svc_name, svc_cfg in self.config.services.items():
             self.scalers[svc_name] = {}
             for cluster_name in self.config.clusters:
+                cluster_capacity = svc_cfg.get_capacity_for_cluster(cluster_name)
+                cluster_min_replicas = svc_cfg.get_min_replicas_for_cluster(cluster_name)
+                cluster_max_replicas = svc_cfg.get_max_replicas_for_cluster(cluster_name)
                 self.scalers[svc_name][cluster_name] = ReplicaScaler(
-                    capacity_per_replica=svc_cfg.capacity_req_per_sec,
-                    min_replicas=svc_cfg.min_replicas,
-                    max_replicas=svc_cfg.max_replicas,
+                    capacity_per_replica=cluster_capacity,
+                    min_replicas=cluster_min_replicas,
+                    max_replicas=cluster_max_replicas,
                     safety_margin=0.15,
-                    max_delta_per_cycle=6,  # [FIX G] scale-UP aggressivo: 2 cicli per raggiungere max invece di 3 (-30s ramp-up)
-                    max_delta_down=2        # [FIX I] scale-DOWN conservativo: max 2 pod per ciclo, evita terminazioni massive durante decline
+                    max_delta_per_cycle=6,  # [FIX G] scale-UP aggressivo
+                    max_delta_down=2        # [FIX I] scale-DOWN conservativo
                 )
         
         # All cluster names for scale-down of non-allocated clusters
@@ -156,7 +167,7 @@ class DMOSOrchestrator:
         
         # [FIX D] Asymmetric cooldown tracking
         self.last_scale_down: Dict[str, datetime] = {}
-        self.scale_down_cooldown = 60  # seconds — scale-down slower
+        self.scale_down_cooldown = 180  # seconds — scale-down slower (was 60, raised to reduce flapping)
 
         # [FIX E] Scale-up protection: block scale-down for N seconds after a scale-up.
         # Root cause: when traffic ramps up, the predictor triggers a scale-up.
@@ -170,11 +181,11 @@ class DMOSOrchestrator:
         # la lettura del traffico è stabile già dopo ~45s. 120s era eccessivo e
         # causava scale-down prematuri durante la fase di cooldown del flash crowd.
         self.last_scale_up: Dict[str, datetime] = {}
-        self.scale_up_protection_seconds = 45  # seconds (era 120)
+        self.scale_up_protection_seconds = 90  # seconds (era 120)
         
         # [FIX C] Dead zone: track previous traffic for stability check
         self.previous_traffic: Dict[str, float] = {}
-        self.dead_zone_pct = 0.15  # 15% traffic change threshold
+        self.dead_zone_pct = 0.25  # 25% traffic change threshold (was 15%, raised to reduce flapping)
         
         # List of services to monitor
         self.monitored_services = list(self.config.services.keys())
@@ -242,7 +253,7 @@ class DMOSOrchestrator:
                     namespace=svc_cfg.namespace
                 )
                 if reps is None:
-                    reps = svc_cfg.min_replicas
+                    reps = svc_cfg.get_min_replicas_for_cluster(cluster_name)
                     logger.warning(f"  {cluster_name}/{svc_name}: k8s read failed, "
                                    f"defaulting to min_replicas={reps}")
                 self.current_replicas.labels(cluster=cluster_name, service=svc_name).set(reps)
@@ -340,19 +351,13 @@ class DMOSOrchestrator:
         if not self.colocation_enabled:
             return
 
-        # [FIX P] In Phase 2 (dopo startup_grace_seconds), L2 ha dati di traffico
-        # per cluster e scala ogni servizio in base al traffico reale. La colocation
-        # usa una proporzione basata sul frontend share (euristica Phase 1) che
-        # CONFLIGGE con L2 in Phase 2:
-        #   - L2: cluster3 ha 175 req/s → 10-12 repliche
-        #   - Colocation: cluster3 ha 42% frontend → 42%×42=16 repliche
-        # Con max_replicas=12 (vecchio) entrambi concordavano a 12 (cap). Con
-        # max_replicas=16, il conflitto è libero: oscillazione 16↔14 ogni ~90s,
-        # terminazione di 2 pod per ciclo con richieste in volo → 5xx.
-        # Fix: in Phase 2 la colocation non gira — L2 controlla tutto.
-        elapsed_startup = (datetime.now() - self.startup_time).total_seconds()
-        if elapsed_startup >= self.startup_grace_seconds:
-            return  # Phase 2: L2 ha il controllo, colocation non interferisce
+        # [FIX P] Co-location rimane attiva in Phase 2 come FLOOR (solo scale-up).
+        # Il check `if current_dep < proportional_target` (linea sotto) garantisce
+        # che la co-location non sovrascrive mai un valore più alto di L2.
+        # Problema originale: co-location e L2 in conflitto (16↔14 oscillazione).
+        # Soluzione: co-location solo come floor — se L2 scala a un valore più alto,
+        # la co-location non interferisce. Se L2 scala troppo basso (es. backend a 1
+        # quando frontend è a 2), la co-location alza il backend al minimo proporzionale.
         
         deps = self.service_dependencies.get(parent_service, [])
         if not deps:
@@ -420,12 +425,22 @@ class DMOSOrchestrator:
                 if parent_reps == 0:
                     continue
 
-                frontend_share = parent_reps / total_parent_reps
+                # Co-location proporzionale alla capacity ratio:
+                # Se frontend capacity=39 rps e backend capacity=80 rps,
+                # il backend serve meno repliche del frontend.
+                # ratio = frontend_capacity / backend_capacity
+                # target = ceil(parent_reps * ratio)
+                # Es: frontend=2, ratio=39/80=0.49 → ceil(2*0.49)=1 (productcatalog)
+                # Es: frontend=2, ratio=39/20=1.95 → ceil(2*1.95)=4 (checkout, capped by max)
+                parent_capacity = parent_cfg.capacity_req_per_sec if parent_cfg else 39.0
+                dep_capacity = dep_cfg.capacity_req_per_sec if dep_cfg.capacity_req_per_sec > 0 else 50.0
+                capacity_ratio = parent_capacity / dep_capacity
+                dep_max_for_cluster = dep_cfg.get_max_replicas_for_cluster(cluster_name)
                 proportional_target = min(
-                    dep_cfg.max_replicas,  # mai superare il cap hardware del servizio
+                    dep_max_for_cluster,
                     max(
                         dep_cfg.min_replicas,
-                        int(round(target_total * frontend_share))
+                        math.ceil(parent_reps * capacity_ratio)
                     )
                 )
 
@@ -448,7 +463,7 @@ class DMOSOrchestrator:
                     logger.info(
                         f"Co-location: {cluster_name} — {dep_svc_name}: "
                         f"{current_dep} → {proportional_target} "
-                        f"(frontend share: {frontend_share:.0%})"
+                        f"(frontend={parent_reps}, capacity_ratio={capacity_ratio:.2f})"
                     )
                     
                     self.k8s.scale_deployment(
@@ -528,12 +543,28 @@ class DMOSOrchestrator:
             return
 
         svc_cfg = self.config.get_service(service_name)
-        total_replicas = max(
-            svc_cfg.min_replicas,
-            int(current_traffic / svc_cfg.capacity_req_per_sec)
-        )
-        
-        logger.info(f"Total replicas needed: {total_replicas}")
+
+        # [FIX R] total_replicas = somma delle necessità per-cluster.
+        # Prima: total = max(min, int(global_traffic / global_capacity))
+        #   → 75 req/s / 30 = 2 repliche totali → winner determination inutile.
+        # Ora: somma ceil(cluster_traffic / cluster_capacity) per ogni cluster,
+        # usando la capacità per-cluster (netem-aware). Questo dà al winner
+        # determination un budget realistico da distribuire secondo i punteggi
+        # multi-obiettivo (latenza, carbon, network, demand).
+        total_replicas = 0
+        for cluster_name in self.all_cluster_names:
+            cluster_traffic = per_cluster_traffic.get(cluster_name, 0.0)
+            cluster_capacity = svc_cfg.get_capacity_for_cluster(cluster_name)
+            c_min = svc_cfg.get_min_replicas_for_cluster(cluster_name)
+            c_max = svc_cfg.get_max_replicas_for_cluster(cluster_name)
+            cluster_need = min(c_max, max(
+                c_min,
+                math.ceil(cluster_traffic / cluster_capacity) if cluster_capacity > 0 else c_min
+            ))
+            total_replicas += cluster_need
+
+        logger.info(f"Total replicas needed: {total_replicas} "
+                    f"(sum of per-cluster needs from {per_cluster_traffic})")
         
         allocations, success = self.scheduler.schedule_service(
             service_name=service_name,
@@ -606,7 +637,7 @@ class DMOSOrchestrator:
             # [FIX C] Dead zone
             if (abs(delta) <= 1
                     and traffic_stable
-                    and current_reps >= svc_cfg.min_replicas):
+                    and current_reps >= svc_cfg.get_min_replicas_for_cluster(cluster_name)):
                 logger.info(f" {cluster_name}: Δ={delta:+d} in dead zone — skipping")
                 continue
 
@@ -652,7 +683,7 @@ class DMOSOrchestrator:
         for cluster_name in self.all_cluster_names:
             if cluster_name not in allocated_cluster_names:
                 current_reps = current_reps_map.get(cluster_name, 0)
-                target = svc_cfg.min_replicas
+                target = svc_cfg.get_min_replicas_for_cluster(cluster_name)
 
                 self.current_replicas.labels(
                     cluster=cluster_name,

@@ -417,11 +417,12 @@ class DMOSScheduler:
             capacity_cpu = int(metrics.cpu_available_cores / cpu_req) if cpu_req > 0 else 0
             capacity_mem = int(metrics.memory_available_gb / mem_req_gb) if mem_req_gb > 0 else 0
             capacity = min(capacity_cpu, capacity_mem)
-            max_replicas = service_config.max_replicas
-        else: 
+            # Per-cluster max_replicas cap (evita overcommit CPU su nodi ad alta latenza)
+            max_replicas = service_config.get_max_replicas_for_cluster(cluster_name)
+        else:
             capacity = int(metrics.cpu_available_cores * 2)
             max_replicas = 20
-            
+
         capacity = min(max(0,capacity), max_replicas)
         
         logger.info(

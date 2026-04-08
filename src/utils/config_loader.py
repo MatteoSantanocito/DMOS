@@ -89,22 +89,59 @@ class ServiceConfig:
     sla: Dict[str, Any]
     power_watts: int
     autoscaling: Dict[str, Any]
-    
+    capacity_per_cluster: Dict[str, float] = field(default_factory=dict)
+    max_replicas_per_cluster: Dict[str, int] = field(default_factory=dict)
+    min_replicas_per_cluster: Dict[str, int] = field(default_factory=dict)
+
     @property
     def cpu_request(self) -> str:
         return self.resources_per_replica.get('requests', {}).get('cpu', '100m')
-    
+
     @property
     def memory_request(self) -> str:
         return self.resources_per_replica.get('requests', {}).get('memory', '64Mi')
-    
+
     @property
     def min_replicas(self) -> int:
         return self.autoscaling.get('min_replicas', 1)
-    
+
     @property
     def max_replicas(self) -> int:
         return self.autoscaling.get('max_replicas', 10)
+
+    def get_min_replicas_for_cluster(self, cluster_name: str) -> int:
+        """Returns min replicas for a specific cluster.
+
+        Uses min_replicas_per_cluster if configured, otherwise falls back
+        to the global autoscaling.min_replicas.
+        """
+        if self.min_replicas_per_cluster and cluster_name in self.min_replicas_per_cluster:
+            return int(self.min_replicas_per_cluster[cluster_name])
+        return self.min_replicas
+
+    def get_max_replicas_for_cluster(self, cluster_name: str) -> int:
+        """Returns max replicas for a specific cluster.
+
+        Uses max_replicas_per_cluster if configured, otherwise falls back
+        to the global autoscaling.max_replicas. This prevents node overcommit
+        on high-latency clusters where co-located backends + frontend exceed
+        the node's allocatable CPU.
+        """
+        if self.max_replicas_per_cluster and cluster_name in self.max_replicas_per_cluster:
+            return int(self.max_replicas_per_cluster[cluster_name])
+        return self.max_replicas
+
+    def get_capacity_for_cluster(self, cluster_name: str) -> float:
+        """Returns capacity (rps) for a specific cluster.
+
+        Uses capacity_per_cluster if configured, otherwise falls back
+        to the global capacity_req_per_sec. This allows services affected
+        by tc netem (e.g. frontend) to have accurate per-cluster capacity
+        while backend services (intra-cluster gRPC, no netem) use a single value.
+        """
+        if self.capacity_per_cluster and cluster_name in self.capacity_per_cluster:
+            return float(self.capacity_per_cluster[cluster_name])
+        return float(self.capacity_req_per_sec)
 
 
 @dataclass

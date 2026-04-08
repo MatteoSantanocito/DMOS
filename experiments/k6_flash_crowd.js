@@ -11,14 +11,14 @@ export const options = {
             executor: 'ramping-arrival-rate',
             startRate: 10,
             timeUnit: '1s', // La rate si intende "al secondo"
-            preAllocatedVUs: 800, // Utenti virtuali pronti a sparare
-            maxVUs: 4000, // Se il server rallenta, k6 allocherà fino a 800 VUs per mantenere la rate!
+            preAllocatedVUs: 150,
+            maxVUs: 300,
             stages: [
-                { duration: '240s', target: 10 },  // warm-up esteso: 120s grace DMOS + 120s per scaling iniziale
-                { duration: '60s',  target: 150 }, // flash-spike a 150 req/s (ridotto da 200: workload reale genera ~3.5x su productcatalogservice → 525 req/s < 540 max capacity)
-                { duration: '600s', target: 150 }, // sustained-peak a 150 req/s
-                { duration: '180s', target: 10 },  // decline a 10 req/s
-                { duration: '120s', target: 10 },  // cooldown a 10 req/s
+                { duration: '120s', target: 10 },   // warm-up: DMOS grace period
+                { duration: '60s',  target: 100 },   // flash-spike
+                { duration: '480s', target: 150 },   // sustained-peak
+                { duration: '120s', target: 10 },    // decline
+                { duration: '60s',  target: 10 },    // cooldown
             ],
         },
     },
@@ -90,9 +90,10 @@ export default function () {
         //   e nessun header aggiuntivo per GET.
         // Tag per disaggregare le metriche per cluster nel summary
         tags: { ingress: myIngress.name },
-        // Timeout molto alto per permettere a k6 di misurare i colli di bottiglia 
-        // invece di interrompere la connessione (simula la vera latenza p95)
-        timeout: '60s',
+        // Timeout: 10s è sufficiente per catturare latenze reali senza bloccare
+        // VU per minuti su pod non responsivi. Request > 10s sono comunque
+        // fuori SLA e vengono contate come errori.
+        timeout: '10s',
     };
 
     let res;
@@ -106,8 +107,12 @@ export default function () {
         'status is not 5xx': (r) => r.status < 500,
         'status is not 0 (connection error)': (r) => r.status !== 0,
     });
-    
-    // In arrival-rate, lo sleep finale non incide sul numero di richieste generate
-    // dal load generator, ma simula solo il think-time per la singola sessione.
-    sleep(Math.random() * 1.0 + 0.5);
+
+    // Con ramping-arrival-rate, lo sleep blocca il VU e riduce il numero di VU
+    // disponibili per nuove iterazioni. A 150 iter/s con sleep(1s) servirebbero
+    // 150×(0.4+1.0)=210 VU, ma k6 fatica ad allocarli → rate effettivo crolla
+    // a ~75 iter/s. Senza sleep, ogni VU si libera subito dopo la request e k6
+    // riesce a mantenere il target rate con molti meno VU.
+    // Think-time: NON necessario con arrival-rate perché l'executor controlla
+    // il rate di arrivi indipendentemente dalla durata dell'iterazione.
 }

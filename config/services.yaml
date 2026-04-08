@@ -51,10 +51,17 @@ services:
     # Autoscaling constraints
     # max_replicas=8: con 4 core/nodo e limit=500m/replica → 8×500m=4000m = esatto cap nodo.
     # Evita saturazione fisica quando DMOS concentra repliche su cluster green (FR).
+    min_replicas_per_cluster:
+      cluster1: 2
+      cluster2: 2
+      cluster3: 1   # min 1 — DMOS decide in base allo score (penalizzato da RTT)
+
+    max_replicas_per_cluster:
+      cluster1: 5
+      cluster2: 4
+      cluster3: 3   # max 3, limitato per nodo C3
+
     autoscaling:
-      # min_replicas=2: evita che il warmup silenzioso (t=120-240s) faccia
-      # scale-down a 1 replica. Con min=2, al flash-spike DMOS parte già da
-      # 2 rep/cluster → max_delta=4 raggiunge 6 in un ciclo invece di partire da 1.
       min_replicas: 2
       max_replicas: 8
       target_cpu_percent: 70

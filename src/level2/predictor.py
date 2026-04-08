@@ -33,7 +33,7 @@ class TrafficPredictor:
     
     def __init__(
         self,
-        window_seconds: int = 300,    # 5 minutes for derivative
+        window_seconds: int = 60,     # 60s for fast flash-crowd detection (was 300)
         horizon_seconds: int = 120,   # 5 minutes prediction
         smoothing_alpha: float = 0.3  # EMA smoothing (optional)
     ):

@@ -93,12 +93,12 @@ score_weights:
   # Con tc netem attivo: cluster1 (DE) ha RTT bassa → Φ_net alto.
   # Con flash crowd su cluster1: Φ_demand(1) alto → score dominante → più repliche.
   geo_aware:
-    omega_latency:  0.15
+    omega_latency:  0.10    # <-- ridotto: Φ_lat è INTRA-cluster, non vede tc netem RTT
     omega_capacity: 0.10
     omega_load:     0.10
     omega_carbon:   0.15
-    omega_network:  0.35    # <-- 35% peso sulla geo-awareness via RTT
-    omega_demand:   0.15    # <-- 15% peso sulla domanda geografica (più alto qui)
+    omega_network:  0.50    # <-- 50%: dominante per geo-awareness con netem
+    omega_demand:   0.05    # <-- 5%: anti-feedback loop
 
   # Profile 6: Romano-like (replica approccio paper Romano et al.)
   # Priorità massima a geo-awareness (RTT) e domanda geografica (ingress rate),
@@ -112,7 +112,7 @@ score_weights:
     omega_demand:   0.35   # Romano basa tutto su ingress rate per cluster
 
   # Profilo attivo (cambia questo per switchare tra esperimenti)
-  active: "latency_priority"
+  active: "geo_aware"
 
 # ── Objective weights (Level 2 - Autoscaling decisions) ───────────────────
 
@@ -150,8 +150,8 @@ carbon_parameters:
 # → cluster1 (Frankfurt) favorito: è il più centrale in Europa.
 
 network_parameters:
-  rho: 2.0              # Esponente di penalità (più alto = più penalizza alta RTT)
-  rtt_max_ms: 500.0     # RTT massima attesa per normalizzazione (ms)
-                        # cluster2+cluster3 netem sommate = 150+350 = 500ms
+  rho: 3.5              # Esponente di penalità (era 2.0, alzato per differenziare
+                        # nel setup a 3 cluster dove avg-RTT-to-peers comprime le differenze)
+  rtt_max_ms: 400.0     # RTT massima per normalizzazione (era 500, ridotta a 400
+                        # per il range reale di RTT nel setup con netem 300ms)
   fallback_rtt_ms: 5.0  # RTT di fallback se ping_exporter non è disponibile
-                        # (latenza LAN baseline senza netem)
