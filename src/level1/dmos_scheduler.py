@@ -90,9 +90,18 @@ class DMOSScheduler:
         # Timestamp di avvio per determinare Phase 1 vs Phase 2.
         self.scheduler_start_time = time.time()
 
+        # Load parameters (sigmoid saturation threshold)
+        load_params = self.config.load_params
+        self._load_threshold = load_params.get('threshold', 0.7)
+        self._load_steepness = load_params.get('steepness', 10)
+        self._load_floor = load_params.get('floor', 0.2)
+
         score_params = ScoreParameters(
             rho=self._network_rho,
             rtt_max_ms=self._network_rtt_max_ms,
+            load_threshold=self._load_threshold,
+            load_steepness=self._load_steepness,
+            load_floor=self._load_floor,
         )
 
         # Phase 2: score completo (pesi del profilo attivo in weights.yaml)
@@ -100,9 +109,8 @@ class DMOSScheduler:
             weights={
                 'omega_latency': self.config.score_weights.omega_latency,
                 'omega_capacity': self.config.score_weights.omega_capacity,
-                'omega_load': self.config.score_weights.omega_load,
+                'omega_geo_load': self.config.score_weights.omega_geo_load,
                 'omega_carbon': self.config.score_weights.omega_carbon,
-                'omega_network': self.config.score_weights.omega_network,
                 'omega_demand': self.config.score_weights.omega_demand,
             },
             parameters=score_params,
@@ -112,12 +120,11 @@ class DMOSScheduler:
         cs = self.config.cold_start_weights
         self.score_func_cold = ScoreFunctions(
             weights={
-                'omega_latency': cs.omega_latency,   # 0.00
-                'omega_capacity': cs.omega_capacity,  # 0.00
-                'omega_load': cs.omega_load,          # 0.00
-                'omega_carbon': cs.omega_carbon,      # 0.30
-                'omega_network': cs.omega_network,    # 0.35
-                'omega_demand': cs.omega_demand,      # 0.35
+                'omega_latency': cs.omega_latency,     # 0.00
+                'omega_capacity': cs.omega_capacity,    # 0.00
+                'omega_geo_load': cs.omega_geo_load,    # 0.35 (Φ_load≈1 a freddo → ~Φ_net)
+                'omega_carbon': cs.omega_carbon,        # 0.30
+                'omega_demand': cs.omega_demand,        # 0.35
             },
             parameters=score_params,
         )
@@ -365,8 +372,8 @@ class DMOSScheduler:
                 'score': 0.0,
                 'score_breakdown': {
                     'phi_latency': 0.0, 'phi_capacity': 0.0,
-                    'phi_load': 0.0, 'phi_carbon': 0.0,
-                    'phi_network': 0.0, 'phi_demand': 0.0,
+                    'phi_geo_load': 0.0, 'phi_load': 0.0, 'phi_network': 0.0,
+                    'phi_carbon': 0.0, 'phi_demand': 0.0,
                 },
                 'capacity': 0,
                 'eligible': False,
@@ -428,8 +435,10 @@ class DMOSScheduler:
         logger.info(
             f"Score {cluster_name}: {breakdown['total_score']:.3f} "
             f"(lat={breakdown['phi_latency']:.3f}, cap={breakdown['phi_capacity']:.3f}, "
-            f"load={breakdown['phi_load']:.3f}, carbon={breakdown['phi_carbon']:.3f}, "
-            f"net={breakdown['phi_network']:.3f}|RTT={metrics.network_rtt_ms:.0f}ms, "
+            f"geo={breakdown['phi_geo_load']:.3f}"
+            f"[{breakdown['phi_load']:.3f}*{breakdown['phi_network']:.3f}"
+            f"|RTT={metrics.network_rtt_ms:.0f}ms], "
+            f"carbon={breakdown['phi_carbon']:.3f}, "
             f"demand={breakdown['phi_demand']:.3f}|{metrics.ingress_rate_rps:.1f}rps) "
             f"capacity={capacity}, cpu={cpu_util_pct:.0f}%, "
             f"CI={metrics.carbon_intensity_gco2_kwh:.0f}gCO2"
@@ -441,9 +450,10 @@ class DMOSScheduler:
             'score_breakdown': {
                 'phi_latency': breakdown['phi_latency'],
                 'phi_capacity': breakdown['phi_capacity'],
-                'phi_load': breakdown['phi_load'],
+                'phi_geo_load': breakdown['phi_geo_load'],
+                'phi_load': breakdown['phi_load'],       # debug
+                'phi_network': breakdown['phi_network'],  # debug
                 'phi_carbon': breakdown['phi_carbon'],
-                'phi_network': breakdown['phi_network'],
                 'phi_demand': breakdown['phi_demand'],
             },
             'capacity': capacity,
@@ -484,7 +494,7 @@ class DMOSScheduler:
         else:
             logger.info(
                 f"[Phase 2 — DYNAMIC RESCHEDULING] t={elapsed:.0f}s | "
-                f"score completo: Φ_resp + Φ_cap + Φ_load + Φ_carbon + Φ_net + Φ_demand | "
+                f"score completo: Φ_resp + Φ_cap + Φ_geo(load×net) + Φ_carbon + Φ_demand | "
                 f"Level 2: Hubble destination_workload"
             )
 

@@ -172,14 +172,26 @@ def scrape_cluster(cluster: str, prom_url: str) -> dict:
         }
 
     # Hubble HTTP rate (total L7 traffic hitting this cluster)
+    # FIX: reporter="server" (non "destination") — Cilium Hubble label convention
     hubble = _prom_query(prom_url,
-        f'sum(rate(hubble_http_requests_total{{reporter="destination",destination_namespace="{ns}"}}[1m]))')
+        f'sum(rate(hubble_http_requests_total{{reporter="server",destination_namespace="{ns}"}}[1m]))')
     result["hubble_http_rps"] = round(hubble, 2) if hubble is not None else None
 
-    # Frontend network bytes (for traffic distribution)
-    fe_net = _prom_query(prom_url,
-        f'sum(rate(container_network_receive_bytes_total{{namespace="{ns}",pod=~"frontend-.*"}}[1m]))')
-    result["frontend_net_bytes_s"] = round(fe_net, 1) if fe_net is not None else None
+    # Frontend HTTP ingress rate (for traffic distribution)
+    # FIX: usa hubble_http_requests_total con filtro frontend + ingress direction
+    # invece di container_network_receive_bytes_total (che conta anche risposte
+    # gRPC dai backend, rendendo la distribuzione ~33/33/33 a prescindere dai pesi k6)
+    # FIX: source_workload="" → solo traffico esterno (k6 via Cilium Ingress).
+    # Esclude health probes e gRPC inter-service che contaminano la distribuzione.
+    fe_ingress = _prom_query(prom_url,
+        f'sum(rate(hubble_http_requests_total{{'
+        f'destination_workload="frontend",'
+        f'destination_namespace="{ns}",'
+        f'reporter="server",'
+        f'traffic_direction="ingress",'
+        f'source_workload=""'
+        f'}}[1m]))')
+    result["frontend_net_bytes_s"] = round(fe_ingress, 1) if fe_ingress is not None else None
 
     # Node-level CPU
     node_cpu = _prom_query(prom_url,

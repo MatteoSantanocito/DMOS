@@ -101,9 +101,15 @@ class ScoreParameters:
     # Capacity component
     kappa: float = 2.0          # espontenziale per la penalità sulla capacità
     
-    # Load prediction component
-    mu: float = 1.0             # penalità per il carico predetto
-    horizon_seconds: int = 600  # orizzonte di predizione per il carico (10 minuti)
+    # Load prediction component (sigmoid saturation threshold)
+    # Φ_load = 1 / (1 + exp(k × (λ/λ_max - τ)))
+    # Sotto τ: Φ_load ≈ 1 (non premia cluster scarichi).
+    # Sopra τ: Φ_load crolla (penalizza solo saturazione reale).
+    load_threshold: float = 0.7   # τ: soglia di saturazione (70% del massimo)
+    load_steepness: float = 10.0  # k: pendenza della sigmoid
+    load_floor: float = 0.2       # floor: Φ_load minimo (impedisce azzeramento Φ_geo)
+    mu: float = 1.0               # legacy (non usato con sigmoid)
+    horizon_seconds: int = 600    # orizzonte di predizione per il carico (10 minuti)
     
     # Carbon component
     nu: float = 0.5             # coefficiente per la penalità sulla carbon intensity
@@ -120,8 +126,12 @@ class ScoreParameters:
 class ScoreFunctions:
     """
     Calcola il multi-dimensional score per la cluster selection:
-    score_i = ω_lat·Φ_lat(i) + ω_cap·Φ_cap(i) + ω_load·Φ_load(i)
-            + ω_carbon·Φ_carbon(i) + ω_net·Φ_net(i) + ω_demand·Φ_demand(i)
+    score_i = ω_lat·Φ_lat(i) + ω_cap·Φ_cap(i) + ω_geo·(Φ_load(i)·Φ_net(i))
+            + ω_carbon·Φ_carbon(i) + ω_demand·Φ_demand(i)
+
+    Il termine moltiplicativo Φ_geo_load = Φ_load × Φ_net garantisce che un cluster
+    sia favorito SOLO se è sia scarico (Φ_load alto) sia geograficamente vicino
+    (Φ_net alto). Se uno dei due è basso, il prodotto crolla → penalizzazione.
     """
 
     def __init__(
@@ -129,17 +139,16 @@ class ScoreFunctions:
         weights: Dict[str, float],
         parameters: Optional[ScoreParameters] = None
     ):
-        self.omega_latency = weights.get('omega_latency', 0.30)
+        self.omega_latency = weights.get('omega_latency', 0.25)
         self.omega_capacity = weights.get('omega_capacity', 0.20)
-        self.omega_load = weights.get('omega_load', 0.15)
+        self.omega_geo_load = weights.get('omega_geo_load', 0.25)
         self.omega_carbon = weights.get('omega_carbon', 0.20)
-        self.omega_network = weights.get('omega_network', 0.05)
         self.omega_demand = weights.get('omega_demand', 0.10)
 
         # Valida che le pesature sommano a 1.0
         total = (self.omega_latency + self.omega_capacity +
-                 self.omega_load + self.omega_carbon +
-                 self.omega_network + self.omega_demand)
+                 self.omega_geo_load + self.omega_carbon +
+                 self.omega_demand)
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"La somma delle pesature deve essere 1.0, ho {total}")
 
@@ -147,8 +156,8 @@ class ScoreFunctions:
 
         logger.info(
             f"Score weights: lat={self.omega_latency}, cap={self.omega_capacity}, "
-            f"load={self.omega_load}, carbon={self.omega_carbon}, "
-            f"network={self.omega_network}, demand={self.omega_demand}"
+            f"geo_load={self.omega_geo_load}, carbon={self.omega_carbon}, "
+            f"demand={self.omega_demand}"
         )
     
     def compute_latency_score(self, metrics: ClusterMetrics) -> float:
@@ -198,28 +207,42 @@ class ScoreFunctions:
         return max(0.0, score)  
     
     def compute_load_score(
-        self, 
-        metrics: ClusterMetrics, 
+        self,
+        metrics: ClusterMetrics,
         predicted_load: Optional[float] = None
     ) -> float:
         """
-        Φ_load(i) = exp(-μ * λ_i^pred / λ_i^max)
-        
+        Φ_load(i) = max(floor, 1 / (1 + exp(k × (λ/λ_max - τ))))
+
+        Sigmoid con soglia di saturazione + floor minimo:
+        - Sotto τ (es. 70%): Φ_load ≈ 1.0 per tutti → NON premia cluster scarichi.
+          Un cluster al 16% e uno al 50% hanno score quasi identico.
+        - Sopra τ: Φ_load scende rapidamente → penalizza saturazione reale.
+        - Floor (es. 0.2): Φ_load non scende MAI sotto questa soglia.
+          Questo impedisce che Φ_geo_load = Φ_load × Φ_net venga azzerato
+          quando un servizio è temporaneamente saturato (es. durante il ramp-up
+          con 1 replica). Senza floor, Φ_net (il vantaggio RTT) verrebbe
+          completamente annullato, e i componenti perversi (Φ_lat, Φ_cap)
+          dominerebbero premiando il cluster meno carico (= peggiore RTT).
         """
-        # Usa il carico predetto se disponibile, altrimenti quello attuale
         load = predicted_load if predicted_load is not None else metrics.request_rate_current
-        
+
         if metrics.request_rate_max == 0:
             logger.warning("request rate max è 0, non posso calcolare, restituisco 0")
             return 0.0
-        
-        load_fraction_pred = load / metrics.request_rate_max
-        
-        score = math.exp(-self.params.mu * load_fraction_pred)
-        
+
+        load_fraction = load / metrics.request_rate_max
+        k = self.params.load_steepness
+        tau = self.params.load_threshold
+        floor = self.params.load_floor
+
+        raw_score = 1.0 / (1.0 + math.exp(k * (load_fraction - tau)))
+        score = max(floor, raw_score)
+
         logger.debug(f"Φ_load: load={load:.1f}, max={metrics.request_rate_max:.1f}, "
-                    f"frac={load_fraction_pred:.3f}, score={score:.3f}")
-        
+                    f"frac={load_fraction:.3f}, τ={tau}, k={k}, floor={floor}, "
+                    f"raw={raw_score:.3f}, score={score:.3f}")
+
         return score
     
     def compute_carbon_score(self, metrics: ClusterMetrics) -> float:
@@ -252,7 +275,7 @@ class ScoreFunctions:
 
         Senza netem (pura LAN, tutti ≈ 5ms):
           Φ_net ≈ exp(-2×5/500) = exp(-0.02) ≈ 0.980 per tutti i cluster
-          → differenziazione nulla, omega_network ha impatto trascurabile.
+          → differenziazione nulla, Φ_net≈1 per tutti → Φ_geo_load≈Φ_load.
         """
         rtt = min(metrics.network_rtt_ms, self.params.rtt_max_ms)
         score = math.exp(-self.params.rho * rtt / self.params.rtt_max_ms)
@@ -293,28 +316,54 @@ class ScoreFunctions:
         )
         return score
 
+    def compute_geo_load_score(
+        self,
+        metrics: ClusterMetrics,
+        predicted_load: Optional[float] = None
+    ) -> float:
+        """
+        Φ_geo_load(i) = Φ_load(i) × Φ_net(i)
+
+        Termine moltiplicativo: combina carico predetto e vicinanza geografica.
+        - Cluster scarico E vicino → prodotto alto → favorito
+        - Cluster scarico MA lontano → Φ_net basso → prodotto basso
+        - Cluster vicino MA saturo → Φ_load basso → prodotto basso
+
+        Questo evita il problema additivo dove un cluster lontano ma scarico
+        poteva compensare la penalità geografica con un buon Φ_load.
+        """
+        phi_load = self.compute_load_score(metrics, predicted_load)
+        phi_net = self.compute_network_score(metrics)
+        geo_load = phi_load * phi_net
+
+        logger.debug(
+            f"Φ_geo_load: Φ_load={phi_load:.3f} × Φ_net={phi_net:.3f} "
+            f"= {geo_load:.3f} (RTT={metrics.network_rtt_ms:.0f}ms)"
+        )
+        return geo_load
+
     def compute_total_score(
         self,
         metrics: ClusterMetrics,
         predicted_load: Optional[float] = None
     ) -> float:
         """
-        score_i = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_load·Φ_load
-                + ω_carbon·Φ_carbon + ω_net·Φ_net + ω_demand·Φ_demand
+        score_i = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_geo·(Φ_load·Φ_net)
+                + ω_carbon·Φ_carbon + ω_demand·Φ_demand
         """
         phi_lat = self.compute_latency_score(metrics)
         phi_cap = self.compute_capacity_score(metrics)
         phi_load = self.compute_load_score(metrics, predicted_load)
-        phi_carbon = self.compute_carbon_score(metrics)
         phi_net = self.compute_network_score(metrics)
+        phi_geo_load = phi_load * phi_net
+        phi_carbon = self.compute_carbon_score(metrics)
         phi_demand = self.compute_demand_score(metrics)
 
         total_score = (
             self.omega_latency * phi_lat +
             self.omega_capacity * phi_cap +
-            self.omega_load * phi_load +
+            self.omega_geo_load * phi_geo_load +
             self.omega_carbon * phi_carbon +
-            self.omega_network * phi_net +
             self.omega_demand * phi_demand
         )
 
@@ -322,9 +371,8 @@ class ScoreFunctions:
             f"Score totale: {total_score:.3f} = "
             f"{self.omega_latency}×{phi_lat:.3f}(lat) + "
             f"{self.omega_capacity}×{phi_cap:.3f}(cap) + "
-            f"{self.omega_load}×{phi_load:.3f}(load) + "
+            f"{self.omega_geo_load}×{phi_geo_load:.3f}(geo[{phi_load:.3f}*{phi_net:.3f}]) + "
             f"{self.omega_carbon}×{phi_carbon:.3f}(carbon) + "
-            f"{self.omega_network}×{phi_net:.3f}(net) + "
             f"{self.omega_demand}×{phi_demand:.3f}(demand)"
         )
 
@@ -337,30 +385,32 @@ class ScoreFunctions:
     ) -> Dict[str, float]:
         """
         Calcola score con breakdown dettagliato per ogni componente.
-        Include phi_network (geo-awareness via RTT) e phi_demand (ingress traffic).
+        Include phi_geo_load (moltiplicativo: Φ_load × Φ_net) e phi_demand.
+        Mantiene phi_load e phi_network individuali per debug/logging.
         """
         phi_lat = self.compute_latency_score(metrics)
         phi_cap = self.compute_capacity_score(metrics)
         phi_load = self.compute_load_score(metrics, predicted_load)
-        phi_carbon = self.compute_carbon_score(metrics)
         phi_net = self.compute_network_score(metrics)
+        phi_geo_load = phi_load * phi_net
+        phi_carbon = self.compute_carbon_score(metrics)
         phi_demand = self.compute_demand_score(metrics)
 
         total = (
             self.omega_latency * phi_lat +
             self.omega_capacity * phi_cap +
-            self.omega_load * phi_load +
+            self.omega_geo_load * phi_geo_load +
             self.omega_carbon * phi_carbon +
-            self.omega_network * phi_net +
             self.omega_demand * phi_demand
         )
 
         return {
             'phi_latency': phi_lat,
             'phi_capacity': phi_cap,
-            'phi_load': phi_load,
+            'phi_geo_load': phi_geo_load,
+            'phi_load': phi_load,          # debug: componente individuale
+            'phi_network': phi_net,         # debug: componente individuale
             'phi_carbon': phi_carbon,
-            'phi_network': phi_net,
             'phi_demand': phi_demand,
             'total_score': total,
             'network_rtt_ms': metrics.network_rtt_ms,
@@ -369,9 +419,8 @@ class ScoreFunctions:
             'weights': {
                 'omega_latency': self.omega_latency,
                 'omega_capacity': self.omega_capacity,
-                'omega_load': self.omega_load,
+                'omega_geo_load': self.omega_geo_load,
                 'omega_carbon': self.omega_carbon,
-                'omega_network': self.omega_network,
                 'omega_demand': self.omega_demand,
             }
         }

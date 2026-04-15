@@ -18,25 +18,27 @@ services:
         cpu: "500m"
         memory: "256Mi"
 
-    # Capacità per replica (req/s) — valore calibrato con netem attivo
+    # Capacità per replica (req/s) — misurata con k6 capacity test isolato.
     #
-    # CONTESTO: con tc netem attivo sui cluster geografici simulati:
-    #   cluster1 (DE, no netem):  ~16 rps/replica
-    #   cluster2 (FR, 150ms):     ~6  rps/replica  (netem su risposte egressa)
-    #   cluster3 (PL, 350ms):     ~3  rps/replica
+    # Test: k6_capacity_test.js con backend isolati per cluster (altri a 0),
+    # CNP L7 rimossi, CPU limit frontend 500m. Risultati (2026-04-04):
+    #   cluster1 (DE, 0ms netem):   49 rps/rep, p95=105ms, 0% err
+    #   cluster2 (FR, 150ms netem): 49 rps/rep, p95=395ms, 0% err
+    #   cluster3 (PL, 350ms netem): 49 rps/rep, p95=800ms, 0% err
     #
-    # DMOS usa un unico valore per tutti i cluster. Impostare questo
-    # alla capacità del cluster PIU' LENTO (c3) per evitare che DMOS
-    # rimanga incastrato a min_replicas=1 sui cluster con netem elevato.
-    # Valore scelto: 5 rps — leggermente sopra c3 per evitare oscillazioni,
-    # ma sotto c2 e c1 → tutti i cluster escono dal single-replica trap.
-    #
-    # Effetto con max_replicas=8 e 400+ utenti al picco:
-    #   cluster1 (DE, 350 gCO2) → ~6-8 repliche  (limitato da carbon score)
-    #   cluster2 (FR,  80 gCO2) → ~8 repliche     (preferito, al cap → verde)
-    #   cluster3 (PL, 650 gCO2) → ~2-4 repliche   (penalizzato, meno traffico)
-    # Cap a 8: 8×500m=4000m = esattamente i 4 core del nodo → no saturazione.
-    capacity_req_per_sec: 30
+    # Il netem aggiunge latenza ma NON riduce il throughput (arrival-rate test
+    # con VU pool sufficiente). La capacità è uniforme su tutti i cluster.
+    # Valore raccomandato: 80% del knee point = 39 rps/replica.
+    capacity_req_per_sec: 39
+
+    # Capacità per-cluster: misurata isolata = 49 rps/rep (uniforme).
+    # Ma con cross-cluster gRPC routing attivo, le goroutine Go del frontend
+    # restano bloccate più a lungo sulle call remote → capacità effettiva ridotta.
+    # Valori stimati conservativi per scenario reale con cross-cluster:
+    capacity_per_cluster:
+      cluster1: 39   # DE, 0ms netem — misurato 49, 80% con margine cross-cluster
+      cluster2: 35   # FR, 150ms netem — ridotto per gRPC cross-cluster
+      cluster3: 30   # PL, 350ms netem — ridotto per gRPC cross-cluster
 
     # SLA requirements
     # Baseline latenza: p95=60-70ms (idle), p95=130-200ms (under load)
@@ -44,26 +46,17 @@ services:
       latency_p95_ms: 200  # era 100, ma baseline idle è già 60-70ms
       latency_p99_ms: 500
       availability_percent: 99.9
-    
+
     # Power consumption (stimato)
     power_watts: 50
-    
+
     # Autoscaling constraints
-    # max_replicas=8: con 4 core/nodo e limit=500m/replica → 8×500m=4000m = esatto cap nodo.
-    # Evita saturazione fisica quando DMOS concentra repliche su cluster green (FR).
-    min_replicas_per_cluster:
-      cluster1: 2
-      cluster2: 2
-      cluster3: 1   # min 1 — DMOS decide in base allo score (penalizzato da RTT)
-
-    max_replicas_per_cluster:
-      cluster1: 5
-      cluster2: 4
-      cluster3: 3   # max 3, limitato per nodo C3
-
+    # max_replicas=4: con nuove capacity alte, i backend restano a 1-2 repliche.
+    # Budget worst case: 4×500m=2000m frontend + backend(~2650m) = 4650m
+    # su 4000m → overcommit ~116% gestibile (backend non tutti al limit).
     autoscaling:
-      min_replicas: 2
-      max_replicas: 8
+      min_replicas: 1
+      max_replicas: 4
       target_cpu_percent: 70
 
   cartservice:
@@ -76,7 +69,10 @@ services:
       limits:
         cpu: "300m"
         memory: "256Mi"
-    capacity_req_per_sec: 10
+    # gRPC read/write su Redis locale, molto leggero.
+    # A 150 rps frontend, ~25% traffico è cart (GET+POST) = ~37 rps.
+    # 1 replica gRPC gestisce facilmente 50+ rps.
+    capacity_req_per_sec: 50
     sla:
       latency_p95_ms: 50
       latency_p99_ms: 100
@@ -84,7 +80,8 @@ services:
     power_watts: 60
     autoscaling:
       min_replicas: 1
-      max_replicas: 8
+      # max_replicas=2: con 300m limit × 2 = 600m.
+      max_replicas: 2
       target_cpu_percent: 70
 
   productcatalogservice:
@@ -97,24 +94,19 @@ services:
       limits:
         cpu: "250m"
         memory: "192Mi"
-    capacity_req_per_sec: 20  # [FIX H] was 15: 2 repliche baseline reggono 40 req/s senza triggerare HIGH durante warmup k6 (10 req/s k6 × 3.5x = 35 req/s < 40 cap)
+    # gRPC read-only Go, nessun DB. Estremamente veloce.
+    # A 150 rps frontend, ~65% chiama productcatalog = ~97 rps.
+    # 1 replica Go read-only gestisce 100+ rps facilmente.
+    capacity_req_per_sec: 80
     sla:
       latency_p95_ms: 75
       latency_p99_ms: 150
       availability_percent: 99.9
     power_watts: 55
     autoscaling:
-      # min_replicas=2: vedi commento frontend — stesso rationale.
-      # productcatalogservice è co-locato col frontend e riceve molto traffico
-      # (browsing prodotti = 25% degli endpoint), quindi beneficia allo stesso modo.
-      min_replicas: 2
-      # [FIX J] Aumentato da 12 a 16: cluster2 (FR, preferito dal carbon score) riceve
-      # 200-228 req/s al picco → serve 14-16 repliche (228/20×1.15=13.1). Con max=12
-      # era costantemente a tetto (base=14-16 vincolato=True nel log) → saturazione
-      # sostenuta per 600s → sorgente principale dei 19961 5xx.
-      # Limite CPU: 16×250m=4000m = esattamente 4 core del nodo → no saturazione.
-      # Memory: 16×96Mi=1536Mi → OK su nodo 8GB.
-      max_replicas: 16
+      min_replicas: 1
+      # max_replicas=3: con 250m limit × 3 = 750m.
+      max_replicas: 3
       target_cpu_percent: 70
 
   checkoutservice:
@@ -127,7 +119,10 @@ services:
       limits:
         cpu: "500m"
         memory: "512Mi"
-    capacity_req_per_sec: 5
+    # Orchestratore: chiama cart, currency, shipping, payment, email.
+    # Solo 5% del traffico frontend è checkout = ~7.5 rps a 150 rps.
+    # 1 replica gestisce 20+ rps (lento ma poco traffico).
+    capacity_req_per_sec: 20
     sla:
       latency_p95_ms: 200
       latency_p99_ms: 500
@@ -135,7 +130,8 @@ services:
     power_watts: 70
     autoscaling:
       min_replicas: 1
-      max_replicas: 8
+      # max_replicas=2: checkout è pesante (500m limit) ma traffico basso (5%).
+      max_replicas: 2
       target_cpu_percent: 70
 
   recommendationservice:
@@ -148,7 +144,10 @@ services:
       limits:
         cpu: "400m"
         memory: "450Mi"
-    capacity_req_per_sec: 10
+    # Python gRPC, chiama productcatalog per ottenere prodotti.
+    # ~25% traffico frontend chiama recommendation = ~37 rps.
+    # Python è più lento di Go, ma 1 replica gestisce 30+ rps.
+    capacity_req_per_sec: 40
     sla:
       latency_p95_ms: 100
       latency_p99_ms: 200
@@ -156,26 +155,27 @@ services:
     power_watts: 65
     autoscaling:
       min_replicas: 1
-      max_replicas: 8
+      # max_replicas=2: con 400m limit × 2 = 800m.
+      max_replicas: 2
       target_cpu_percent: 70
 
 # Global autoscaling parameters
 global_autoscaling:
   # Safety margin sopra predizione
-  safety_margin: 0.10  # 15%
-  
+  safety_margin: 0.10  # 10%
+
   # Rate limiting
   max_delta_per_cycle: 6  # [FIX G] was 4: 2 cicli per raggiungere max_replicas invece di 3 (-30s ramp-up)
-  
+
   # PD Controller parameters
   pd_controller:
     kp: 5.0
     kd: 300.0
-    
+
     # Anti-windup
     output_min: -5
     output_max: 5
-  
+
   # Trend-based prediction
   prediction:
     window_seconds: 300       # 5 min per calcolare derivata

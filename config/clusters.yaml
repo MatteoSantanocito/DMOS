@@ -7,7 +7,7 @@
 #
 # Mapping regioni:
 #   cluster1 (ms01) → DE  (Germania, ~350 gCO2/kWh, coal+gas+solar)
-#   cluster2 (ms02) → FR  (Francia, ~80 gCO2/kWh, nuclear dominated)  
+#   cluster2 (ms02) → FR  (Francia, ~80 gCO2/kWh, nuclear dominated)
 #   cluster3 (ms03) → PL  (Polonia, ~650 gCO2/kWh, coal dominated)
 #
 # Questo crea un range ampio di carbon intensity che rende visibile
@@ -42,14 +42,14 @@ clusters:
     location: Paris
     ip: 192.168.1.246
     kubeconfig_path: ".kube/cluster2.yaml"
-    
+
     resources:
       cpu_cores: 4
       memory_gb: 8
-    
+
     pricing:
       cost_per_replica_hour: 0.15   # €/replica/hour (FR pricing, slightly higher)
-    
+
     carbon:
       region_code: "FR"
       baseline_gco2_kwh: 80         # Francia: nucleare = molto basso

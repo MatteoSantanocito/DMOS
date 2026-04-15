@@ -47,14 +47,14 @@ spec:
       stabilizationWindowSeconds: 30
       policies:
         - type: Pods
-          value: 3
-          periodSeconds: 30
+          value: 3 
+          periodSeconds: 30 #invece di 15
     scaleDown:
-      stabilizationWindowSeconds: 120
+      stabilizationWindowSeconds: 120 #invece di 5 minuti
       policies:
         - type: Pods
-          value: 1
-          periodSeconds: 60
+          value: 1 
+          periodSeconds: 60 #invece di 300
 
 ---
 apiVersion: autoscaling/v2

@@ -62,18 +62,17 @@ class WeightsConfig:
 
 @dataclass
 class ScoreWeightsConfig:
-    """Score function weights configuration"""
+    """Score function weights configuration (5 componenti con Φ_geo_load moltiplicativo)"""
     omega_latency: float
     omega_capacity: float
-    omega_load: float
+    omega_geo_load: float    # Termine moltiplicativo: ω_geo · (Φ_load × Φ_net)
     omega_carbon: float
-    omega_network: float = 0.0   # Geo-awareness via ping_exporter RTT (Φ_net)
-    omega_demand: float = 0.0    # Domanda geografica via Nginx ingress (Φ_demand)
+    omega_demand: float = 0.0    # Domanda geografica via Cilium Ingress (Φ_demand)
 
     def __post_init__(self):
         total = (self.omega_latency + self.omega_capacity +
-                 self.omega_load + self.omega_carbon +
-                 self.omega_network + self.omega_demand)
+                 self.omega_geo_load + self.omega_carbon +
+                 self.omega_demand)
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"Score weights must sum to 1.0, got {total}")
 
@@ -251,9 +250,8 @@ class ConfigLoader:
         self.score_weights = ScoreWeightsConfig(
             omega_latency=score_weights_data.get('omega_latency', 0.25),
             omega_capacity=score_weights_data.get('omega_capacity', 0.20),
-            omega_load=score_weights_data.get('omega_load', 0.15),
+            omega_geo_load=score_weights_data.get('omega_geo_load', 0.25),
             omega_carbon=score_weights_data.get('omega_carbon', 0.20),
-            omega_network=score_weights_data.get('omega_network', 0.10),
             omega_demand=score_weights_data.get('omega_demand', 0.10),
         )
 
@@ -265,9 +263,8 @@ class ConfigLoader:
             self.cold_start_weights = ScoreWeightsConfig(
                 omega_latency=cold_start_data.get('omega_latency', 0.00),
                 omega_capacity=cold_start_data.get('omega_capacity', 0.00),
-                omega_load=cold_start_data.get('omega_load', 0.00),
+                omega_geo_load=cold_start_data.get('omega_geo_load', 0.35),
                 omega_carbon=cold_start_data.get('omega_carbon', 0.30),
-                omega_network=cold_start_data.get('omega_network', 0.35),
                 omega_demand=cold_start_data.get('omega_demand', 0.35),
             )
             logger.info("Cold-start weights caricati (Phase 1 blind allocation)")
@@ -283,6 +280,14 @@ class ConfigLoader:
             'rho': net_params.get('rho', 2.0),
             'rtt_max_ms': net_params.get('rtt_max_ms', 500.0),
             'fallback_rtt_ms': net_params.get('fallback_rtt_ms', 5.0),
+        }
+
+        # Parse load parameters (sigmoid saturation threshold)
+        load_params = self.weights_raw.get('load_parameters', {})
+        self.load_params = {
+            'threshold': load_params.get('threshold', 0.7),
+            'steepness': load_params.get('steepness', 10),
+            'floor': load_params.get('floor', 0.2),
         }
 
         # Parse score parameters (legacy key)

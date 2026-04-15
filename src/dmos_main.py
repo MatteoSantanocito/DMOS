@@ -33,6 +33,7 @@ from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from src.utils.logger import setup_logging
 from src.utils.config_loader import ConfigLoader
 from src.level1.dmos_scheduler import DMOSScheduler
+from src.level1.winner_determination import Allocation
 from src.level2.scaler import ReplicaScaler
 from src.k8s.client import KubernetesClient
 from src.metrics.prometheus_client import PrometheusClient
@@ -95,7 +96,16 @@ class DMOSOrchestrator:
         ['service']
     )
     
-    def __init__(self, config_path: str = "config", num_workers: int = 3):
+    def __init__(self, config_path: str = "config", num_workers: int = 3,
+                 no_scheduling: bool = False):
+        self.no_scheduling = no_scheduling
+        if no_scheduling:
+            logger.info("=" * 60)
+            logger.info("  MODALITÀ NO-SCHEDULING — Level 1 DISABILITATO")
+            logger.info("  Level 2 (scaling) attivo: calcola repliche con PD controller")
+            logger.info("  Level 1 (scheduling) OFF: distribuzione uniforme N/K per cluster")
+            logger.info("  Nessun punteggio, nessun Hamilton, nessuna riallocazione geo-aware")
+            logger.info("=" * 60)
         logger.info("Initializing DMOS Orchestrator...")
         
         self.config = ConfigLoader(config_path)
@@ -147,7 +157,12 @@ class DMOSOrchestrator:
                     max_replicas=cluster_max_replicas,
                     safety_margin=0.15,
                     max_delta_per_cycle=6,  # [FIX G] scale-UP aggressivo
-                    max_delta_down=2        # [FIX I] scale-DOWN conservativo
+                    max_delta_down=1        # [FIX I+T] scale-DOWN ultra-conservativo:
+                                            # max 1 pod rimosso per servizio/cluster/ciclo.
+                                            # Era 2: pcatalog C3 passava 3→1 di colpo,
+                                            # rompendo le connessioni gRPC Envoy L7 e
+                                            # causando cascata di timeout. Con 1: 3→2→1
+                                            # su 2 cicli (60s), Envoy ha tempo di riconfigurarsi.
                 )
         
         # All cluster names for scale-down of non-allocated clusters
@@ -167,7 +182,9 @@ class DMOSOrchestrator:
         
         # [FIX D] Asymmetric cooldown tracking
         self.last_scale_down: Dict[str, datetime] = {}
-        self.scale_down_cooldown = 180  # seconds — scale-down slower (was 60, raised to reduce flapping)
+        self.scale_down_cooldown = 90  # seconds — (was 180: troppo lungo, accumulava
+        # scale-down pendenti durante dead zone → burst al rilascio → decline crash.
+        # Con 90s: scale-down più frequente ma meno aggressivo)
 
         # [FIX E] Scale-up protection: block scale-down for N seconds after a scale-up.
         # Root cause: when traffic ramps up, the predictor triggers a scale-up.
@@ -183,9 +200,23 @@ class DMOSOrchestrator:
         self.last_scale_up: Dict[str, datetime] = {}
         self.scale_up_protection_seconds = 90  # seconds (era 120)
         
+        # [FIX S] Global scale-down budget per polling cycle.
+        # Limita il numero TOTALE di pod terminati in un ciclo di 30s, condiviso
+        # tra tutti i servizi e cluster. Evita il thundering herd: senza budget,
+        # DMOS terminava 15+ pod simultaneamente durante il decline del traffico,
+        # rompendo le connessioni gRPC persistenti (Envoy L7) e causando cascata
+        # di timeout irrecuperabile. Con budget=3, lo scale-down si distribuisce
+        # su ~5 cicli (2.5 min) dando tempo a Envoy di riconfigurarsi.
+        self.scale_down_budget_per_cycle = 2  # (was 3: troppi pod rimossi al rilascio dead zone)
+        self._cycle_pods_terminated = 0
+
         # [FIX C] Dead zone: track previous traffic for stability check
         self.previous_traffic: Dict[str, float] = {}
-        self.dead_zone_pct = 0.25  # 25% traffic change threshold (was 15%, raised to reduce flapping)
+        self.dead_zone_pct = 0.10  # 10% traffic change threshold
+        # Era 25%: bloccava scale-down anche durante il decline (variazione <25% tra cicli)
+        # → frontend restava a 9 repliche per sempre.
+        # Con 10%: durante il picco sostenuto (variazione ~2-5%) → blocca scale-down (protezione).
+        # Durante il decline (variazione >10% per ciclo) → permette scale-down.
         
         # List of services to monitor
         self.monitored_services = list(self.config.services.keys())
@@ -565,13 +596,34 @@ class DMOSOrchestrator:
 
         logger.info(f"Total replicas needed: {total_replicas} "
                     f"(sum of per-cluster needs from {per_cluster_traffic})")
-        
-        allocations, success = self.scheduler.schedule_service(
-            service_name=service_name,
-            total_replicas=total_replicas,
-            predicted_load=current_traffic
-        )
-        
+
+        if self.no_scheduling:
+            # ── NO-SCHEDULING: distribuzione uniforme N/K ─────────────────
+            # Level 1 disabilitato: nessun punteggio, nessun Hamilton.
+            # Le repliche vengono distribuite equamente tra i K cluster.
+            # Level 2 (PD controller) rimane attivo per il dimensionamento.
+            K = len(self.all_cluster_names)
+            base = total_replicas // K
+            remainder = total_replicas % K
+            allocations = []
+            for i, cname in enumerate(sorted(self.all_cluster_names)):
+                reps = base + (1 if i < remainder else 0)
+                allocations.append(Allocation(
+                    cluster_name=cname,
+                    replicas=reps,
+                    quota=1.0 / K,
+                    score=1.0 / K,  # score fittizio uniforme
+                ))
+            success = True
+            logger.info(f"[NO-SCHEDULING] Distribuzione uniforme: "
+                        f"{', '.join(f'{a.cluster_name}={a.replicas}' for a in allocations)}")
+        else:
+            allocations, success = self.scheduler.schedule_service(
+                service_name=service_name,
+                total_replicas=total_replicas,
+                predicted_load=current_traffic
+            )
+
         if not success:
             logger.error(f"❌ Scheduling fallito")
             return
@@ -634,11 +686,29 @@ class DMOSOrchestrator:
 
             delta = decision.delta_replicas
 
-            # [FIX C] Dead zone
-            if (abs(delta) <= 1
+            # [FIX C] Dead zone — blocca scale-down quando il traffico è stabile.
+            # Con dead_zone_pct=10%:
+            #   Picco sostenuto (variazione ~2-5% tra cicli): traffic_stable=True
+            #     → blocca delta=-1 → backend restano sovradimensionati (protezione)
+            #   Decline reale (variazione >10% tra cicli): traffic_stable=False
+            #     → permette delta=-1 → scale-down graduale (max_delta_down=1 + budget)
+            # Scale-UP (delta > 0) non viene mai bloccato dalla dead zone.
+            if (delta <= 0
+                    and abs(delta) <= 1
                     and traffic_stable
                     and current_reps >= svc_cfg.get_min_replicas_for_cluster(cluster_name)):
                 logger.info(f" {cluster_name}: Δ={delta:+d} in dead zone — skipping")
+                continue
+
+            # [FIX S] Global scale-down budget: max N pod terminati per ciclo.
+            # Previene il thundering herd: 15+ pod uccisi in 5s rompevano le
+            # connessioni gRPC Envoy L7 e il sistema non recuperava.
+            if delta < 0 and self._cycle_pods_terminated >= self.scale_down_budget_per_cycle:
+                logger.info(
+                    f"  🛡️ {cluster_name}: scale-down Δ={delta:+d} deferred — "
+                    f"budget esaurito ({self._cycle_pods_terminated}/"
+                    f"{self.scale_down_budget_per_cycle} pod già terminati questo ciclo)"
+                )
                 continue
 
             # [FIX D] Asymmetric cooldown
@@ -660,6 +730,10 @@ class DMOSOrchestrator:
                     service=service_name,
                     action=action
                 ).inc()
+
+                # [FIX S] Aggiorna contatore pod terminati
+                if delta < 0:
+                    self._cycle_pods_terminated += abs(delta)
 
                 self.k8s.scale_deployment(
                     cluster=cluster_name,
@@ -769,9 +843,10 @@ class DMOSOrchestrator:
         
         while self.running:
             try:
+                # [FIX S] Reset budget scale-down ad ogni ciclo di polling
+                self._cycle_pods_terminated = 0
+
                 for service_name in self.monitored_services:
-                    
-                    # ── Traffic: per-cluster da Prometheus/Hubble ──────────
                     per_cluster_traffic = self._get_per_cluster_traffic(service_name)
                     current_traffic = sum(per_cluster_traffic.values())
 
@@ -1084,7 +1159,21 @@ class DMOSOrchestrator:
 
 
 def main():
-    orchestrator = DMOSOrchestrator(config_path="config", num_workers=3)
+    import argparse
+    parser = argparse.ArgumentParser(description="DMOS Orchestrator")
+    parser.add_argument(
+        "--no-scheduling", action="store_true",
+        help="Disabilita Level 1 (scheduling geo-aware). "
+             "Le repliche vengono distribuite uniformemente N/K. "
+             "Level 2 (scaling PD controller) resta attivo."
+    )
+    args = parser.parse_args()
+
+    orchestrator = DMOSOrchestrator(
+        config_path="config",
+        num_workers=3,
+        no_scheduling=args.no_scheduling,
+    )
     orchestrator.run()
 
 

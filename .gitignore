@@ -32,8 +32,12 @@ logs/
 # ── Kubeconfig (dati sensibili) ───────────────────────────────────────────
 .kube/
 
+/thesis
+/tests
+/docs
 
 
+dmos_test.js
 # ── Editor / OS ───────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

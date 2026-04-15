@@ -410,44 +410,14 @@ class PrometheusClient:
         return 5.0  # fallback: latenza LAN senza delay simulato
 
     def get_ingress_rate(self, namespace: str = "online-boutique") -> float:
-        """
-        Misura il traffico in ingresso nel cluster via Cilium Ingress Controller (Envoy).
 
-        Con Cilium Ingress:
-          Locust → Cilium Ingress Envoy (NodePort 30080) → frontend pod
-                            ↑
-          Hubble L7 (abilitato dalla CNP con rules: http su fromEntities: ingress)
-          esporta hubble_http_requests_total con traffic_direction="ingress".
-
-        Label strategy:
-          La configurazione Hubble usa labelsContext=source_namespace,source_workload,...
-          Per il traffico da reserved:ingress, source_namespace e source_workload sono
-          vuoti (identità riservata). Il filtro corretto è:
-            reporter="server"          → il frontend pod è il destinatario
-            traffic_direction="ingress"→ traffico in arrivo al frontend
-          Questo cattura tutto il traffico inbound al frontend (utenti via ingress +
-          health check kubelet), ma la componente esterna è dominante durante il test.
-          Poiché Φ_demand usa quote relative (rate_i / Σ_j rate_j), il rumore
-          costante dei health check si cancella nella normalizzazione.
-
-        NOTA [5m]: stesso rationale di get_request_rate() — Hubble scrape interval
-          15s (scrape_interval configurato nel job 'hubble' di prometheus-helm-values.yaml).
-          Con 15s interval, rate()[1m] ha ~4 campioni → stabile e reattivo.
-          Lag ridotto da ~5min ([5m] con 60s scrape) a ~60s ([1m] con 15s scrape).
-
-        Uso:
-          Level 1 (WHERE): Φ_demand(i) = ingress_rate_i / Σ_j ingress_rate_j
-          → cluster con più traffico ingresso = più utenti → più repliche.
-
-        Returns:
-            req/s in ingresso per questo cluster, o 0.0 se Hubble L7 non disponibile.
-        """
         query = (
             f'sum(rate(hubble_http_requests_total{{'
             f'destination_workload="frontend",'
             f'destination_namespace="{namespace}",'
             f'reporter="server",'
-            f'traffic_direction="ingress"'
+            f'traffic_direction="ingress",'
+            f'source_workload=""'
             f'}}[1m]))'
         )
         try:
@@ -456,7 +426,7 @@ class PrometheusClient:
                 rps = float(result['result'][0]['value'][1])
                 if rps > 0:
                     logger.info(
-                        f"✅ Ingress rate ({self.cluster_name}): {rps:.1f} req/s "
+                        f"Ingress rate ({self.cluster_name}): {rps:.1f} req/s "
                         f"[hubble L7 ingress traffic_direction]"
                     )
                     return rps

@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-analyze_three_way.py — DMOS ON vs HPA vs DMOS OFF (3-way comparison)
-=====================================================================
-Generates high-resolution thesis-quality plots comparing all 3 scenarios.
+analyze_three_way.py — DMOS ON vs HPA vs DMOS OFF vs DMOS No Sched (4-way)
+=========================================================================
+Generates high-resolution thesis-quality plots comparing up to 4 scenarios.
 
 Usage:
   python analyze_three_way.py ^
     --k6-on risultati_DMOS_ON_c300new_150.csv ^
     --k6-off risultati_DMOS_OFF_c300new_150.csv ^
     --k6-hpa risultati_HPA_c300new_150.csv ^
+    --k6-scaling risultati_DMOS_SCALING_c300new_150.csv ^
     --post-on ..\results\104315_20260408_flash_crowd_DMOS_ON_post.jsonl ^
     --post-off ..\results\110349_20260408_flash_crowd_DMOS_OFF_post.jsonl ^
     --post-hpa ..\results\134457_20260408_flash_crowd_HPA_post.jsonl ^
-    --rps 150 --output-dir plots_3way_150rps
+    --post-scaling ..\\results\\XXX_DMOS_SCALING_post.jsonl ^
+    --rps 150 --output-dir plots_4way_150rps
+
+  The --k6-scaling and --post-scaling arguments are optional; if omitted
+  the script falls back to the original 3-way comparison.
 """
 
 import os, json, argparse, warnings
@@ -40,10 +45,16 @@ plt.rcParams.update({
     'savefig.bbox': 'tight', 'savefig.pad_inches': 0.15,
 })
 
-SCENARIOS = ["DMOS ON", "HPA", "DMOS OFF"]
-COLORS = {"DMOS ON": "#1565C0", "HPA": "#F57C00", "DMOS OFF": "#C62828"}
-COLORS_LIGHT = {"DMOS ON": "#90CAF9", "HPA": "#FFE0B2", "DMOS OFF": "#EF9A9A"}
-HATCHES = {"DMOS ON": "", "HPA": "//", "DMOS OFF": "\\\\"}
+SCENARIOS = ["DMOS (L1 + L2)", "DMOS (L2)", "HPA", "DMOS OFF"]
+COLORS = {
+    "DMOS (L1 + L2)": "#1565C0", "DMOS (L2)": "#7B1FA2",
+    "HPA": "#F57C00", "DMOS OFF": "#C62828",
+}
+COLORS_LIGHT = {
+    "DMOS (L1 + L2)": "#90CAF9", "DMOS (L2)": "#CE93D8",
+    "HPA": "#FFE0B2", "DMOS OFF": "#EF9A9A",
+}
+HATCHES = {"DMOS (L1 + L2)": "", "DMOS (L2)": "..", "HPA": "//", "DMOS OFF": "\\\\"}
 
 CLUSTER_COLORS = {"cluster1": "#2E7D32", "cluster2": "#E65100", "cluster3": "#6A1B9A"}
 CLUSTER_NAMES = {
@@ -219,7 +230,8 @@ def plot_summary_table(k6s, rps, out):
         table[0, j].set_facecolor('#263238')
         table[0, j].set_text_props(color='white', weight='bold')
     # Color rows
-    row_colors = {'DMOS ON': '#E3F2FD', 'HPA': '#FFF3E0', 'DMOS OFF': '#FFEBEE'}
+    row_colors = {'DMOS (L1 + L2)': '#E3F2FD', 'DMOS (L2)': '#F3E5F5',
+                    'HPA': '#FFF3E0', 'DMOS OFF': '#FFEBEE'}
     for i, label in enumerate(SCENARIOS):
         if label in k6s:
             idx = [r[0] for r in rows].index(label) + 1
@@ -259,9 +271,10 @@ def plot_summary_table(k6s, rps, out):
         t2[0, j].set_facecolor('#455A64')
         t2[0, j].set_text_props(color='white', weight='bold')
 
-    fig.suptitle(f'3-Way Comparison Summary — {rps} rps (tc netem 300ms on C3)',
+    n_way = len([l for l in SCENARIOS if l in k6s])
+    fig.suptitle(f'{n_way}-Way Comparison Summary — {rps} rps (tc netem 300ms on C3)',
                  fontsize=14, y=0.98)
-    _save(fig, out, '3way_00_summary.png')
+    _save(fig, out, '4way_00_summary.png')
 
 
 def plot_latency_timeseries(k6s, rps, out):
@@ -285,7 +298,7 @@ def plot_latency_timeseries(k6s, rps, out):
         _phase_labels(ax)
     axes[-1].set_xlabel('Time (min)')
     fig.suptitle(f'Latency Time Series — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_01_latency_timeseries.png')
+    _save(fig, out, '4way_01_latency_timeseries.png')
 
 
 def plot_error_throughput(k6s, rps, out):
@@ -345,7 +358,7 @@ def plot_error_throughput(k6s, rps, out):
     ax.set_xlabel('Time (min)')
 
     fig.suptitle(f'Error, Throughput & VUs — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_02_error_throughput.png')
+    _save(fig, out, '4way_02_error_throughput.png')
 
 
 def plot_cdf(k6s, rps, out):
@@ -370,7 +383,7 @@ def plot_cdf(k6s, rps, out):
     ax.grid(True, alpha=0.2)
 
     ax = axes[1]
-    styles = {"DMOS ON": "-", "HPA": "--", "DMOS OFF": ":"}
+    styles = {"DMOS (L1 + L2)": "-", "DMOS (L2)": "-.", "HPA": "--", "DMOS OFF": ":"}
     for label in SCENARIOS:
         if label not in k6s:
             continue
@@ -390,7 +403,7 @@ def plot_cdf(k6s, rps, out):
     ax.grid(True, alpha=0.2)
 
     fig.suptitle(f'Latency CDF — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_03_cdf.png')
+    _save(fig, out, '4way_03_cdf.png')
 
 
 def plot_per_cluster(k6s, rps, out):
@@ -440,7 +453,7 @@ def plot_per_cluster(k6s, rps, out):
     axes[-1,0].set_xlabel('Time (min)')
     axes[-1,1].set_xlabel('Time (min)')
     fig.suptitle(f'Per-Cluster Detail — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_04_per_cluster.png')
+    _save(fig, out, '4way_04_per_cluster.png')
 
 
 def plot_bar_comparison(k6s, rps, out):
@@ -532,7 +545,7 @@ def plot_bar_comparison(k6s, rps, out):
     ax.grid(True, alpha=0.2, axis='y')
 
     fig.suptitle(f'Key Metrics Comparison — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_05_bar_comparison.png')
+    _save(fig, out, '4way_05_bar_comparison.png')
 
 
 def plot_replicas_comparison(posts, rps, out):
@@ -569,7 +582,7 @@ def plot_replicas_comparison(posts, rps, out):
 
     axes[-1].set_xlabel('Time (min)')
     fig.suptitle(f'Replica Distribution — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_06_replicas.png')
+    _save(fig, out, '4way_06_replicas.png')
 
 
 def plot_cpu_comparison(posts, rps, out):
@@ -610,7 +623,7 @@ def plot_cpu_comparison(posts, rps, out):
 
     axes[-1].set_xlabel('Time (min)')
     fig.suptitle(f'CPU Utilization — {rps} rps', fontsize=14, y=1.01)
-    _save(fig, out, '3way_07_cpu.png')
+    _save(fig, out, '4way_07_cpu.png')
 
 
 def plot_phase_error_heatmap(k6s, rps, out):
@@ -673,21 +686,24 @@ def plot_phase_error_heatmap(k6s, rps, out):
     fig.colorbar(im2, ax=ax, shrink=0.7)
 
     fig.suptitle(f'Error Heatmaps — {rps} rps', fontsize=14, y=1.05)
-    _save(fig, out, '3way_08_error_heatmap.png')
+    _save(fig, out, '4way_08_error_heatmap.png')
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="3-Way Comparison: DMOS ON vs HPA vs DMOS OFF")
+    parser = argparse.ArgumentParser(
+        description="4-Way Comparison: DMOS (L1+L2) vs DMOS (L2) vs HPA vs DMOS OFF")
     parser.add_argument("--k6-on", required=True)
     parser.add_argument("--k6-off", required=True)
-    parser.add_argument("--k6-hpa", required=True)
-    parser.add_argument("--post-on", help="Prometheus POST JSONL for DMOS ON")
+    parser.add_argument("--k6-hpa", help="k6 CSV for HPA (optional)")
+    parser.add_argument("--k6-scaling", help="k6 CSV for DMOS (L2) Only (optional)")
+    parser.add_argument("--post-on", help="Prometheus POST JSONL for DMOS (L1+L2)")
     parser.add_argument("--post-off", help="Prometheus POST JSONL for DMOS OFF")
     parser.add_argument("--post-hpa", help="Prometheus POST JSONL for HPA")
+    parser.add_argument("--post-scaling", help="Prometheus POST JSONL for DMOS (L2) Only")
     parser.add_argument("--rps", type=int, default=150)
-    parser.add_argument("--output-dir", default="plots_3way")
+    parser.add_argument("--output-dir", default="plots_4way")
     args = parser.parse_args()
 
     out = Path(args.output_dir)
@@ -695,16 +711,21 @@ def main():
 
     print("\n=== Loading k6 CSV files ===")
     k6s = {
-        "DMOS ON": load_k6(args.k6_on, "DMOS ON"),
-        "HPA": load_k6(args.k6_hpa, "HPA"),
+        "DMOS (L1 + L2)": load_k6(args.k6_on, "DMOS (L1 + L2)"),
         "DMOS OFF": load_k6(args.k6_off, "DMOS OFF"),
     }
+    if args.k6_hpa:
+        k6s["HPA"] = load_k6(args.k6_hpa, "HPA")
+    if args.k6_scaling:
+        k6s["DMOS (L2)"] = load_k6(args.k6_scaling, "DMOS (L2)")
 
     posts = {}
-    if args.post_on or args.post_off or args.post_hpa:
+    if args.post_on or args.post_off or args.post_hpa or args.post_scaling:
         print("\n=== Loading POST JSONL files ===")
         if args.post_on:
-            posts["DMOS ON"] = load_post_jsonl(args.post_on, "DMOS ON")
+            posts["DMOS (L1 + L2)"] = load_post_jsonl(args.post_on, "DMOS (L1 + L2)")
+        if args.post_scaling:
+            posts["DMOS (L2)"] = load_post_jsonl(args.post_scaling, "DMOS (L2)")
         if args.post_hpa:
             posts["HPA"] = load_post_jsonl(args.post_hpa, "HPA")
         if args.post_off:
@@ -724,7 +745,8 @@ def main():
 
     plot_phase_error_heatmap(k6s, args.rps, out)
 
-    print(f"\nDone! 9 plot pages saved to {out}/")
+    n_scenarios = len(k6s)
+    print(f"\nDone! 9 plot pages ({n_scenarios} scenarios) saved to {out}/")
 
 
 if __name__ == '__main__':

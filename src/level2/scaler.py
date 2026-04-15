@@ -94,55 +94,41 @@ class ReplicaScaler:
         actual_traffic: Optional[float] = None,
         timestamp: Optional[datetime] = None
     ) -> ScalingDecision:
-        """
-        Compute target replica count
         
-        Args:
-            current_replicas: Current number of replicas
-            current_traffic: Current observed traffic (req/s)
-            actual_traffic: Actual traffic for PD error (if None, uses current)
-            timestamp: Current timestamp
-        
-        Returns:
-            ScalingDecision with target replicas and metadata
-        """
         if timestamp is None:
             timestamp = datetime.now()
         
         if actual_traffic is None:
             actual_traffic = current_traffic
         
-        # Step 1: Predict future traffic
+        # Step 1: Predice il traffico futuro usando il predictor basato su trend e derivata
         predicted_traffic, pred_metadata = self.predictor.predict(
             current_rate=current_traffic,
             timestamp=timestamp
         )
         
-        # Step 2: Calculate base replicas
+        # Step 2: Calcola il numero di repliche base necessario per gestire il traffico predetto
         base_replicas_raw = predicted_traffic / self.capacity_per_replica
         
-        # Step 3: Apply safety margin
+        # Step 3: Applica il margine di sicurezza (es. 10%) per coprire incertezze e picchi improvvisi
         base_replicas_safe = base_replicas_raw * (1 + self.safety_margin)
         base_replicas = int(max(1, round(base_replicas_safe)))
         
-        # Step 4: PD adjustment
+        # Step 4: Correzione PD
         pd_adjustment = self.controller.compute(
             predicted_traffic=predicted_traffic,
             actual_traffic=actual_traffic,
             timestamp=timestamp
         )
         
-        # Step 5: Combine
+        # Step 5: Combina
         target_replicas_raw = base_replicas + pd_adjustment
         
-        # Step 6: Apply constraints
-        # Min/max bounds
+        # Step 6: Applica Constraints (min, max, rate limit)
         target_replicas = max(self.min_replicas, 
                              min(self.max_replicas, target_replicas_raw))
         
-        # Rate limiting: max_delta_per_cycle per scale-UP, max_delta_down per scale-DOWN
-        # [FIX I] scale-down usa un limite separato (più conservativo) per evitare
-        # di terminare troppi pod con richieste in volo durante il decline del traffico.
+
         delta = target_replicas - current_replicas
         if delta > self.max_delta_per_cycle:
             target_replicas = current_replicas + self.max_delta_per_cycle

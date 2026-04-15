@@ -155,6 +155,30 @@ class WinnerDetermination:
                             f"  +1 LRM remainder (frac={frac:.3f}) → {bid.cluster_name}"
                         )
 
+                # ── Geo-boost: garantisci che lo score ordering si rifletta ──
+                # Se il cluster con score più alto ha le stesse repliche del
+                # cluster con score più basso, trasferisci 1 replica dal peggiore
+                # al migliore. Questo risolve il problema della quantizzazione
+                # Hamilton con score quasi identici (es. 0.12/0.12/0.13 → 3/3/3).
+                if len(active) >= 2:
+                    best = active[0]   # già ordinati per score desc
+                    worst = active[-1]
+                    best_r = assigned[best.cluster_name]
+                    worst_r = assigned[worst.cluster_name]
+                    # Boost solo se: (1) stesse repliche, (2) score effettivamente diversi,
+                    # (3) il peggiore mantiene almeno 1 replica dopo il trasferimento
+                    if (best_r <= worst_r
+                            and best.score > worst.score + 1e-9
+                            and worst_r >= 2):
+                        assigned[best.cluster_name] += 1
+                        assigned[worst.cluster_name] -= 1
+                        logger.info(
+                            f"  Geo-boost: +1 {best.cluster_name} "
+                            f"(score={best.score:.3f}), "
+                            f"-1 {worst.cluster_name} "
+                            f"(score={worst.score:.3f})"
+                        )
+
                 break  # allocazione completata
 
         # ── Costruisci risultato ──────────────────────────────────────────────
