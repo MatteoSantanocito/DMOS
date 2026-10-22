@@ -1,0 +1,64 @@
+# Global Service — Frontend (Cilium ClusterMesh)
+#
+# Data plane of the IEEE NCA 2026 paper (§III-A, §V-B): the frontend is a
+# Cilium ClusterMesh global service with affinity "none". The eBPF load
+# balancer of every cluster balances each connection across the union of the
+# READY frontend endpoints of all clusters, uniformly per endpoint: the share
+# of traffic a cluster serves follows its share of ready replicas, so the
+# replica placement decided by DMOS becomes the traffic distribution.
+#
+# Annotations (Cilium docs, network/clustermesh/global-services and /affinity):
+#   service.cilium.io/global: "true"
+#       the Service is global: same name and namespace on every cluster;
+#       backends of all clusters are merged.
+#   service.cilium.io/shared: "true"
+#       this cluster's endpoints are offered to the other clusters (the
+#       default for a global service; written explicitly). "false" would keep
+#       local endpoints private while still using remote ones.
+#   service.cilium.io/affinity: "none"
+#       no locality preference (the default; written explicitly). "local"
+#       would prefer local healthy endpoints and use remote ones only when no
+#       local endpoint is available; "remote" the opposite.
+#
+# The legacy names io.cilium/global-service and io.cilium/shared-service are
+# no longer used here.
+#
+# Notes:
+#   - Kubernetes EndpointSlice synchronization (service.cilium.io/global-sync-
+#     endpoint-slices, Helm clustermesh.enableEndpointSliceSynchronization) is a
+#     separate feature for DNS / external controllers; the docs state it is not
+#     required by other Cilium features.
+#   - Demand measurement stays correct with the shared pool: DMOS counts the
+#     requests on the client side of the Ingress of the cluster they enter
+#     (src/metrics/prometheus_client.py, get_ingress_rate).
+#   - The frontend L7 policy (cnp-frontend-l7.yaml) admits the remote-node
+#     entity, needed for requests served across clusters.
+#   - Every run records the annotations actually present on each cluster
+#     (env_state_pre.json); the harness expects affinity "none" on the
+#     frontend by default (DMOS_EXPECT_FRONTEND_AFFINITY).
+#
+# Verify on a cluster (remote backends must be listed for the frontend):
+#   kubectl -n kube-system exec ds/cilium -- cilium-dbg service list | grep -A8 ":80 "
+#
+# Apply on every cluster (also done by scripts/setup-dmos-on-clusters.ps1):
+#   for n in 01 02 03 04 05 06; do
+#     kubectl --kubeconfig "$HOME/dmos-iac/kubeconfig-ms-cluster-$n" apply -f deployments/global-service-frontend.yaml
+#   done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: online-boutique
+  annotations:
+    service.cilium.io/global: "true"
+    service.cilium.io/shared: "true"
+    service.cilium.io/affinity: "none"
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP

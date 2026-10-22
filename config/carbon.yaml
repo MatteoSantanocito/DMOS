@@ -1,0 +1,123 @@
+# ============================================================================
+# DMOS Carbon Intensity Configuration
+# ============================================================================
+#
+# ACTIVE: provider="trace" — replays the hourly Electricity Maps 2025 traces
+# committed in data/carbon_traces/ (no API key needed at runtime).
+#
+# Providers:
+#   - "trace"          : replay of <data_dir>/<zone>_*hourly*.csv, where
+#                        <zone> = trace.zone_aliases[region_code] or region_code
+#                        (trace_time = window_start + speedup * elapsed).
+#                        A region with NO matching file falls back to
+#                        "realistic"; every run records the source used per
+#                        cluster (dmos_config.json -> carbon.sources).
+#                        Fetch traces: scripts/fetch_carbon_traces.py
+#   - "realistic"      : built-in hourly profiles (DE, FR, PL, US-VA, SG, IT-NO,
+#                        NO) x seasonal factor of the CURRENT month x +-5 %
+#                        jitter from the current minute: depends on the
+#                        wall-clock time of the run.
+#   - "electricitymaps": live API (placeholder key -> "realistic").
+#   - "mock"           : static per-region values from `mock.values`; also the
+#                        last fallback of "realistic" for unknown regions.
+#   - "watttime"       : not implemented (-> "realistic").
+#
+# If no provider returns a value the scheduler uses 300 gCO2/kWh.
+# `fallback.use_baseline` and `cache.enabled` are not read.
+# Details: docs/dmos-architecture.md section 5.3,
+#          docs/configuration-reference.md section 5.
+# ============================================================================
+
+carbon_intensity:
+  # ── Active provider ──────────────────────────────────────────────────────
+  provider: "trace"   # tracce orarie reali Electricity Maps 2025 (data/carbon_traces/)
+
+  # ── Realistic profiles (default — recommended) ───────────────────────────
+  # Available zones (must match `region_code` in clusters.yaml):
+  #   DE, FR, PL, US-VA, SG, IT-NO, NO
+  # See src/metrics/carbon_client.py:REALISTIC_PROFILES for the full hourly
+  # tables and seasonal factors.
+  realistic:
+    noise_enabled: true      # Add ±noise_percent random jitter for realism
+    noise_percent: 5
+
+  # ── Trace replay (REAL historical data — recommended for the paper) ──────
+  # Replays per-zone HOURLY carbon-intensity traces downloaded (free) from the
+  # Electricity Maps data portal (https://portal.electricitymaps.com/datasets,
+  # ODbL license). Gives values that are BOTH real and reproducible.
+  #
+  # Setup:
+  #   1) download <ZONE>_<year>_hourly.csv for the Electricity Maps zone of each
+  #      cluster into data_dir below:
+  #        python scripts/fetch_carbon_traces.py --zones <ZONE> ... --year 2025
+  #   2) when the zone differs from the cluster's region_code, map it in
+  #      zone_aliases below;
+  #   3) set provider: "trace" above.
+  # The loader auto-detects the 'Carbon Intensity ... (Life cycle)' column.
+  #
+  # window_start : fixed instant inside the trace where replay begins.
+  # speedup      : time compression. 1.0 = real time (CI ~constant over a 15-min
+  #                run → only the SPATIAL spread across zones drives placement).
+  #                >1 makes Φ_carbon dynamic within a run: e.g. 96 maps a 15-min
+  #                (900 s) run onto ~24 h of trace (900·96 ≈ 86 400 s), sweeping a
+  #                full diurnal cycle. Replay wraps around at the trace end.
+  trace:
+    data_dir: "data/carbon_traces"        # relative to repo root
+    # window_start MUST fall inside the downloaded traces, and ALL zones must
+    # cover the SAME year (cross-zone CI is compared at the same trace instant).
+    window_start: "2025-06-02T00:00:00"   # a representative summer day in 2025
+    speedup: 96.0                         # ~1 diurnal cycle per 15-min run
+    # region_code (config/local.yaml) -> Electricity Maps zone of the trace file.
+    # Regions not listed use their own code (DE, FR, PL, SG, ...).
+    zone_aliases:
+      "NO": "NO-NO1"        # Oslo bidding zone (file NO-NO1_2025_hourly.csv); key
+                            # quoted: a bare NO is a YAML boolean
+      US-VA: "US-MIDA-PJM"  # Virginia = PJM Interconnection (file to download)
+
+  # ── ElectricityMaps API (live data — optional, paid for >1 zone) ─────────
+  # Free tier: https://api-portal.electricitymaps.com  (1 zone only)
+  # If api_key is left at the placeholder, DMOS auto-falls-back to "realistic".
+  electricitymaps:
+    api_url: "https://api.electricitymap.org/v3/carbon-intensity/latest"
+    api_key: "YOUR_API_KEY_HERE"
+
+  # ── WattTime API (alternative — not yet implemented) ─────────────────────
+  watttime:
+    api_url: "https://api2.watttime.org/v2/index"
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"
+
+  # ── Mock values (used only when provider="mock") ─────────────────────────
+  # Add one entry per region you actually deploy to. Hourly variation is
+  # optional — set enabled=false for fully static scoring.
+  mock:
+    enabled: true
+    values:
+      DE: 350
+      FR: 80
+      PL: 650
+      US-VA: 280
+      SG: 420
+      IT-NO: 300
+      NO: 25
+    hourly_variation:
+      enabled: true
+      pattern:
+        0: 1.10
+        6: 1.00
+        12: 0.80
+        18: 0.90
+        22: 1.05
+
+  # ── Cache settings ───────────────────────────────────────────────────────
+  cache:
+    enabled: true
+    ttl_seconds: 300         # Refresh every 5 minutes
+
+  # ── Fallback (defensive) ─────────────────────────────────────────────────
+  # NOTE: at the time of this release the scheduler does not actually consume
+  # `fallback.use_baseline` — when get_carbon_intensity() returns None the
+  # scheduler hardcodes 300 gCO2/kWh. Setting this flag is harmless but
+  # documents the intent.
+  fallback:
+    use_baseline: true

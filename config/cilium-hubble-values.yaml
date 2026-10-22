@@ -1,0 +1,32 @@
+# Fix per bug --reuse-values su Cilium 1.16 (nil pointer in vari template)
+certgen:
+  cronJob:
+    successfulJobsHistoryLimit: 0
+
+standaloneDnsProxy:
+  enabled: false
+
+hubble:
+  metrics:
+    # Abilita server metriche Hubble sulla porta 9965 di ogni cilium-agent pod
+    enableOpenMetrics: true
+
+    # Metriche da esporre — httpV2 è il formato moderno (Cilium >= 1.12)
+    # labelsContext aggiunge le label source/destination alle metriche HTTP
+    # così DMOS può filtrare per namespace e workload
+    enabled:
+      - "httpV2:exemplars=true;labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction,destination_port"
+      - "drop"
+      - "tcp"
+      - "flow"
+      - "icmp"
+      - "dns"
+
+    # Crea automaticamente un ServiceMonitor per il Prometheus Operator
+    # (kube-prometheus-stack lo legge grazie al label release=prometheus)
+    serviceMonitor:
+      enabled: true
+      # Label che kube-prometheus-stack usa per trovare i ServiceMonitor
+      labels:
+        release: prometheus
+      interval: "15s"

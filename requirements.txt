@@ -1,0 +1,27 @@
+# Core
+kubernetes>=28.0.0
+pyyaml>=6.0
+requests>=2.31.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Analysis (figures, statistics: experiments/paper_*.py)
+matplotlib>=3.8.0
+scipy>=1.11.0
+# optional: pyarrow (faster timeline cache in paper_plot_trajectories.py)
+
+# Monitoring
+prometheus-client>=0.19.0
+
+# Web
+flask>=3.0.0
+
+# Load testing
+locust>=2.20.0
+
+# Logging
+loguru>=0.7.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0

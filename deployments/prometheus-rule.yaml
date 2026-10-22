@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dmos-autoscaling-rules
+  # Namespace di kube-prometheus-stack:
+  #   - 'observability' nel setup nuovo (proxmox-k3s)
+  #   - 'monitoring' nel testbed legacy della tesi
+  namespace: observability
+  labels:
+    # Label scoperta dal Prometheus Operator. Deve combaciare col `release`
+    # name del helm install di kube-prometheus-stack.
+    # Setup nuovo (proxmox-k3s): release: prometheus-stack
+    # Setup legacy: release: prometheus
+    release: prometheus-stack
+    app: kube-prometheus-stack
+spec:
+  groups:
+  - name: dmos_autoscaling
+    interval: 15s
+    rules:
+    # Usa Hubble httpV2 (NON Istio — questo testbed non usa Istio).
+    # Il rate è calcolato sul counter `hubble_http_requests_total` esposto
+    # dai pod cilium-agent (ServiceMonitor in `observability`).
+    - alert: HighTrafficFrontend
+      expr: |
+        sum(rate(hubble_http_requests_total{
+          destination_workload="frontend",
+          destination_namespace="online-boutique"
+        }[1m])) > 30
+      for: 30s
+      labels:
+        severity: warning
+        service: frontend
+        action: scale_up
+      annotations:
+        summary: "High traffic on frontend"
+        description: "Frontend receiving >30 req/s (Hubble L7)"

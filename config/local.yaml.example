@@ -1,0 +1,121 @@
+# =============================================================================
+# DMOS local.yaml — single source of truth for environment-specific data
+# =============================================================================
+#
+# The ONLY place where the operator describes their own deployment: clusters,
+# SSH credentials, netem topology, Alertmanager webhook. Everything else in
+# config/ ships with the repository (weights.yaml, services.yaml, carbon.yaml).
+#
+#   Assisted) bash scripts/bootstrap-assisted.sh   (prompts, detects CPU/RAM via SSH)
+#   Manual)   cp config/local.yaml.example config/local.yaml, replace every
+#             <PLACEHOLDER>, then: bash scripts/render-runtime-files.sh
+#
+# config/local.yaml is gitignored — do not commit it.
+# Every key: docs/configuration-reference.md section 2.
+#
+# This template describes the reference 6-cluster fleet (three hardware tiers,
+# emulated delays 0–200 ms). DMOS supports any N >= 2: add or remove entries.
+# The ORDER of the clusters is the order of DMOS_SPIKE_W1..N in k6.
+# =============================================================================
+
+# ── ssh: used by the operator-side tooling (render, netem, env capture, k6 VM)
+ssh:
+  user: ubuntu                              # user on every node (NOPASSWD sudo for netem)
+  key:  ~/.ssh/dmos_nodes                   # private key; also the default key for the k6 VM
+
+# ── clusters ─────────────────────────────────────────────────────────────────
+clusters:
+  - name: ms-cluster-01                     # id used everywhere (services.yaml per-cluster maps)
+    display_name: "EU-DE (cluster-01)"
+    region: DE                              # k6 baseline weights are keyed by region
+    location: Frankfurt                     # informational
+    ip: <CLUSTER01_WORKER_IP>               # node exposing the NodePorts (Prometheus,
+                                            # Ingress 30080), ping target, netem via SSH
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-01"   # its server = control plane
+    # prometheus_port: 32090                # default (kube-prometheus-stack NodePort)
+    resources:                              # totals DMOS assumes (Phi_cap, L0)
+      cpu_cores: 8                          # tier HIGH
+      memory_gb: 12
+    pricing:
+      cost_per_replica_hour: 0.12           # informational (not in the score)
+    carbon:
+      region_code: "DE"                     # trace file data/carbon_traces/DE_*hourly*.csv
+      baseline_gco2_kwh: 350                # static value used by the analysis' CO2 accounting
+    latency:
+      baseline_ms: 2.0                      # latency assumed when Hubble has no p95
+    netem:
+      delay_ms: 0                           # reference cluster: no added delay
+      jitter_ms: 0
+      interface: "eth0"                     # worker interface (Proxmox VMs: often ens18)
+
+  - name: ms-cluster-02
+    display_name: "EU-FR (cluster-02)"
+    region: FR
+    location: Paris
+    ip: <CLUSTER02_WORKER_IP>
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-02"
+    resources: {cpu_cores: 6, memory_gb: 8}           # tier MEDIUM
+    pricing: {cost_per_replica_hour: 0.15}
+    carbon: {region_code: "FR", baseline_gco2_kwh: 80}
+    latency: {baseline_ms: 2.0}
+    netem: {delay_ms: 30, jitter_ms: 5, interface: "eth0"}
+
+  - name: ms-cluster-03
+    display_name: "EU-PL (cluster-03)"
+    region: PL
+    location: Warsaw
+    ip: <CLUSTER03_WORKER_IP>
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-03"
+    resources: {cpu_cores: 4, memory_gb: 8}           # tier LOW
+    pricing: {cost_per_replica_hour: 0.08}
+    carbon: {region_code: "PL", baseline_gco2_kwh: 650}
+    latency: {baseline_ms: 2.0}
+    netem: {delay_ms: 50, jitter_ms: 10, interface: "eth0"}
+
+  - name: ms-cluster-04
+    display_name: "US-VA (cluster-04)"
+    region: US-VA
+    location: Ashburn
+    ip: <CLUSTER04_WORKER_IP>
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-04"
+    resources: {cpu_cores: 8, memory_gb: 12}          # tier HIGH
+    pricing: {cost_per_replica_hour: 0.10}
+    carbon: {region_code: "US-VA", baseline_gco2_kwh: 380}   # no trace file: built-in profile
+    latency: {baseline_ms: 2.0}
+    netem: {delay_ms: 100, jitter_ms: 15, interface: "eth0"}
+
+  - name: ms-cluster-05
+    display_name: "SG (cluster-05)"
+    region: SG
+    location: Singapore
+    ip: <CLUSTER05_WORKER_IP>
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-05"
+    resources: {cpu_cores: 4, memory_gb: 8}           # tier LOW
+    pricing: {cost_per_replica_hour: 0.11}
+    carbon: {region_code: "SG", baseline_gco2_kwh: 480}      # no trace file: built-in profile
+    latency: {baseline_ms: 2.0}
+    netem: {delay_ms: 200, jitter_ms: 25, interface: "eth0"}
+
+  - name: ms-cluster-06
+    display_name: "NO (cluster-06)"
+    region: "NO"                            # quoted: bare NO is a YAML boolean
+    location: Oslo
+    ip: <CLUSTER06_WORKER_IP>
+    kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-06"
+    resources: {cpu_cores: 6, memory_gb: 8}           # tier MEDIUM
+    pricing: {cost_per_replica_hour: 0.09}
+    carbon: {region_code: "NO", baseline_gco2_kwh: 25}       # the trace file is NO-NO1_...:
+                                                             # use "NO-NO1" to replay it
+    latency: {baseline_ms: 2.0}
+    netem: {delay_ms: 40, jitter_ms: 8, interface: "eth0"}
+
+# ── global: NOT read by DMOS (the cycle is 30 s, hard-coded) ─────────────────
+global:
+  scheduling_interval_seconds: 30
+  score_request_timeout_seconds: 5
+
+# ── alertmanager (optional) ──────────────────────────────────────────────────
+# When set, render-runtime-files.sh writes deployments/alertmanager-config.yaml
+# pointing Alertmanager to DMOS's webhook.
+alertmanager:
+  webhook_url: ""                           # e.g. http://<OPERATOR_IP>:8081/webhook/alert

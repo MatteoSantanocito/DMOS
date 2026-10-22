@@ -1,0 +1,135 @@
+# Global Services — Backend (Cilium ClusterMesh)
+#
+# SCOPO: Rendere i servizi backend visibili agli altri cluster della mesh per:
+#   1. Risoluzione DNS hostname cross-cluster
+#   2. Failover automatico (se 0 pod locali healthy, fallback su pod remoti)
+#
+# PREREQUISITI:
+#   - Cilium ClusterMesh attivo e connesso su tutti i cluster
+#   - global-service-frontend.yaml gia applicato
+#   - cnp-backends-l7.yaml aggiornato con fromEntities: remote-node
+#
+# ANNOTAZIONI:
+#
+#   1. io.cilium/global-service: "true"
+#      Rende il Service visibile e raggiungibile da tutti i cluster della mesh.
+#
+#   2. service.cilium.io/affinity: "local"
+#      Forza Cilium a preferire endpoint LOCALI. Failover automatico cross-cluster
+#      SOLO se TUTTI i pod locali sono unhealthy o unavailable (semantica documentata
+#      su docs.cilium.io/en/v1.19/network/clustermesh/affinity).
+#
+# DECISIONE ARCHITETTURALE (2026-05-18, valida fino a revisione futura):
+#   Adottiamo affinity=local come scelta coerente con il design DMOS.
+#
+#   PROBLEMA OSSERVATO con default 'none' (random LB cross-cluster):
+#     In setup 6-cluster con netem variabile (30/50/100/200/40 ms su 5 region),
+#     il random LB fa hit cluster lontani per 5/6 delle chiamate gRPC.
+#     Hit su US-VA (+100ms) o SG (+200ms) causa frequente gRPC dial timeout
+#     (cumulativo su 5-7 micro-call per ogni HTTP request del frontend).
+#     Risultato osservato: ~15-30% HTTP 500 cronici sotto carico (sezione 10.14
+#     della pipeline doc, fix definitivo confermato sperimentalmente).
+#
+#   PROBLEMA RISOLTO con 'local':
+#     - Sistema 30/30 stabile sotto carico medio
+#     - DMOS controlla scaling, Cilium fa routing locale → separation of concerns
+#     - Failover cross-cluster ancora disponibile (se 0 pod locali healthy)
+#
+#   COMPARABILITA' CON TESI ORIGINALE (3-cluster):
+#     La tesi a 3 cluster funzionava senza affinity perche':
+#       * 2/3 cross-cluster (vs 5/6 con N=6) -> meno superficie del bug
+#       * Solo 2 valori netem (150ms, 350ms) -> meno variabilita'
+#     Il setup 6-cluster, per essere stabile, richiede affinity=local. Questo
+#     non altera la sostanza del confronto DMOS-on vs DMOS-off: entrambi sono
+#     valutati con la stessa configurazione di rete.
+#
+# VERIFICA STATO LIVE:
+#   for n in 01 02 03 04 05 06; do
+#       kc="$HOME/dmos-iac/kubeconfig-ms-cluster-$n"
+#       kubectl --kubeconfig "$kc" -n online-boutique get svc cartservice \
+#           -o jsonpath='{.metadata.annotations}'
+#   done
+#   Deve mostrare:
+#     {"io.cilium/global-service":"true","service.cilium.io/affinity":"local"}
+#
+# APPLICAZIONE SU TUTTI I CLUSTER:
+#   for n in 01 02 03 04 05 06; do
+#       kubectl --kubeconfig ../dmos-iac/kubeconfig-ms-cluster-$n \
+#           apply -f deployments/global-service-backends.yaml
+#   done
+
+---
+# ── cartservice ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: cartservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+    service.cilium.io/affinity: "local"
+spec:
+  selector:
+    app: cartservice
+  ports:
+    - name: grpc
+      port: 7070
+      targetPort: 7070
+  type: ClusterIP
+
+---
+# ── productcatalogservice ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: productcatalogservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+    service.cilium.io/affinity: "local"
+spec:
+  selector:
+    app: productcatalogservice
+  ports:
+    - name: grpc
+      port: 3550
+      targetPort: 3550
+  type: ClusterIP
+
+---
+# ── checkoutservice ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkoutservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+    service.cilium.io/affinity: "local"
+spec:
+  selector:
+    app: checkoutservice
+  ports:
+    - name: grpc
+      port: 5050
+      targetPort: 5050
+  type: ClusterIP
+
+---
+# ── recommendationservice ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendationservice
+  namespace: online-boutique
+  annotations:
+    io.cilium/global-service: "true"
+    service.cilium.io/affinity: "local"
+spec:
+  selector:
+    app: recommendationservice
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

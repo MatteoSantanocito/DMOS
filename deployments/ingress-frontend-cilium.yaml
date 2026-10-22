@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress-cilium
+  namespace: online-boutique
+  # NOTA: NON impostare 'ingress.cilium.io/loadbalancer-mode: dedicated'.
+  # Il chart Cilium e' configurato in modalita' 'shared' da
+  # scripts/setup-dmos-on-clusters.ps1 (ingressController.loadbalancerMode=shared).
+  # La combo "helm=shared" + "annotation=dedicated" rompe il Listener Envoy:
+  # il CEC viene creato, ma cilium-envoy NON bind-a la porta 80 host,
+  # quindi il NodePort 30080 non ha backend nella BPF service map e il
+  # client riceve TCP timeout su SYN. Lascia che l'Ingress usi il default
+  # globale di Cilium (=shared) e tutto funziona.
+spec:
+  ingressClassName: cilium
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80
