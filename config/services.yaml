@@ -1,0 +1,339 @@
+# Configurazione servizi Online Boutique — MODELLO DMOS (capacity / fanout / scaling).
+#
+# TRACKING RISORSE DEL BANCO (memoria, liveness/readiness, preStop/grace):
+# i manifest di deploy NON sono nel repo (Online Boutique = upstream), quindi le
+# patch di hardening del banco vivono in script VERSIONATI e riproducibili:
+#   - experiments/apply_resource_hardening.sh  → memoria (redis-cart 1Gi,
+#     cartservice 512Mi, recommendation 1Gi) + liveness/readiness rilassate
+#     (timeout 5s, period 15s, failThr 6). FONTE DI VERITÀ delle patch risorse.
+#   - experiments/apply_pod_lifecycle.sh       → preStop 15s + grace 30s (drain
+#     connessioni: fix del transitorio scale-down a cooldown).
+# I `resources_per_replica` qui sotto sono il MODELLO DMOS, allineati al deploy
+# live; dove differiscono per storico, fa fede lo script di hardening.
+
+# ── Application model ──────────────────────────────────────────────────────
+# The application DMOS manages. Without this section DMOS assumes the entry
+# service `frontend`, co-scales every other service of `services` in file
+# order and counts the demand from any client (the values below, written out).
+# Reference: docs/configuration-reference.md section 4.
+application:
+  # Default namespace of the services below (a service's own `namespace` wins).
+  namespace: online-boutique
+  # Service sized on the demand entering each cluster (Level 1 + Level 2).
+  entry_service: frontend
+  # Services sized from the entry service, per cluster, in this order (they
+  # share the per-cycle backend churn budget). redis-cart is stateful: excluded.
+  co_scaled_services:
+    - cartservice
+    - productcatalogservice
+    - checkoutservice
+    - recommendationservice
+    - currencyservice
+    - adservice
+    - shippingservice
+  # How the demand entering cluster i is measured: requests to the entry
+  # service sent by clients running in cluster i (Hubble, client side).
+  demand:
+    # Clients that count as the ingress, e.g. [node-proxy]. Empty = any client
+    # of the cluster calling the entry service (what the NCA 2026 runs used).
+    source_workloads: []
+    # If the client-side count is 0, use a server-side count (attributes the
+    # request to the cluster that SERVES it: only correct without cross-cluster
+    # sharing).
+    server_side_fallback: true
+
+services:
+  frontend:
+    namespace: online-boutique
+    deployment_name: frontend
+
+    # Resource requests/limits
+    # AGGIORNATO 25/03/2026:
+    #   requests: mantenuti bassi (100m/64Mi) per permettere scheduling di 20 repliche
+    #             su nodi a 4 core (20×100m=2000m < 4000m allocatable)
+    #   limits:   aumentati (500m/256Mi) per dare burst CPU alle repliche sotto carico
+    #             e prevenire liveness probe timeout (/_healthz > 1s a 200m throttled)
+    resources_per_replica:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+
+    # Capacità per replica (req/s) — misurata con k6 capacity test.
+    #
+    # Test: experiments/k6_capacity_test.js, target ms-cluster-01, isolato con
+    # backend a 0 sugli altri cluster + service.cilium.io/affinity=local (gRPC
+    # intra-cluster, no tassa di rete). Risultato (2026-05-18):
+    #   knee-point = 75 rps/replica (a 75 rps target il p95 < 200ms, err 0%)
+    #   capacità raccomandata = 80% del knee = 60 rps/replica
+    #
+    # La capacità di 1 replica è UNIFORME su tutti i cluster: il pod frontend ha
+    # un CPU limit fisso, quindi la capacità per-replica non dipende dalla
+    # dimensione del worker. L'eterogeneità del fleet (vedi 3-tier in
+    # dmos-iac/ms-cluster.yaml) si esprime su `max_replicas_per_cluster` —
+    # quante repliche un cluster può ospitare — non su `capacity_req_per_sec`.
+    capacity_req_per_sec: 60
+    calls_per_request: 1.0    # frontend = servizio d'ingresso (parent)
+
+    # capacity_per_cluster: NON impostato → DMOS usa il global 60 rps/replica
+    # per tutti i cluster (corretto: la capacità per-replica è uniforme).
+    # Se in futuro si misurasse una capacità per-replica diversa per cluster
+    # (es. CPU limit del pod variato per tier), aggiungere qui:
+    #   capacity_per_cluster:
+    #     ms-cluster-01: <val>
+
+    # max_replicas_per_cluster — ETEROGENEITÀ HW + COLOCATION (rev. 2026-06-10)
+    # Il fleet a 6 cluster ha 3 tier HW (vedi dmos-iac/ms-cluster.yaml):
+    #   HIGH   (8 vCPU worker): ms-cluster-01, ms-cluster-04
+    #   MEDIUM (6 vCPU worker): ms-cluster-02, ms-cluster-06
+    #   LOW    (4 vCPU worker): ms-cluster-03, ms-cluster-05
+    #
+    # CAP COLOCATION-AWARE (rev. 2026-06-10): il cap NON è il numero di pod
+    # frontend che il nodo regge da solo (8 su HIGH), ma quanti ne regge mentre
+    # sullo STESSO nodo co-scalano i backend hot-path (reco, productcatalog,
+    # cart, checkout) via co-scaling dipendente. Evidenza sperimentale a `con`:
+    #   • frontend=6 → 16 pod hot-path totali sul nodo c01 → SANO (err 5.8%)
+    #   • frontend=8 → 20 pod hot-path → nodo sovra-sottoscritto, CPU/pod crolla
+    #     (reco −28%, productcatalog −38%) → throttling → err 20.3%, p95 6.9s
+    # Quindi HIGH passa 8→6: lascia headroom al co-scaling dei backend.
+    # (Il demand-floor sceglieva già 6 dinamicamente = ⌈350rps / 60⌉; il cap
+    #  serve a impedire che gate/feedback L2 spingano oltre il tetto fisico.)
+    #
+    # Capacità di picco per cluster = capacity_req_per_sec(60) × max_replicas:
+    #   HIGH 360 rps | MEDIUM 300 rps | LOW 180 rps
+    # NB: MEDIUM/LOW non sono mai hotspot nei run attuali (spike sempre su c01),
+    # quindi i loro cap non sono ancora validati sotto carico concentrato.
+    # DMOS legge questi valori via ServiceConfig.get_max_replicas_for_cluster().
+    max_replicas_per_cluster:
+      ms-cluster-01: 6     # HIGH  — EU-DE,    0ms  (8→6: colocation, vedi sopra)
+      ms-cluster-02: 5     # MEDIUM— EU-FR,   30ms
+      ms-cluster-03: 3     # LOW   — EU-PL,   50ms
+      ms-cluster-04: 6     # HIGH  — US-VA,  100ms  (8→6: colocation; mai hotspot)
+      ms-cluster-05: 3     # LOW   — APAC-SG,200ms
+      ms-cluster-06: 5     # MEDIUM— EU-NO,   40ms
+
+    # SLA requirements
+    # Baseline latenza: p95=60-70ms (idle), p95=130-200ms (under load)
+    sla:
+      latency_p95_ms: 200  # era 100, ma baseline idle è già 60-70ms
+      latency_p99_ms: 500
+      availability_percent: 99.9
+
+    # Power consumption (stimato)
+    power_watts: 50
+
+    # Autoscaling constraints
+    # min_replicas: 1 per tutti i cluster.
+    # max_replicas: 8 = fallback globale (= tier HIGH). Con
+    # max_replicas_per_cluster impostato sopra per TUTTI i 6 cluster, questo
+    # valore globale non viene mai usato in pratica — DMOS legge sempre il
+    # per-cluster. Lo teniamo allineato al tier massimo per sicurezza.
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 8
+      target_cpu_percent: 70
+
+  cartservice:
+    namespace: online-boutique
+    deployment_name: cartservice
+    # memory limit 128Mi→512Mi per OOMKilled sotto con (vedi apply_resource_hardening.sh).
+    resources_per_replica:
+      requests:
+        cpu: "200m"
+        memory: "128Mi"
+      limits:
+        cpu: "300m"
+        memory: "512Mi"
+    # Capacità per replica (req/s) — MISURATA con k6 gRPC in-cluster (2026-05-21).
+    # Test: experiments/run_capacity_grpc.sh --backend cartservice
+    #   metodo CartService/GetCart, 1 replica isolata, Job k6 dentro il cluster.
+    #   Curva NON monotòna: cartservice (.NET, limite 300m CPU) sopra ~500 rps
+    #   entra in CFS throttling intermittente -> coda p99 non-deterministica,
+    #   knee in una fascia rumorosa 500-700 rps. Valore CONSERVATIVO: 400 rps è
+    #   risultato pulito in 3 run su 3. Analisi: experiments/relazione-capacity-grpc/.
+    capacity_req_per_sec: 400
+    calls_per_request: 0.65   # fanout misurato (Hubble): cart_rps/frontend_rps a con
+    sla:
+      latency_p95_ms: 50
+      latency_p99_ms: 100
+      availability_percent: 99.95
+    power_watts: 60
+    autoscaling:
+      min_replicas: 1
+      # max_replicas=2: con 300m limit × 2 = 600m.
+      max_replicas: 2
+      target_cpu_percent: 70
+
+  productcatalogservice:
+    namespace: online-boutique
+    deployment_name: productcatalogservice
+    resources_per_replica:
+      requests:
+        cpu: "150m"
+        memory: "96Mi"
+      limits:
+        cpu: "250m"
+        memory: "192Mi"
+    # Capacità per replica (req/s) — MISURATA con k6 gRPC in-cluster (2026-05-21).
+    # Test: experiments/run_capacity_grpc.sh --backend productcatalogservice
+    #   metodo ProductCatalogService/ListProducts, 1 replica isolata.
+    #   Curva pulita e graduale: p95 1ms@1000rps -> 18ms@1500 -> 50ms@2000.
+    #   knee = 1500 rps, capacità = 80% = 1200 (conservativo: knee reale ~2000).
+    capacity_req_per_sec: 1200
+    calls_per_request: 2.25   # fanout alto (catalogo per ogni prodotto) ma servizio Go veloce
+    sla:
+      latency_p95_ms: 75
+      latency_p99_ms: 150
+      availability_percent: 99.9
+    power_watts: 55
+    autoscaling:
+      min_replicas: 1
+      # max_replicas=3: con 250m limit × 3 = 750m.
+      max_replicas: 3
+      target_cpu_percent: 70
+
+  checkoutservice:
+    namespace: online-boutique
+    deployment_name: checkoutservice
+    resources_per_replica:
+      requests:
+        cpu: "300m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    # Capacità per replica (req/s) — MISURATA con k6 gRPC in-cluster (2026-05-21).
+    # Test: experiments/run_capacity_grpc.sh --backend checkoutservice
+    #   metodo CheckoutService/PlaceOrder, 1 replica isolata, le 6 dipendenze
+    #   del fan-out potenziate a 4 repliche. knee = 200 rps (riprodotto identico
+    #   in 2 run), capacità = 80% = 160.
+    capacity_req_per_sec: 160
+    calls_per_request: 0.05   # checkout solo sul 5% del traffico (POST /cart/checkout)
+    sla:
+      latency_p95_ms: 200
+      latency_p99_ms: 500
+      availability_percent: 99.95
+    power_watts: 70
+    autoscaling:
+      min_replicas: 1
+      # max_replicas=2: checkout è pesante (500m limit) ma traffico basso (5%).
+      max_replicas: 2
+      target_cpu_percent: 70
+
+  recommendationservice:
+    namespace: online-boutique
+    deployment_name: recommendationservice
+    # Risorse hardened (vedi experiments/apply_resource_hardening.sh = fonte di
+    # verità). mem 450Mi→1Gi (OOM intermittente) + cpu 200m→500m (a 200m il GIL
+    # Python va in throttle sotto picco → /healthz timeout → liveness kill →
+    # restart → picco bimodale). Solo l1l2 scala reco sul cluster caldo → solo
+    # l1l2 ne soffriva → il fix NON aiuta off/l2, non appiattisce le differenze.
+    resources_per_replica:
+      requests:
+        cpu: "200m"
+        memory: "220Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    # Capacità per replica (req/s).
+    # Capacity-test ISOLATO (k6 gRPC in-cluster, 2026-05-21): knee 140 rps, p95
+    # 3ms. MA sotto il flash crowd REALE (concorrenza bursty, frontend sincrono)
+    # recommendation degrada molto prima — diagnostica `con` (2026-06-07): a
+    # ~65 rps/pod p95 = 9000ms con CPU solo 0.3/0.4 core → NON cpu-bound, è coda
+    # GIL/worker-pool. Il test isolato sovrastima i servizi Python concurrency-
+    # bound (vale come limite teorico, non operativo). Capacità EFFETTIVA sotto
+    # carico reale ≈ 3× più bassa → 40 rps/pod.
+    capacity_req_per_sec: 40
+    calls_per_request: 0.40   # fanout reco/frontend MISURATO a con (130/324, diag 2026-06-07)
+    sla:
+      latency_p95_ms: 100
+      latency_p99_ms: 200
+      availability_percent: 99.5
+    power_watts: 65
+    # max_replicas_per_cluster — reco è concurrency-bound → si scala in repliche
+    # (il nodo ha headroom: a picco cluster-01 usava ~1.7/8 core). 200m limit ×
+    # repliche resta ben sotto la capacità del worker (vedi tier in frontend).
+    max_replicas_per_cluster:
+      ms-cluster-01: 6     # HIGH
+      ms-cluster-02: 4     # MEDIUM
+      ms-cluster-03: 2     # LOW
+      ms-cluster-04: 6     # HIGH
+      ms-cluster-05: 2     # LOW
+      ms-cluster-06: 4     # MEDIUM
+    autoscaling:
+      min_replicas: 1
+      max_replicas: 6
+      target_cpu_percent: 70
+
+  # ── Servizi stateless sul path caldo, ora GESTITI (rev. 2026-06-05) ────────
+  # Prima esclusi → restavano a 1 replica → currency (alto fanout, Node.js)
+  # diventava il collo a `con`. Co-scalati fanout-aware. NB: redis-cart resta
+  # ESCLUSO (stateful). Capacità = stime conservative (da raffinare con capacity
+  # test gRPC come gli altri); fanout = misurato da Hubble a con.
+  currencyservice:
+    namespace: online-boutique
+    deployment_name: currencyservice
+    resources_per_replica:
+      requests: { cpu: "100m", memory: "64Mi" }
+      limits:   { cpu: "200m", memory: "128Mi" }
+    capacity_req_per_sec: 250   # STIMA (Node.js); 1 replica saturava a ~1100rps/777ms a con
+    calls_per_request: 3.4      # fanout misurato: 1 conversione per prezzo (collo a con)
+    sla: { latency_p95_ms: 50, latency_p99_ms: 100, availability_percent: 99.9 }
+    power_watts: 45
+    autoscaling: { min_replicas: 1, max_replicas: 6, target_cpu_percent: 70 }
+    max_replicas_per_cluster:
+      ms-cluster-01: 6
+      ms-cluster-02: 4
+      ms-cluster-03: 3
+      ms-cluster-04: 6
+      ms-cluster-05: 3
+      ms-cluster-06: 4
+
+  adservice:
+    namespace: online-boutique
+    deployment_name: adservice
+    resources_per_replica:
+      requests: { cpu: "200m", memory: "180Mi" }
+      limits:   { cpu: "300m", memory: "300Mi" }
+    capacity_req_per_sec: 400   # STIMA (Java); fanout basso, latenza bassa (~10ms a con)
+    calls_per_request: 0.43
+    sla: { latency_p95_ms: 50, latency_p99_ms: 100, availability_percent: 99.9 }
+    power_watts: 55
+    autoscaling: { min_replicas: 1, max_replicas: 3, target_cpu_percent: 70 }
+
+  shippingservice:
+    namespace: online-boutique
+    deployment_name: shippingservice
+    resources_per_replica:
+      requests: { cpu: "100m", memory: "64Mi" }
+      limits:   { cpu: "200m", memory: "128Mi" }
+    capacity_req_per_sec: 500   # STIMA (Go); fanout basso
+    calls_per_request: 0.14
+    sla: { latency_p95_ms: 50, latency_p99_ms: 100, availability_percent: 99.9 }
+    power_watts: 45
+    autoscaling: { min_replicas: 1, max_replicas: 2, target_cpu_percent: 70 }
+
+# Global autoscaling parameters
+global_autoscaling:
+  # Safety margin sopra predizione
+  safety_margin: 0.10  # 10%
+
+  # Rate limiting
+  max_delta_per_cycle: 6  # [FIX G] was 4: 2 cicli per raggiungere max_replicas invece di 3 (-30s ramp-up)
+
+  # PD Controller parameters
+  pd_controller:
+    kp: 5.0
+    kd: 300.0
+
+    # Anti-windup
+    output_min: -5
+    output_max: 5
+
+  # Trend-based prediction
+  prediction:
+    window_seconds: 300       # 5 min per calcolare derivata
+    horizon_seconds: 600      # Predici 10 min avanti
+    smoothing_alpha: 0.3      # EMA smoothing (opzionale)

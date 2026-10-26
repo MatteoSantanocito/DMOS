@@ -1,0 +1,66 @@
+{
+  "dashboard": {
+    "title": "DMOS Multi-Cluster Autoscaling",
+    "panels": [
+      {
+        "title": "Replicas per Cluster",
+        "targets": [
+          {
+            "expr": "dmos_current_replicas{service=\"frontend\"}"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "dmos_actual_traffic{service=\"frontend\"}"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Predicted vs Actual Traffic",
+        "targets": [
+          {
+            "expr": "dmos_predicted_traffic",
+            "legendFormat": "Predicted {{cluster}}"
+          },
+          {
+            "expr": "dmos_actual_traffic",
+            "legendFormat": "Actual"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Cluster Scores",
+        "targets": [
+          {
+            "expr": "dmos_cluster_score{service=\"frontend\"}"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Scaling Events",
+        "targets": [
+          {
+            "expr": "rate(dmos_scaling_events_total[5m])"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Latency p95",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{destination_service_name=\"frontend\"}[5m])) by (le))"
+          }
+        ],
+        "type": "graph"
+      }
+    ]
+  }
+}

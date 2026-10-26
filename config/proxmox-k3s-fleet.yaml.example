@@ -1,0 +1,424 @@
+# =============================================================================
+# proxmox-k3s fleet of the DMOS reference testbed (IEEE NCA 2026)
+# =============================================================================
+# Input of unict-cclab/proxmox-k3s (v0.3.0, https://github.com/unict-cclab/proxmox-k3s):
+#
+#   cp config/proxmox-k3s-fleet.yaml.example ms-cluster.yaml   # outside the repo
+#   # replace every <...> placeholder, then:
+#   proxmox-k3s cluster create -c ms-cluster.yaml   # VMs, K3s, Cilium, kube-prometheus-stack
+#   proxmox-k3s cluster mesh   -c ms-cluster.yaml   # Cilium ClusterMesh between the 6 clusters
+#
+# This is the file used for the published runs, with every address,
+# credential and Proxmox host name replaced by a placeholder. Never commit
+# the filled-in copy: it holds the Proxmox API token.
+#
+# Six clusters, one control plane (2 vCPU / 4 GB) and one worker each.
+# Workers in three hardware tiers (the label dmos.tier records it):
+#
+#   tier    worker            frontend max replicas (config/services.yaml)
+#   HIGH    8 vCPU / 12 GB    8
+#   MEDIUM  6 vCPU /  8 GB    5
+#   LOW     4 vCPU /  8 GB    3
+#
+#   cluster        region   netem one-way   tier     Proxmox host
+#   ms-cluster-01  EU-DE      0 ms          HIGH     <PVE_NODE_A>
+#   ms-cluster-02  EU-FR     30 ms          MEDIUM   <PVE_NODE_A>
+#   ms-cluster-03  EU-PL     50 ms          LOW      <PVE_NODE_B>
+#   ms-cluster-04  US-VA    100 ms          HIGH     <PVE_NODE_B>
+#   ms-cluster-05  APAC-SG  200 ms          LOW      <PVE_NODE_C>
+#   ms-cluster-06  EU-NO     40 ms          MEDIUM   <PVE_NODE_C>
+#
+# Three Proxmox hosts with 32 GB of RAM each (28 / 28 / 24 GB used by the
+# VMs). The netem delays and the region / carbon codes are NOT set here:
+# they go in config/local.yaml (see config/local.yaml.example) and are
+# applied by scripts/setup-netem-and-ping.sh. Pod and Service CIDRs must not
+# overlap across clusters (ClusterMesh).
+#
+# Placeholders:
+#   <PROXMOX_HOST>             Proxmox VE API address
+#   <PROXMOX_TOKEN_ID>         API token id, e.g. root@pam!dmos
+#   <PROXMOX_TOKEN_SECRET>     API token secret
+#   <PVE_NODE_A|B|C>           Proxmox node names
+#   <VM_TEMPLATE>              cloud-init VM template (the runs used Ubuntu 24.04)
+#   <CLUSTERnn_CP_IP>          control-plane VM address
+#   <CLUSTERnn_WORKER_IP>      worker VM address (the same IP goes in local.yaml)
+#   <GATEWAY_IP>, <DNS_IP>     network of the VMs (/24 in the reference setup)
+#   <REGISTRY_HOST>            container registry used by proxmox-k3s
+#   <NFS_SERVER_IP>            NFS server for the NFS CSI add-on
+#   <GRAFANA_ADMIN_PASSWORD>   Grafana admin password
+# =============================================================================
+
+proxmox:
+  api_url: https://<PROXMOX_HOST>:8006/api2/json
+  token_id: <PROXMOX_TOKEN_ID>
+  token_secret: <PROXMOX_TOKEN_SECRET>
+  insecure_tls: true
+
+clusters:
+  # -- ms-cluster-01 — EU-DE, netem 0 ms, tier HIGH ---------------------------
+  - name: ms-cluster-01
+    kubeconfig_path: ./kubeconfig-ms-cluster-01
+    pod_cidr: 10.42.0.0/16
+    service_cidr: 10.43.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_A>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER01_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_A>
+        cores: 8               # tier HIGH
+        memory: 12288
+        disk_size: 40
+        ip: <CLUSTER01_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=high"
+        taints: []
+
+  # -- ms-cluster-02 — EU-FR, netem 30 ms, tier MEDIUM ---------------------------
+  - name: ms-cluster-02
+    kubeconfig_path: ./kubeconfig-ms-cluster-02
+    pod_cidr: 10.52.0.0/16
+    service_cidr: 10.53.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_A>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER02_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_A>
+        cores: 6               # tier MEDIUM
+        memory: 8192
+        disk_size: 40
+        ip: <CLUSTER02_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=medium"
+        taints: []
+
+  # -- ms-cluster-03 — EU-PL, netem 50 ms, tier LOW ---------------------------
+  - name: ms-cluster-03
+    kubeconfig_path: ./kubeconfig-ms-cluster-03
+    pod_cidr: 10.62.0.0/16
+    service_cidr: 10.63.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_B>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER03_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_B>
+        cores: 4               # tier LOW
+        memory: 8192
+        disk_size: 40
+        ip: <CLUSTER03_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=low"
+        taints: []
+
+  # -- ms-cluster-04 — US-VA, netem 100 ms, tier HIGH ---------------------------
+  - name: ms-cluster-04
+    kubeconfig_path: ./kubeconfig-ms-cluster-04
+    pod_cidr: 10.72.0.0/16
+    service_cidr: 10.73.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_B>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER04_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_B>
+        cores: 8               # tier HIGH
+        memory: 12288
+        disk_size: 40
+        ip: <CLUSTER04_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=high"
+        taints: []
+
+  # -- ms-cluster-05 — APAC-SG, netem 200 ms, tier LOW ---------------------------
+  - name: ms-cluster-05
+    kubeconfig_path: ./kubeconfig-ms-cluster-05
+    pod_cidr: 10.82.0.0/16
+    service_cidr: 10.83.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_C>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER05_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_C>
+        cores: 4               # tier LOW
+        memory: 8192
+        disk_size: 40
+        ip: <CLUSTER05_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=low"
+        taints: []
+
+  # -- ms-cluster-06 — EU-NO, netem 40 ms, tier MEDIUM ---------------------------
+  - name: ms-cluster-06
+    kubeconfig_path: ./kubeconfig-ms-cluster-06
+    pod_cidr: 10.92.0.0/16
+    service_cidr: 10.93.0.0/16
+
+    k3s:
+      version: v1.36.0+k3s1
+      extra_server_args: "--disable=traefik --disable=servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy"
+
+    addons:
+      cilium:
+        enabled: true
+        version: "1.19.4"
+        hubble_ui_node_port: 32080
+
+      monitoring:
+        enabled: true
+        prometheus_node_port: 32090      # DMOS reads Prometheus on this NodePort
+        grafana_node_port: 32000
+        grafana_admin_password: "<GRAFANA_ADMIN_PASSWORD>"
+
+      registry:
+        hostname: <REGISTRY_HOST>
+        http_port: 80
+
+      nfs:
+        enabled: true
+        server: <NFS_SERVER_IP>
+        data_dir: /data/nfs
+
+    control_plane:
+      - name: cp-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_C>
+        cores: 2
+        memory: 4096
+        disk_size: 40
+        ip: <CLUSTER06_CP_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+
+    workers:
+      - name: worker-01
+        template: <VM_TEMPLATE>
+        proxmox_node: <PVE_NODE_C>
+        cores: 6               # tier MEDIUM
+        memory: 8192
+        disk_size: 40
+        ip: <CLUSTER06_WORKER_IP>
+        gateway: <GATEWAY_IP>
+        dns: <DNS_IP>
+        subnet_mask: 24
+        labels:
+          - "nodepool=workers"
+          - "dmos.tier=medium"
+        taints: []
+
+cluster_mesh:
+  - cluster: ms-cluster-01
+    id: 1
+  - cluster: ms-cluster-02
+    id: 2
+  - cluster: ms-cluster-03
+    id: 3
+  - cluster: ms-cluster-04
+    id: 4
+  - cluster: ms-cluster-05
+    id: 5
+  - cluster: ms-cluster-06
+    id: 6

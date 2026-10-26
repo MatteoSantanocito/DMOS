@@ -1,0 +1,253 @@
+"""
+Traffic Predictor
+Trend-based prediction for request rate
+"""
+
+import os
+from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import numpy as np
+
+from ..utils.logger import get_logger
+
+logger = get_logger("TrafficPredictor")
+
+
+@dataclass
+class TrafficSample:
+    """Single traffic measurement"""
+    timestamp: datetime
+    request_rate: float  # req/s
+
+
+class TrafficPredictor:
+    """
+    Trend-based traffic predictor
+    
+    From paper:
+    Λ^pred(t) = Λ(t) + (dΛ/dt) · Δt_horizon
+    
+    Derivative approximation:
+    dΛ/dt ≈ (Λ(t) - Λ(t - τ)) / τ
+    """
+    
+    def __init__(
+        self,
+        window_seconds: int = 60,     # 60s for fast flash-crowd detection (was 300)
+        horizon_seconds: int = 120,   # 5 minutes prediction
+        smoothing_alpha: float = 0.3  # EMA smoothing (optional)
+    ):
+        """
+        Initialize traffic predictor
+        
+        Args:
+            window_seconds: Time window for derivative calculation
+            horizon_seconds: Prediction horizon
+            smoothing_alpha: EMA smoothing coefficient (0-1)
+        """
+        # Override via env per esperimenti (es. window 60->30 per ridurre la
+        # sovra-estrapolazione post-rampa a basso carico). Default invariato.
+        self.window_seconds = int(os.environ.get("DMOS_PREDICTOR_WINDOW_S", window_seconds))
+        self.horizon_seconds = int(os.environ.get("DMOS_PREDICTOR_HORIZON_S", horizon_seconds))
+        self.smoothing_alpha = smoothing_alpha
+
+        # Extrapolation shape (eq. pred in the paper). Kept as attributes, not
+        # inline literals, so the run provenance records the values in use.
+        #   trend_factor_up   : damping of a positive trend (scale-up, γ=0.5)
+        #   trend_factor_down : damping of a negative trend; inert in practice,
+        #                       because the floor below clamps λ̂ to ≥ λ
+        #   cap_multiple      : λ̂ ≤ cap_multiple · λ (anti-overshoot cap)
+        self.trend_factor_up = 0.5
+        self.trend_factor_down = 0.3
+        self.cap_multiple = 2.0
+
+        # History storage
+        self.history: List[TrafficSample] = []
+        
+        logger.info(f"Traffic predictor initialized: "
+                   f"window={self.window_seconds}s, horizon={self.horizon_seconds}s")
+    
+    def add_sample(self, timestamp: datetime, request_rate: float):
+        """
+        Add traffic sample to history
+        
+        Args:
+            timestamp: Sample timestamp
+            request_rate: Request rate (req/s)
+        """
+        sample = TrafficSample(timestamp=timestamp, request_rate=request_rate)
+        self.history.append(sample)
+        
+        # Keep only relevant history (2x window for safety)
+        cutoff = datetime.now() - timedelta(seconds=self.window_seconds * 2)
+        self.history = [s for s in self.history if s.timestamp > cutoff]
+        
+        logger.debug(f"Added sample: {request_rate:.1f} req/s at {timestamp}, "
+                    f"history size={len(self.history)}")
+    
+    def _compute_derivative(self, current_rate: float) -> Optional[float]:
+        """
+        Compute traffic derivative (trend)
+        
+        dΛ/dt ≈ (Λ(t) - Λ(t - τ)) / τ
+        
+        Args:
+            current_rate: Current traffic rate
+        
+        Returns:
+            Derivative in req/s² or None if insufficient data
+        """
+        if len(self.history) < 2:
+            logger.warning("Insufficient history for derivative")
+            return None
+        
+        # Find sample approximately window_seconds ago
+        target_time = datetime.now() - timedelta(seconds=self.window_seconds)
+        
+        # Get closest sample to target time
+        past_sample = min(
+            self.history,
+            key=lambda s: abs((s.timestamp - target_time).total_seconds())
+        )
+        
+        # Calculate derivative
+        dt = (datetime.now() - past_sample.timestamp).total_seconds()
+        if dt == 0:
+            return 0.0
+        
+        d_rate = current_rate - past_sample.request_rate
+        derivative = d_rate / dt
+        
+        logger.debug(f"Derivative: Δrate={d_rate:.2f}, Δt={dt:.0f}s, "
+                    f"d/dt={derivative:.4f} req/s²")
+        
+        return derivative
+    
+    def predict(
+        self, 
+        current_rate: float,
+        timestamp: Optional[datetime] = None
+    ) -> Tuple[float, dict]:
+        """
+        Predict future traffic rate
+        
+        Args:
+            current_rate: Current traffic rate (req/s)
+            timestamp: Current timestamp (default: now)
+        
+        Returns:
+            Tuple of (predicted_rate, metadata_dict)
+        """
+        if timestamp is None:
+            timestamp = datetime.now()
+        
+        # Add current sample to history
+        self.add_sample(timestamp, current_rate)
+        
+        # Compute derivative
+        derivative = self._compute_derivative(current_rate)
+        
+        if derivative is None:
+            # Fallback: no prediction, return current
+            logger.warning("No derivative, using current rate as prediction")
+            return current_rate, {
+                'method': 'fallback',
+                'derivative': 0.0,
+                'horizon_seconds': 0
+            }
+        
+        # Damping asimmetrico: reattivo in scale-up, conservativo in scale-down
+        if derivative > 0:
+            # Scale-up: usa 50% del trend positivo (proattività)
+            trend_factor = self.trend_factor_up
+        else:
+            # Scale-down: usa solo 30% del trend negativo (conservativo)
+            trend_factor = self.trend_factor_down
+
+        # Linear extrapolation con damping
+        predicted_rate = current_rate + (derivative * self.horizon_seconds * trend_factor)
+
+        # Cap prediction a 2x current (evita overshoot)
+        predicted_rate = min(predicted_rate, current_rate * self.cap_multiple)
+        
+        # FLOOR: la predizione non scende mai sotto il traffico corrente
+        # Quando il trend è negativo, manteniamo almeno il livello attuale.
+        # Questo evita scale-down prematuro basato su estrapolazioni aggressive.
+        predicted_rate = max(predicted_rate, current_rate)
+        
+        logger.info(f"Prediction: current={current_rate:.1f} req/s, "
+                   f"derivative={derivative:.4f}, "
+                   f"predicted={predicted_rate:.1f} req/s "
+                   f"(+{self.horizon_seconds}s)")
+        
+        metadata = {
+            'method': 'trend-based',
+            'current_rate': current_rate,
+            'derivative': derivative,
+            'horizon_seconds': self.horizon_seconds,
+            'predicted_rate': predicted_rate,
+            'history_size': len(self.history)
+        }
+        
+        return predicted_rate, metadata
+    
+    def predict_with_ema_smoothing(
+        self,
+        current_rate: float,
+        timestamp: Optional[datetime] = None
+    ) -> Tuple[float, dict]:
+        """
+        Predict with Exponential Moving Average smoothing
+        
+        Args:
+            current_rate: Current rate
+            timestamp: Current timestamp
+        
+        Returns:
+            Tuple of (smoothed_prediction, metadata)
+        """
+        # Get base prediction
+        predicted_rate, metadata = self.predict(current_rate, timestamp)
+        
+        # Apply EMA smoothing
+        if len(self.history) >= 2:
+            previous_rate = self.history[-2].request_rate
+            smoothed = (self.smoothing_alpha * predicted_rate + 
+                       (1 - self.smoothing_alpha) * previous_rate)
+        else:
+            smoothed = predicted_rate
+        
+        metadata['smoothed_rate'] = smoothed
+        metadata['smoothing_alpha'] = self.smoothing_alpha
+        
+        logger.debug(f"EMA smoothing: raw={predicted_rate:.1f}, "
+                    f"smoothed={smoothed:.1f}")
+        
+        return smoothed, metadata
+    
+    def get_statistics(self) -> dict:
+        """
+        Get statistics about traffic history
+        
+        Returns:
+            Dict with mean, std, min, max
+        """
+        if not self.history:
+            return {
+                'count': 0,
+                'mean': 0.0,
+                'std': 0.0,
+                'min': 0.0,
+                'max': 0.0
+            }
+        
+        rates = [s.request_rate for s in self.history]
+        
+        return {
+            'count': len(rates),
+            'mean': np.mean(rates),
+            'std': np.std(rates),
+            'min': np.min(rates),
+            'max': np.max(rates)
+        }

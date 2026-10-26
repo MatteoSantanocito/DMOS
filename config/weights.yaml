@@ -1,0 +1,369 @@
+# ============================================================================
+# DMOS — score configuration (Level 1)
+# ============================================================================
+#
+# Two ways to define the Level-1 score:
+#
+#   1. Score models (recommended) — section `score_models` below, selected
+#      with DMOS_SCORE_MODEL=<name> (or `bash experiments/run_one.sh <name> <regime>`).
+#      A model fixes in one place how the demand share d enters the score
+#      (gate | additive | locality), the four objective weights, the gate,
+#      the demand floor and the cold-start policy. `nca` is the configuration
+#      described in the IEEE NCA 2026 paper; the campaign itself ran different
+#      weights (see the note above `score_models`). Under a model the legacy
+#      switches below are ignored.
+#
+#   2. Legacy profiles — section `score_weights` (used when DMOS_SCORE_MODEL is
+#      not set; profile = `active`, or DMOS_SCORE_PROFILE), modified by the
+#      environment switches DMOS_SCORE_GATE*, DMOS_LOCALITY_PURE_NET,
+#      DMOS_WEIGHTS_COHERENT, DMOS_DEMAND_FLOOR:
+#
+#        S = w_latency*Phi_lat + w_capacity*Phi_cap + w_geo_load*(d*Phi_net)
+#          + w_carbon*Phi_car + w_demand*Phi_pressure
+#
+#      (historical key names: omega_geo_load weighs d*Phi_net, omega_demand
+#      weighs the utilization sigmoid Phi_pressure). Five weights, sum = 1.
+#      NB: with the demand floor on (code default) the score distributes no
+#      replica — see docs/dmos-architecture.md section 7.5.
+#
+# Also read from this file: network_parameters (rho, rtt_max_ms) and
+# load_parameters (threshold, steepness). NOT read: carbon_parameters,
+# objectives (the carbon score uses nu = 0.5 and CI_max = 500 from the code).
+# Full description: docs/configuration-reference.md section 3.
+# ============================================================================
+
+# -- Legacy score profiles (Level 1, path 2) ---------------------------------
+score_weights:
+  # Profile 0: Cold-start / blind allocation (Phase 1, primi 120s)
+  # Usato dallo scheduler nella FASE 1 prima che le metriche osservate
+  # siano statisticamente significative.
+  #
+  # Segnali affidabili a freddo (disponibili al primo request):
+  #   Φ_locality  → Φ_demand (share ingress Cilium, stabile dal primo request)
+  #                 × Φ_net (RTT ping_exporter, non dipende dal traffico)
+  #   Φ_pressure  → utilizzo λ/capacità da ingress rate, disponibile da subito
+  #   Φ_carbon    → carbon intensity per regione (trace/statico)
+  #
+  # Segnali DISABILITATI a freddo (ω=0):
+  #   Φ_response_time → p95 su [5m] con pochi campioni → stima rumorosa
+  #   Φ_cap           → CPU pod appena avviati → letture instabili
+  cold_start:
+    omega_latency:  0.00    # Φ_response_time disabilitato: nessun campione affidabile
+    omega_capacity: 0.00    # Φ_cap disabilitato: CPU instabile a cold start
+    omega_geo_load: 0.35    # Φ_locality = Φ_demand×Φ_net: ingress share + RTT, affidabili da subito
+    omega_carbon:   0.30    # statico per regione, sempre affidabile
+    omega_demand:   0.35    # Φ_pressure (sigmoide invertita su λ/capacità)
+
+  # Profile 1: Carbon-agnostic (baseline comparison — senza carbon)
+  carbon_agnostic:
+    omega_latency:  0.35
+    omega_capacity: 0.25
+    omega_geo_load: 0.30    # <-- Geo-awareness × Load (era load=0.15 + net=0.15)
+    omega_carbon:   0.00    # <-- Nessuna considerazione carbon
+    omega_demand:   0.10    # <-- Domanda geografica via Cilium Ingress
+
+  # Profile 2: Balanced (default — moderate carbon + geo + demand awareness)
+  balanced:
+    omega_latency:  0.25
+    omega_capacity: 0.20
+    omega_geo_load: 0.25    # <-- Geo-awareness × Load (era load=0.15 + net=0.10)
+    omega_carbon:   0.20    # <-- 20% peso sul carbon
+    omega_demand:   0.10    # <-- 10% peso sulla domanda geografica
+
+  # Profile 3: Carbon-priority (aggressive green scheduling)
+  carbon_priority:
+    omega_latency:  0.15
+    omega_capacity: 0.15
+    omega_geo_load: 0.20    # <-- Geo-awareness × Load (era load=0.10 + net=0.10)
+    omega_carbon:   0.40    # <-- 40% peso sul carbon
+    omega_demand:   0.10    # <-- Mantiene awareness della domanda geografica
+
+  # Profile 4: Latency-priority (per SLO latency-critici)
+  latency_priority:
+    omega_latency:  0.40
+    omega_capacity: 0.15
+    omega_geo_load: 0.30    # <-- Geo-awareness × Load (era load=0.10 + net=0.20)
+    omega_carbon:   0.05
+    omega_demand:   0.10    # <-- Domanda geografica: repliche vicino agli utenti
+
+  # Profile 5: Geo-aware (massima sensibilità alla posizione geografica)
+  # Pensato per dimostrare l'effetto moltiplicativo Φ_load×Φ_net nella tesi.
+  # Con tc netem attivo: cluster1 (DE) ha RTT bassa → Φ_net alto.
+  # Se cluster1 è anche scarico (Φ_load alto) → Φ_geo_load dominante → più repliche.
+  # Se cluster1 è saturo (Φ_load basso) → Φ_geo_load crolla → traffico rediretto.
+  geo_aware:
+    omega_latency:  0.15
+    omega_capacity: 0.15
+    omega_geo_load: 0.45
+    omega_carbon:   0.05
+    omega_demand:   0.20
+
+  # Profile 6: Romano-like (replica approccio paper Romano et al.)
+  # Priorità massima a geo-awareness (RTT × Load) e domanda geografica (ingress rate),
+  # nessun peso su carbon — per confronto diretto con il baseline della letteratura.
+  romano_like:
+    omega_latency:  0.10    # Romano non usa P95 Hubble, ma lascia un minimo
+    omega_capacity: 0.05    # quasi ignorato come Romano
+    omega_geo_load: 0.50    # <-- Geo × Load (era load=0.10 + net=0.40)
+    omega_carbon:   0.00    # Romano non ha carbon
+    omega_demand:   0.35    # Romano basa tutto su ingress rate per cluster
+
+  # Profile 7: Geo-balanced — geo dominante ma vero multi-obiettivo.
+  # Pensato per il paper "geo-aware multi-objective scheduling":
+  #   - ω_geo=0.35: la geo-awareness e' il driver principale (Φ_load×Φ_net),
+  #                 ma non monolitica (geo_aware aveva 0.45).
+  #   - ω_carbon=0.15: peso visibile per la claim secondaria carbon (H4),
+  #                    non marginale come in geo_aware (0.05).
+  #   - ω_lat=0.20, ω_cap=0.15: contributo significativo di latenza osservata
+  #                              e capacita' (chiusura sul SLO).
+  #   - ω_demand=0.15: safety net anti-starvation per cluster a basso score.
+  # Tutti i pesi sono >=0.15 -> ogni Φ contribuisce visibilmente in ogni run.
+  geo_balanced:
+    omega_latency:  0.20
+    omega_capacity: 0.10
+    omega_geo_load: 0.35
+    omega_carbon:   0.10
+    omega_demand:   0.25
+
+  # ────────────────────────────────────────────────────────────────────────
+  # FLASH_CROWD_AWARE — semantic post-refactor (paper §X)
+  # ────────────────────────────────────────────────────────────────────────
+  # Designed for the REPLICA-PLACEMENT problem under flash crowd workloads,
+  # using the inverted-sigmoid Φ_pressure and Φ_locality (demand × net)
+  # implemented in src/level1/score_functions.py.
+  #
+  # SLOT REMAP (the YAML key names are kept for backward compat with config
+  # loaders; their EFFECT changes due to the refactor):
+  #
+  #   omega_latency  → weighs Φ_lat        (measured response latency)
+  #   omega_capacity → weighs Φ_cap        (HW size + slack, paper §X.X)
+  #   omega_geo_load → weighs Φ_LOCALITY   (= Φ_demand × Φ_net), NOT the legacy
+  #                                         Φ_load × Φ_net. Multiplicative AND
+  #                                         of demand and proximity.
+  #   omega_carbon   → weighs Φ_carbon     (grid carbon intensity)
+  #   omega_demand   → weighs Φ_PRESSURE   (inverted-sigmoid utilization), NOT
+  #                                         the standalone Φ_demand (which is
+  #                                         now INSIDE the locality term).
+  #
+  # WEIGHT RATIONALE (cf. paper §X.X tuning section):
+  #   ω_latency  = 0.10  — secondary "health" signal, small contribution
+  #   ω_capacity = 0.20  — tier matters: a tier-HIGH cluster can host more
+  #                        replicas than tier-LOW; Borg [EuroSys'15] "fit"
+  #   ω_geo_load = 0.35  — locality is the PRIMARY multi-objective signal
+  #                        (demand AND proximity = canonical user-region
+  #                        replica placement, see Adler & Wolf 2018)
+  #   ω_carbon   = 0.10  — visible but secondary (paper claim H4)
+  #   ω_demand   = 0.25  — pressure: saturated cluster gets the help it
+  #                        needs (HPA target-utilization semantic,
+  #                        CarbonScaler HotCarbon'23, CASPER E-Energy'23)
+  #
+  # Sum = 1.00 (validated at construction time in ScoreFunctions.__init__).
+  flash_crowd_aware:
+    omega_latency:  0.10
+    omega_capacity: 0.20
+    omega_geo_load: 0.35    # → weighs Φ_locality (= Φ_demand × Φ_net)
+    omega_carbon:   0.10
+    omega_demand:   0.25    # → weighs Φ_pressure (inverted-sigmoid util)
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ABLATION / single-objective baselines (paper Study B)
+  # ────────────────────────────────────────────────────────────────────────
+  # Ogni profilo isola UN obiettivo azzerando gli altri. Istanziano politiche
+  # rappresentative della letteratura sulla STESSA macchina di DMOS (Hamilton +
+  # PD + co-scaling): confronto multi-cluster equo + ablation degli obiettivi.
+  # Attivali via env, es: DMOS_SCORE_PROFILE=latonly python -m src.dmos_main
+  #
+  #   latonly → ω_latency=1   ≈ latency-aware multi-cluster (LAIS, INFOCOM'24)
+  #   netonly → ω_geo_load=1  ≈ network/locality-aware (NetMARKS'21, Diktyo'23)
+  #                            (località = Φ_demand × Φ_net: prossimità+domanda)
+  #   carbon  → ω_carbon=1    ≈ carbon-aware (CASPER e-Energy'23)
+  latonly:
+    omega_latency:  1.00
+    omega_capacity: 0.00
+    omega_geo_load: 0.00
+    omega_carbon:   0.00
+    omega_demand:   0.00
+
+  netonly:
+    omega_latency:  0.00
+    omega_capacity: 0.00
+    omega_geo_load: 1.00
+    omega_carbon:   0.00
+    omega_demand:   0.00
+
+  carbon:
+    omega_latency:  0.00
+    omega_capacity: 0.00
+    omega_geo_load: 0.00
+    omega_carbon:   1.00
+    omega_demand:   0.00
+
+  # Profilo attivo (cambia questo per switchare tra esperimenti)
+  active: "flash_crowd_aware"
+
+# ── Score models: RUOLO DELLA DOMANDA (DMOS_SCORE_MODEL=<nome>) ───────────
+#
+# Un modello fissa in un solo punto come entra la quota di domanda d_i
+# (ingress share) nello score, i 4 pesi degli obiettivi, il gate, il floor e
+# il cold start. Si seleziona con  DMOS_SCORE_MODEL=<nome>  (o, dagli
+# script, con  bash experiments/run_one.sh <nome> <regime>). Con un modello
+# attivo gli switch legacy (DMOS_SCORE_GATE*, DMOS_WEIGHTS_COHERENT,
+# DMOS_LOCALITY_PURE_NET, DMOS_DEMAND_FLOOR, DMOS_SCORE_PROFILE) e il
+# profilo `active` qui sopra sono IGNORATI. Implementazione e validazione:
+# src/level1/score_model.py. Senza DMOS_SCORE_MODEL il comportamento
+# legacy (score_weights.active) resta invariato.
+#
+#   demand_mode
+#     gate      S = G(d)·[ω_lat·Φ_lat + ω_cap·Φ_cap + ω_net·Φ_net + ω_car·Φ_car]
+#               G(d) = (ε + (1−ε)·d)^g                (g = 0 → G ≡ 1: somma pura)
+#     additive  S = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_net·Φ_net + ω_car·Φ_car + ω_dem·d
+#     locality  S = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_net·(d·Φ_net) + ω_car·Φ_car
+#   weights     latency, capacity, net, carbon (+ demand solo in additive); Σ = 1
+#   gate        eps (ε), gamma (g)                    (solo gate)
+#   demand_floor  garantisce ⌈domanda/capacità⌉ repliche per cluster
+#   cold_start  structural: nei primi 120 s ω_lat = ω_cap = 0 (metriche non
+#               affidabili a freddo) e gli altri pesi rinormalizzati; la
+#               domanda mantiene il suo ruolo. same: nessuna distinzione.
+#   parameters  override opzionali dei parametri dello score
+#               (eta, nu, ci_max, rho, rtt_max_ms, ...)
+#
+# NB ρ: senza override vale network_parameters.rho (sotto: 3.0). La Tab. I
+#      del paper NCA riporta ρ = 2.0 — da allineare (codice o paper).
+# NB pesi: `nca` usa i pesi SCRITTI nel paper (§V-B: 0.25/0.35/0.30/0.10).
+#      La campagna NCA 2026 ha girato invece con lat/cap/net/car =
+#      0.25/0.20/0.25/0.30 (stesso gate g=2, Φ_loc = Φ_net, floor off): lo
+#      stampano tutti gli avvii di DMOS nei log del 15-17 giugno 2026. Quella
+#      configurazione è l'arm `l1l2` di experiments/run_naming.py. Da decidere
+#      quale delle due è "DMOS" per la rivista (vedi
+#      docs/publications/2026-nca-dmos.md).
+score_models:
+  # Configurazione DESCRITTA nel paper NCA 2026 (eq. 1-2, Tab. I, §V-B).
+  nca:
+    description: "Paper NCA: demand gate g=2, 4 obiettivi (capacity/proximity-leaning)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+
+  # ── E2 — gate sì o no, e quanto forte (stessi pesi di nca) ──────────────
+  gate_g0:
+    description: "E2: g=0 → G≡1, somma pesata pura (la domanda non entra)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 0}
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+  gate_g1:
+    description: "E2: gate lineare g=1"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 1}
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+  gate_g3:
+    description: "E2: gate più forte g=3"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 3}
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+  additive_dem50:
+    description: "E2: domanda come 5° termine additivo, ω_dem=0.5 (pesi nca riscalati ×0.5)"
+    demand_mode: additive
+    weights: {latency: 0.125, capacity: 0.175, net: 0.15, carbon: 0.05, demand: 0.50}
+    demand_floor: false
+    cold_start: structural
+  locality:
+    description: "Domanda moltiplicativa solo sul termine di rete: ω_net·(d·Φ_net)"
+    demand_mode: locality
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+
+  # ── E3 — profili di pesi a gate g=2 ──────────────────────────────────────
+  # PROPOSTA (da confermare prima di F2): obiettivo dominante 0.55, altri 0.15.
+  latency_first:
+    description: "E3: latency-first (proposta)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.55, capacity: 0.15, net: 0.15, carbon: 0.15}
+    demand_floor: false
+    cold_start: structural
+  capacity_first:
+    description: "E3: capacity-first (proposta)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.15, capacity: 0.55, net: 0.15, carbon: 0.15}
+    demand_floor: false
+    cold_start: structural
+  carbon_first:
+    description: "E3: carbon-first (proposta)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.15, capacity: 0.15, net: 0.15, carbon: 0.55}
+    demand_floor: false
+    cold_start: structural
+
+# ── Objective weights (Level 2 - Autoscaling decisions) ───────────────────
+
+objectives:
+  balanced:
+    alpha: 0.35    # Latency
+    beta: 0.25     # Cost
+    gamma: 0.15    # Fairness
+    delta: 0.25    # Carbon/sustainability
+
+# ── Carbon score parameters ───────────────────────────────────────────────
+
+carbon_parameters:
+  nu: 0.5          # Carbon penalty coefficient in Φ_carbon = exp(-ν·CI/CI_max)
+  ci_max: 800.0    # Max carbon intensity for normalization (gCO2/kWh)
+                   # Raised to 800 to accommodate Poland's high CI (~650)
+
+# ── Network score parameters (geo-awareness via ping_exporter) ────────────
+#
+# Φ_net(i) = exp(-ρ × RTT_avg_i / RTT_max)
+#
+# RTT_avg_i: RTT media dal cluster i verso tutti i peer cluster (ms)
+#            misurata da ping_exporter (czerwonk/ping_exporter via Helm)
+#            con target = IP nodi degli altri cluster.
+#
+# Simulazione geografica (tc netem su ens18):
+#   cluster2 (Paris):  netem delay 150ms ±20ms → RTT cluster1↔cluster2 ≈ 150ms
+#   cluster3 (Warsaw): netem delay 350ms ±20ms → RTT cluster1↔cluster3 ≈ 350ms
+#
+# RTT attese (con netem attivo):
+#   cluster1: avg(150, 350) = 250ms → Φ_net = exp(-2×250/500) ≈ 0.368
+#   cluster2: avg(150, 500) = 325ms → Φ_net = exp(-2×325/500) ≈ 0.272
+#   cluster3: avg(350, 500) = 425ms → Φ_net = exp(-2×425/500) ≈ 0.183
+#
+# → cluster1 (Frankfurt) favorito: è il più centrale in Europa.
+
+network_parameters:
+  rho: 3.0             # Esponente di penalità per Φ_net = exp(-ρ × RTT/RTT_max).
+                        # rho=2.0 produceva spread insufficiente (C1/C3 ratio ~1.8×).
+                        # rho=3.0: spread amplificato (C1≈0.26, C3≈0.10, ratio ~2.5×).
+                        # Combinato con Φ_load sigmoid, RTT domina Φ_geo_load.
+  rtt_max_ms: 500.0     # RTT massima per normalizzazione
+  fallback_rtt_ms: 5.0  # RTT di fallback se ping_exporter non è disponibile
+
+# ── Load score parameters (soglia di saturazione) ────────────────────────
+#
+# Φ_load(i) = 1 / (1 + exp(k × (λ/λ_max - τ)))
+#
+# Sigmoid con soglia τ: sotto τ, Φ_load ≈ 1 per tutti i cluster (non premia
+# chi è scarico). Sopra τ, Φ_load crolla rapidamente (penalizza solo chi è
+# REALMENTE saturo). Questo impedisce che un cluster lontano ma vuoto (come C3
+# con 16% di carico) vinca Φ_geo_load grazie a un Φ_load alto che cancella
+# il vantaggio RTT di un cluster più vicino ma più carico (come C1 al 70%).
+#
+# Con la vecchia formula esponenziale Φ_load = exp(-μ × λ/λ_max):
+#   C3(16%) = 0.852, C1(70%) = 0.497 → ratio 1.7× → cancella RTT advantage
+#
+# Con sigmoid τ=0.7, k=10:
+#   C3(16%) = 0.995, C1(70%) = 0.500 → entrambi ≈ 0.5-1.0
+#   → RTT (Φ_net) domina Φ_geo_load come voluto
+load_parameters:
+  threshold: 0.7       # Soglia di saturazione (70% del massimo)
+  steepness: 10        # Pendenza della sigmoid (più alto = transizione più netta)

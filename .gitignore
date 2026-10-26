@@ -1,0 +1,130 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Build / packaging ─────────────────────────────────────────────────────
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# ── Ambienti virtuali ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── File generati da esperimenti ──────────────────────────────────────────
+capacity_report.html
+results/
+logs/
+
+
+# ── Backup manuali ────────────────────────────────────────────────────────
+*.backup
+*.bak
+*.orig
+
+# ── Kubeconfig (dati sensibili) ───────────────────────────────────────────
+.kube/
+
+# ── Tesi (writeup separato dal codice) ────────────────────────────────────
+/thesis
+
+# ── Secrets / file con credenziali ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.secrets.yaml
+*.local.yaml
+
+# ── Single source of truth & generated runtime files ──────────────────────
+# config/local.yaml is the env-specific input (cluster IPs, SSH, netem,
+# alertmanager webhook). The canonical IP-free template is
+# config/local.yaml.example. Everything in .cache/ and the runtime version
+# of alertmanager-config.yaml is generated from local.yaml by
+# scripts/render-runtime-files.sh — never committed.
+config/local.yaml
+.cache/
+deployments/alertmanager-config.yaml
+bootstrap-commands.sh
+
+# Carbon-intensity traces: Electricity Maps data, downloaded by each user
+# under their own access (scripts/fetch_carbon_traces.py) and never
+# redistributed with the repository. See data/carbon_traces/README.md.
+data/carbon_traces/*.csv
+
+# Effective-configuration dumps written by hand checks
+# (python -m src.dmos_main --dump-config-only cfg_<name>.json): they contain
+# local paths and machine details.
+/cfg_*.json
+
+# Legacy files superseded by local.yaml + .cache/ (kept on disk locally for
+# operator convenience but never tracked).
+config/clusters.yaml
+config/monitoring.yaml
+config/cilium-cluster*-values.yaml
+config/cilium-current-values-*.yaml
+config/ping-exporter-cluster*-values.yaml
+deployments/ping-exporter-cluster*.yaml
+
+# Diagnostic dumps (raw Prometheus/Hubble responses captured during debugging)
+experiments/hubble_labels.json
+*.dump.json
+*.metrics.dump
+
+# Local binaries (operator-specific tooling)
+hubble.exe
+hubble
+hubble-*
+
+# ── Artefatti di sviluppo / load-test ────────────────────────────────────
+dmos_test.js
+# ── Editor / OS ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ── Claude ────────────────────────────────────────────────────────────────
+.claude/
+
+# Node.js
+node_modules/
+npm-debug.log*
+package-lock.json
+
+venv_wsl/
+
+# ── Paper (materiale del paper resta locale, mai su git) ──────────────────
+/paper/
+/paper_artifacts/
+/experiments/relazione-capacity-grpc/
+
+# ── Esperimenti: archivio storico e output di run vecchi (locale) ─────────
+/experiments/_archive/
+/experiments/ANALISI COMPORTAMENTALE DMOS/
+/experiments/ANALISI DMOS POD/
+/experiments/DMOS (L1+L2) vs DMOS (L2) vs DMOS OFF/
+/experiments/DMOS ON VS DMOS OFF VS HPA/
+/experiments/latency_budget_data.json
+/docs/experiment-flash-crowd-results.md
+
+# ── Diagnostica one-off di sessione (resta locale) ────────────────────────
+/experiments/COMANDI-RUN.md
+/experiments/check_con_clean.sh
+/experiments/diag_con_l1l2.sh
+/experiments/overflow_probe.sh
+/experiments/run_con_session.sh
+/experiments/run_one_con.sh
+/reset_multicluster.py
+
+# ── Tooling / cache ────────────────────────────────────────────────────────
+.pytest_cache/
+texput.log

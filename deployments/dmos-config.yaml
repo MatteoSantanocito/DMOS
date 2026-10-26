@@ -1,0 +1,59 @@
+# ============================================================================
+# DMOS ConfigMap — IN-CLUSTER DEPLOYMENT (OPTIONAL / NOT THE DEFAULT)
+# ============================================================================
+#
+# Companion ConfigMap for `dmos-scheduler.yaml`. The default deployment runs
+# DMOS locally on the operator's machine and reads config straight from
+# `config/` on disk — see docs/setup-guide.md. This ConfigMap is only needed
+# if you intend to run the scheduler inside one of the K3s clusters.
+#
+# Before applying, replace every <PLACEHOLDER> with values matching your
+# `config/local.yaml`. The keys here mirror the file layout consumed by
+# `src/utils/config_loader.py`.
+#
+# Skip this file unless you have a specific reason to run in-cluster.
+# ============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dmos-config
+  namespace: dmos-system
+data:
+  # Mirror of `config/local.yaml` — the only environment-specific file.
+  # See `config/local.yaml.example` for the full schema.
+  local.yaml: |
+    ssh:
+      user: ubuntu
+      key:  ~/.ssh/dmos_nodes
+    clusters:
+      - name: cluster1
+        display_name: "EU-DE (node1)"
+        region: DE
+        location: Frankfurt
+        ip: <CLUSTER1_IP>
+        kubeconfig_path: ".kube/cluster1.yaml"
+        resources:
+          cpu_cores: 4
+          memory_gb: 8
+        pricing:
+          cost_per_replica_hour: 0.12
+        carbon:
+          region_code: "DE"
+          baseline_gco2_kwh: 350
+        latency:
+          baseline_ms: 2.0
+      # ... add cluster2, cluster3, ... mirroring config/local.yaml
+    global:
+      scheduling_interval_seconds: 30
+      score_request_timeout_seconds: 5
+
+  # The remaining files are static and shipped with the repo. Inline their
+  # full content here at deployment time (e.g. from `kubectl create configmap
+  # --from-file=config/`).
+  weights.yaml: |
+    # Copy content from config/weights.yaml
+  services.yaml: |
+    # Copy content from config/services.yaml
+  carbon.yaml: |
+    # Copy content from config/carbon.yaml
