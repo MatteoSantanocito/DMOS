@@ -62,6 +62,21 @@ import exec from 'k6/execution';
 //   DMOS_REQ_TIMEOUT_S   : timeout per richiesta in secondi (default 14)
 //   DMOS_RNG_SEED        : seed RNG per riproducibilita' (default 20260521)
 //
+// Punto caldo che si sposta (regimi <domanda>-to<cluster>, run_naming.py)
+// ----------------------------------------------------------------------
+//   DMOS_SHIFT_W{i}      : distribuzione dopo lo spostamento (1-indexed, come
+//                          DMOS_SPIKE_W{i}); se nessuno e' impostato il punto
+//                          caldo resta fermo (comportamento di sempre)
+//   DMOS_SHIFT_AT        : secondo del run in cui inizia lo spostamento; deve
+//                          cadere nel picco
+//   DMOS_SHIFT_RAMP      : secondi di passaggio lineare dalla distribuzione del
+//                          picco a quella nuova (0 = istantaneo)
+//   DMOS_SHIFT_REGION    : cluster che riceve la quota calda dopo lo
+//                          spostamento (solo registrato nel summary)
+//   Il carico totale non cambia: cambia solo da dove arriva. Il picco resta la
+//   fase 'peak'; il summary aggiunge le finestre pre/mix/post del picco
+//   (results.per_shift_window) e ogni richiesta del picco ha il tag 'shift'.
+//
 // Uso tipico
 // ----------
 //   # Run completo dmos-l1l2 con output JSON archiviato:
@@ -207,6 +222,35 @@ if (_spikeOverride !== null) {
     });
 }
 
+// Punto caldo che si sposta: distribuzione dopo lo spostamento, normalizzata
+// come DMOS_SPIKE_W*. null = nessuno spostamento.
+function envShiftWeights() {
+    const overrides = _clusters.map((_, i) => __ENV[`DMOS_SHIFT_W${i + 1}`]);
+    if (!overrides.some((v) => v !== undefined)) return null;
+    const parsed = overrides.map((v) => v !== undefined ? parseFloat(v) : 0.0);
+    const sum = parsed.reduce((a, b) => a + b, 0);
+    if (!(sum > 0)) {
+        throw new Error('DMOS_SHIFT_W* sums to 0; specifica almeno un peso > 0');
+    }
+    return parsed.map((w) => w / sum);
+}
+
+const SHIFT_WEIGHTS = envShiftWeights();
+const SHIFT_ENABLED = SHIFT_WEIGHTS !== null;
+const SHIFT_AT      = parseFloat(__ENV.DMOS_SHIFT_AT   || '0');
+const SHIFT_RAMP    = parseFloat(__ENV.DMOS_SHIFT_RAMP || '0');
+const SHIFT_REGION  = __ENV.DMOS_SHIFT_REGION || '';
+const SHIFT_END     = SHIFT_AT + SHIFT_RAMP;
+if (SHIFT_ENABLED) {
+    // Lo spostamento deve stare tutto dentro il picco: le finestre pre/mix/post
+    // sono parti della fase 'peak' e le metriche di fase restano confrontabili.
+    if (!(SHIFT_AT > T_END_SPIKE && SHIFT_RAMP >= 0 && SHIFT_END < T_END_PEAK)) {
+        throw new Error(
+            `DMOS_SHIFT_AT=${SHIFT_AT}, DMOS_SHIFT_RAMP=${SHIFT_RAMP}: lo spostamento deve ` +
+            `iniziare e finire dentro il picco (${T_END_SPIKE}-${T_END_PEAK} s)`);
+    }
+}
+
 const INGRESSES = _clusters.map((c, i) => ({
     name: `${c.name}-${c.region}`,
     cluster_name: c.name,
@@ -214,6 +258,7 @@ const INGRESSES = _clusters.map((c, i) => ({
     url: c.ingress_url,
     weight_baseline: BASELINE_WEIGHTS[i],
     weight_spike: SPIKE_WEIGHTS[i],
+    weight_shift: SHIFT_ENABLED ? SHIFT_WEIGHTS[i] : null,
 }));
 
 // ── k6 scenario: ramping-arrival-rate with phase shape ─────────────────────
@@ -270,6 +315,20 @@ for (const ph of PHASES) {
     phaseLatency[ph]  = new Trend(`phase_${ph}_latency`, true);
     phaseRequests[ph] = new Counter(`phase_${ph}_requests`);
     phaseErrors[ph]   = new Counter(`phase_${ph}_errors`);
+}
+
+// Finestre del picco quando il punto caldo si sposta: pre (picco con la
+// distribuzione iniziale), mix (passaggio), post (distribuzione nuova).
+const SHIFT_WINDOWS = ['pre', 'mix', 'post'];
+const shiftLatency = {};
+const shiftRequests = {};
+const shiftErrors = {};
+if (SHIFT_ENABLED) {
+    for (const w of SHIFT_WINDOWS) {
+        shiftLatency[w]  = new Trend(`shift_${w}_latency`, true);
+        shiftRequests[w] = new Counter(`shift_${w}_requests`);
+        shiftErrors[w]   = new Counter(`shift_${w}_errors`);
+    }
 }
 
 // Per-cluster latency and error rate (slice by ingress).
@@ -332,6 +391,13 @@ export function setup() {
     console.log(`[FLASH CROWD] Spike region: ${SPIKE_REGION} (weight ${SPIKE_WEIGHT})`);
     console.log(`[FLASH CROWD] Baseline weights: ${baseDetails}`);
     console.log(`[FLASH CROWD] Spike weights:    ${spikeDetails}`);
+    if (SHIFT_ENABLED) {
+        const shiftDetails = INGRESSES.map((ing) =>
+            `${ing.name}=${ing.weight_shift.toFixed(3)}`
+        ).join(', ');
+        console.log(`[FLASH CROWD] Hot spot moves to ${SHIFT_REGION} at ${SHIFT_AT}s (ramp ${SHIFT_RAMP}s)`);
+        console.log(`[FLASH CROWD] Shift weights:    ${shiftDetails}`);
+    }
     return { startTime: Date.now() };
 }
 
@@ -345,10 +411,34 @@ function currentPhase(elapsedSec) {
     return 'cooldown';
 }
 
-// During SPIKE/PEAK use spike weights, else use baseline weights.
-function pickIngress(phase) {
+// Finestra dello spostamento (solo nel picco, solo se attivo), altrimenti null.
+function shiftWindow(phase, elapsedSec) {
+    if (!SHIFT_ENABLED || phase !== 'peak') return null;
+    if (elapsedSec < SHIFT_AT)  return 'pre';
+    if (elapsedSec < SHIFT_END) return 'mix';
+    return 'post';
+}
+
+// Quota dello spostamento gia' avvenuta: 0 prima di SHIFT_AT, 1 da SHIFT_END
+// in poi, lineare nel passaggio.
+function shiftFraction(elapsedSec) {
+    if (elapsedSec < SHIFT_AT) return 0.0;
+    if (SHIFT_RAMP <= 0 || elapsedSec >= SHIFT_END) return 1.0;
+    return (elapsedSec - SHIFT_AT) / SHIFT_RAMP;
+}
+
+// During SPIKE/PEAK use spike weights (moving to the shift weights if the hot
+// spot moves), else use baseline weights.
+function pickIngress(phase, elapsedSec) {
     const useSpike = (phase === 'spike' || phase === 'peak');
-    return pickWeighted(INGRESSES, useSpike ? 'weight_spike' : 'weight_baseline');
+    if (!useSpike) return pickWeighted(INGRESSES, 'weight_baseline');
+    if (!SHIFT_ENABLED || phase !== 'peak') return pickWeighted(INGRESSES, 'weight_spike');
+    const f = shiftFraction(elapsedSec);
+    if (f <= 0) return pickWeighted(INGRESSES, 'weight_spike');
+    if (f >= 1) return pickWeighted(INGRESSES, 'weight_shift');
+    const mixed = INGRESSES.map((ing) => ({
+        ing, weight: (1 - f) * ing.weight_spike + f * ing.weight_shift }));
+    return pickWeighted(mixed).ing;
 }
 
 // ── Default VU function ─────────────────────────────────────────────────────
@@ -365,7 +455,8 @@ export default function (data) {
     const elapsedSec = exec.instance.currentTestRunDuration / 1000;
     const phase = currentPhase(elapsedSec);
 
-    const myIngress = pickIngress(phase);
+    const myIngress = pickIngress(phase, elapsedSec);
+    const sw = shiftWindow(phase, elapsedSec);
     const ep = pickWeighted(ENDPOINTS);
     const url = myIngress.url + ep.path;
 
@@ -379,6 +470,7 @@ export default function (data) {
             method:   ep.method,
         },
     };
+    if (sw !== null) params.tags.shift = sw;
 
     let res;
     if (ep.method === 'POST') {
@@ -399,6 +491,11 @@ export default function (data) {
     phaseLatency[phase].add(res.timings.duration);
     phaseRequests[phase].add(1);
     if (is5xx) phaseErrors[phase].add(1);
+    if (sw !== null) {
+        shiftLatency[sw].add(res.timings.duration);
+        shiftRequests[sw].add(1);
+        if (is5xx) shiftErrors[sw].add(1);
+    }
 
     // Per-cluster metrics
     clusterLatency[myIngress.cluster_name].add(res.timings.duration);
@@ -463,6 +560,46 @@ export function handleSummary(data) {
         );
     }
     lines.push('');
+
+    // Finestre del picco con il punto caldo che si sposta
+    const shiftRes = {};
+    if (SHIFT_ENABLED) {
+        const bounds = {
+            pre:  [T_END_SPIKE, SHIFT_AT],
+            mix:  [SHIFT_AT, SHIFT_END],
+            post: [SHIFT_END, T_END_PEAK],
+        };
+        lines.push(`  PEAK WINDOWS (hot spot moves to ${SHIFT_REGION || '?'} at ${SHIFT_AT}s, ` +
+                   `ramp ${SHIFT_RAMP}s)`);
+        lines.push('  ' + '-'.repeat(75));
+        for (const w of SHIFT_WINDOWS) {
+            const lat = data.metrics[`shift_${w}_latency`];
+            const req = data.metrics[`shift_${w}_requests`];
+            const err = data.metrics[`shift_${w}_errors`];
+            const [t0, t1] = bounds[w];
+            if (!lat || !req || req.values.count === 0) {
+                shiftRes[w] = { start_s: t0, end_s: t1, requests: 0 };
+                lines.push(`  ${w.padEnd(9)} | (no data)`);
+                continue;
+            }
+            const n = req.values.count;
+            const nErr = err ? err.values.count : 0;
+            const p50 = lat.values['p(50)'] || 0;
+            const p95 = lat.values['p(95)'] || 0;
+            const p99 = lat.values['p(99)'] || 0;
+            shiftRes[w] = {
+                start_s: t0, end_s: t1, requests: n,
+                rps: t1 > t0 ? n / (t1 - t0) : null,
+                p50, p95, p99, errorRate: n > 0 ? nErr / n : 0,
+            };
+            lines.push(
+                `  ${w.padEnd(9)} | ${String(n).padStart(8)} | ` +
+                `${p50.toFixed(0).padStart(5)}ms | ${p95.toFixed(0).padStart(5)}ms | ` +
+                `${p99.toFixed(0).padStart(5)}ms | ${((n > 0 ? nErr / n : 0) * 100).toFixed(2).padStart(5)}%`
+            );
+        }
+        lines.push('');
+    }
 
     // Tabella per-cluster (durante SPIKE+PEAK, le fasi piu' indicative)
     lines.push('  PER-CLUSTER METRICS (intero run)');
@@ -563,15 +700,25 @@ export function handleSummary(data) {
             num_clusters: _clusters.length,
             baseline_weights: BASELINE_WEIGHTS,
             spike_weights: SPIKE_WEIGHTS,
+            shift: SHIFT_ENABLED ? {
+                enabled: true,
+                at_s: SHIFT_AT,
+                ramp_s: SHIFT_RAMP,
+                end_s: SHIFT_END,
+                region: SHIFT_REGION,
+                weights: SHIFT_WEIGHTS,
+            } : { enabled: false },
         },
         clusters: INGRESSES.map((ing) => ({
             name: ing.cluster_name, region: ing.region,
             ingress_url: ing.url,
             weight_baseline: ing.weight_baseline,
             weight_spike: ing.weight_spike,
+            weight_shift: ing.weight_shift,
         })),
         results: {
             per_phase: phaseRes,
+            per_shift_window: SHIFT_ENABLED ? shiftRes : null,
             per_cluster: clusterRes,
             global: globalLat ? {
                 total_requests: globalReqs.values.count,

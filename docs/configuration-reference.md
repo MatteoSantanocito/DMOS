@@ -69,9 +69,14 @@ in k6 and of the clusters in the logs.
 | `display_name` | `name` | `test-env.json` | label only |
 | `region` | required | k6 (baseline weights by region), `test-env` | label used by k6 to pick the baseline ingress weight (§7.3) |
 | `location` | required | — | label only |
-| `ip` | required | DMOS, render, harness | IP of the node that exposes the NodePorts (worker): Prometheus `http://<ip>:<prometheus_port>`, Ingress `http://<ip>:30080`, ping targets, SSH for netem |
+| `ip` | required | DMOS, render, harness | IP of the node that exposes the NodePorts (worker): Prometheus `http://<ip>:<prometheus_port>`, Ingress `http://<ip>:<ingress_port>`, ping targets, SSH for netem |
 | `kubeconfig_path` | required | DMOS (`KubernetesClient`), harness, `capture_env_state.py` | kubeconfig of the cluster; its `server` (control-plane node) is used as is |
 | `prometheus_port` | 32090 | DMOS, render | NodePort of the cluster's Prometheus |
+| `worker_ips` | `[ip]` | DMOS | nodes that host the workload: with `DMOS_FREE_RESOURCES=worker` (default) the free CPU and memory of Φ_cap and of the hard limits are summed over them (node_exporter). Set it when `ip` is not the workload node, e.g. Kubephos (`ip` = control plane): `scripts/kubephos_fleet.py write-local` writes the app-pool nodes. Recorded in the effective configuration when set |
+| `capacity_req_per_sec` | — | DMOS, simulator | `{service: req/s}`: what one replica serves on this cluster, overrides `services.yaml` (`capacity_per_cluster`, `capacity_req_per_sec`); written by `scripts/kubephos_fleet.py write-local` from a calibration. Recorded in the effective configuration when set |
+| `max_replicas` | — | DMOS, baselines, simulator | `{service: n}`: replica cap of the service on this cluster, overrides `services.yaml → max_replicas_per_cluster`; written by `scripts/kubephos_fleet.py write-local` from the capacity of the app pool ([KUBEPHOS.md](KUBEPHOS.md#replica-cap)). Recorded in the effective configuration when set |
+| `ingress_demand_match` | `workload` | DMOS | how the client-side demand is matched: `workload` = requests to the entry workload (`destination_workload="frontend"`), correct when the ingress proxy runs on the node of the entry pods; `namespace` = all client-side requests to the application namespace, for a proxy on a node without entry pods (e.g. the Gateway on a Kubephos control plane), where Hubble cannot name the destination workload. Recorded in the effective configuration only when not the default ([traffic-metrics-architecture.md §2](traffic-metrics-architecture.md#2-the-signal)) |
+| `ingress_port` | 30080 | render, harness, k6 | NodePort of the HTTP entry: the Cilium Ingress (30080), or the NodePort of the Gateway Service with the Gateway API variant ([ingress-architecture.md §7](ingress-architecture.md#7-gateway-api-variant)) |
 | `k8s_api_port` | 6443 | — | not used (the kubeconfig decides) |
 | `server`, `estimator_url` | `""` | — | not used |
 | `resources.cpu_cores` | 4 | DMOS | total CPU of the cluster for Φ_cap (hardware size = cores/8), L0 utilization, `request_rate_max = cores × capacity`; tier in the carbon accounting of the analysis |
@@ -112,8 +117,9 @@ the start-up (and the harness's pre-check aborts the run).
 | `cold_start` | `structural` (default) \| `same` | weights of the first 120 s: latency and capacity set to 0 and the rest renormalised, or the warm weights |
 | `parameters` | any of `eta`, `sigma_squared`, `kappa`, `load_threshold`, `load_steepness`, `load_floor`, `horizon_seconds`, `nu`, `ci_max`, `rho`, `rtt_max_ms` | overrides of `ScoreParameters` for this model (e.g. `{rho: 2.0}`) |
 
-Defined models: `nca`, `gate_g0`, `gate_g1`, `gate_g3`, `additive_dem50`,
-`locality`, `latency_first`, `capacity_first`, `carbon_first` (table in
+Defined models: `reach` (the paper's DMOS), `reach_green`, `nca`, `gate_g0`,
+`gate_g1`, `gate_g3`, `additive_dem50`, `locality`, `latency_first`,
+`capacity_first`, `carbon_first` (table in
 [architecture §7.4](dmos-architecture.md#74-score-models-the-role-of-demand)).
 
 **Adding a model.** Add an entry under `score_models`, check it offline with
@@ -124,8 +130,8 @@ DMOS_SCORE_MODEL=<name> python -m src.dmos_main --dump-config-only /tmp/cfg.json
 
 and run it with `bash experiments/run_one.sh <name> <regime>`: every model
 is automatically an arm name (`dmos-<name>__<regime>`) of
-`experiments/run_naming.py`. The NCA 2026 campaign did not use a model: it
-ran the legacy switches of the arm `l1l2` (§3.2, §7.1), whose weights
+`experiments/run_naming.py`. The legacy arm `l1l2`, kept for comparison, does
+not use a model: it runs the legacy switches (§3.2, §7.1), whose weights
 (0.25/0.20/0.25/0.30) differ from those of `nca`.
 
 ### 3.2 `score_weights` (legacy path)
@@ -152,7 +158,7 @@ harness a profile is the arm `profile-<name>`.
 
 | Key | Read | Value in effect |
 |---|---|---|
-| `network_parameters.rho` | yes | **3.0** (code default 2.0; NCA paper Tab. I: 2.0) |
+| `network_parameters.rho` | yes | **3.0** (code default 2.0) |
 | `network_parameters.rtt_max_ms` | yes | 500 |
 | `network_parameters.fallback_rtt_ms` | read, not used | the client returns 5 ms when ping data is missing (hard-coded) |
 | `load_parameters.threshold`, `.steepness` | yes | τ = 0.7, k = 10 (Φ_pressure, legacy path only) |
@@ -189,7 +195,7 @@ with the server-side query (`reporter="server", traffic_direction="ingress"`,
 `source_workload=""` or the sources) as fallback; the same query feeds the
 budget N, the predictor, the triggers and the demand share dᵢ. The repository
 file writes the section out with the values of the default, which are the
-ones of every run so far (NCA 2026 included). Names must be lowercase
+ones of every run so far. Names must be lowercase
 Kubernetes names (letters, digits, `-`); unknown keys, unknown or duplicate
 services and an entry service listed as co-scaled stop the start-up.
 
@@ -301,7 +307,13 @@ and the 15 s scrape comes from `deployments/hubble-servicemonitor-monitoring.yam
 |---|---|---|
 | `DMOS_SCORE_MODEL` | unset | named score model (§3.1) |
 | `DMOS_CONFIG_DUMP` | unset | path where the effective configuration is written at start (same as `--config-dump`) |
-| `DMOS_PREDICTOR_WINDOW_S`, `DMOS_PREDICTOR_HORIZON_S` | 60, 120 | predictor window and horizon |
+| `DMOS_ENTRY_MIN_REPLICAS` | unset (`services.yaml`) | minimum replicas of the entry service on every cluster (integer ≥ 0; set by the `<arm>-min<k>` arms). 0 lets a cluster without demand hold no entry replica, its users served by the global service pool (needs the true distribution, see `experiments/RUNBOOK.md`); backends keep their minimum. Enters `config_id` and the summary line |
+| `DMOS_CARBON_T0_FILE` | unset | file holding the epoch that anchors the carbon-trace replay (written by the harness at the load start) |
+| `DMOS_ENTRY_BUDGET` | `total` | how the entry service's budget N is computed: `total` = Σ of the per-cluster needs, capped only on the sum (Σ max), the excess of a full cluster is placed elsewhere; `per_cluster` = each cluster's need capped at its maximum (legacy arm `l1l2`); `pooled` = ⌈total demand / mean capacity of a replica⌉ within [Σ min, Σ max], for a frontend served by the pool of all clusters (affinity `none`; arms `<arm>-pool`, the paper's configuration; [REACH-AND-POOLED-BUDGET.md](REACH-AND-POOLED-BUDGET.md)). Enters `config_id` |
+| `DMOS_FREE_RESOURCES` | `worker` | free CPU/memory for Φ_cap and L0: `worker` = the worker node (node_exporter, by the IP of `local.yaml`; falls back to `cluster`, logged once, when there are no series); `cluster` = all the nodes minus all the containers (legacy arm `l1l2`). Enters `config_id` |
+| `DMOS_PREDICTOR_WINDOW_S`, `DMOS_PREDICTOR_HORIZON_S` | 60, 120 | predictor window and horizon (reactive Level 2) |
+| `DMOS_SCALER` | `reactive` | Level 2 of the entry service: `reactive` = ReplicaScaler + PD (legacy arms); `predictive` = the predictive scaler of `docs/PREDICTIVE-SCALER.md` (two demand windows, Holt forecast at the learned actuation lag, headroom, event-driven decisions, stabilized scale-down). Set by the `<arm>-ps` arms (the paper's configuration). Enters `config_id` and the summary line only when `predictive` |
+| `DMOS_PS_<PARAM>` | see `docs/PREDICTIVE-SCALER.md` §3 | override of one parameter of the predictive scaler (e.g. `DMOS_PS_DOWN_WINDOW_S=300`, `DMOS_PS_HORIZON_S=60`, `DMOS_PS_ALPHA=0.5`); ignored with the reactive scaler. Enters `config_id` |
 | `DMOS_SCORE_PROFILE` | `score_weights.active` | legacy profile |
 | `DMOS_SCORE_GATE` | 0 | legacy: 1 enables the gate |
 | `DMOS_SCORE_GATE_EPS`, `DMOS_SCORE_GATE_GAMMA` | 0.05, 1.0 | legacy gate parameters |
@@ -317,7 +329,7 @@ is recorded in `dmos_config.json`.
 Command-line flags: `--no-scheduling` (no L1, uniform N/K), `--naive-backends`,
 `--config-dump PATH`, `--dump-config-only PATH`.
 
-### 7.2 Run harness (`run_one.sh`, `run_matrix_session.sh`, `run_skew_sweep.sh`, `run_flash_crowd.sh`)
+### 7.2 Run harness (`run_one.sh`, `run_campaign.sh`, `run_flash_crowd.sh`)
 
 The configuration of a cell — DMOS switches, k6 weights, peak, hot cluster —
 comes from its **name** (`dmos-<arm>__<regime>`, `experiments/run_naming.py`),
@@ -328,10 +340,17 @@ shell that launches a session. The variables below tune the harness itself.
 |---|---|---|
 | `DMOS_K6_REMOTE` | `k6.remote` of `test-env.json` | `user@host` of the k6 VM (required by `run_cell`; empty → k6 runs locally in `run_flash_crowd.sh`) |
 | `DMOS_K6_SSH_KEY` | `ssh.key` of `test-env.json` | key for the k6 VM |
+| `DMOS_FLEET_DIR` | unset | Kubephos fleet: the `--out-dir` of `scripts/kubephos_fleet.py`; every cell checks the data plane before and after the load (ClusterMesh 5/5, Hubble labels, Gateways, pods on the app pool), re-applies missing Hubble labels, does not start on a broken mesh and marks a run changed during the load with `INVALID_DATAPLANE.txt` ([KUBEPHOS.md](KUBEPHOS.md)) |
+| `DMOS_EXPECT_RESET` | 1 | a cell does not start unless every Deployment (but the loadgenerator) is at 1 replica, 1 pod, 1 ready pod on every cluster after the reset (`capture_env_state.py --expect-reset`, recorded in `env_state_pre.json`) |
+| `DMOS_CAMPAIGN_TRIES` | 3 | `run_campaign.sh`: attempts per cell; a run that fails `campaign_ctl.py check` moves to `results/_retried/` and the cell runs again |
+| `DMOS_REAPPLY_ANCHOR` | `2026-10-29T01:22:00+00:00` | `run_campaign.sh`: start of one observed Cilium re-apply window (ISO UTC); no cell starts if it could overlap a window (`DMOS_REAPPLY_PERIOD_H` 10, `DMOS_REAPPLY_LEN_MIN` 80); empty = no windows |
 | `DMOS_REQUIRE_NETEM` | 1 | 0 lets a run start without the expected netem |
+| `DMOS_NETEM_CLIENT_LOCAL` | 1 | 1: `setup-netem-and-ping.sh` does not delay the k6 client (users close to the ingress they enter) and a cell does not start if netem delays it; 0: geography of the earlier pilot runs (k6 delayed by every cluster but the 0 ms one) |
+| `DMOS_NETEM_CLIENT_IPS` | host of `DMOS_K6_REMOTE` / `.k6.remote` | IPs of the k6 clients exempt from netem (needed when k6 runs on the operator machine: its IP as seen by the clusters) |
 | `DMOS_ENV_CAPTURE` | 1 | 0 skips the testbed snapshots |
 | `DMOS_EXPECT_FRONTEND_AFFINITY` | `none` | affinity the frontend Service must have on every cluster for a cell to start (empty: no check) |
 | `DMOS_ALLOW_LOADGENERATOR` | 0 | 1 lets a cell start while the Online Boutique `loadgenerator` has replicas |
+| `DMOS_EXPECT_NO_HPA` | 1 | a cell does not start if the namespace already has an HPA (it would fight DMOS, or the HPA baseline, for the replicas); 0 disables the gate |
 | `DMOS_PIDFILE` | `.cache/dmos.pid` | PID of the DMOS process started by the harness (used by `kill_dmos` on Linux/macOS) |
 | `SETTLE` | 75 | seconds of settling after the reset |
 | `DMOS_PEAK_RPS` | 250 (the regime sets it: 350, or `-p<rps>`) | peak rate |
@@ -359,11 +378,10 @@ The capacity scripts have their own variables, documented in
 
 ### 7.4 Analysis
 
-| Variable | Used by | Effect |
-|---|---|---|
-| `DMOS_RESULTS_DIR`, `DMOS_PAPER_TAG`, `DMOS_PAPER_BASELINE`, `DMOS_TARGET_REPS` | `paper_generate_all.py` | input directory, output tag, baseline arm of the tests, expected repetitions |
-| `DMOS_SLO_MS` | `paper_plot_trajectories.py` | SLO threshold of Fig. 3/3b (default 2000) |
-| `DMOS_H_REGIME`, `DMOS_H_ARM` | `paper_report.py` | regime (default `con`) and full-DMOS arm (default `dmos-l1l2`) on which the hypotheses are checked |
+The analysis scripts (`experiments/journal_figures.py`, `journal_tests.py`,
+`journal_control.py`, `build_dataset.py`) read no environment variables: they
+take command-line options (`--tsv`, `--results`, `--out`, …), described in
+[METRICS-AND-OUTPUTS.md](METRICS-AND-OUTPUTS.md) and in each script's header.
 
 ---
 

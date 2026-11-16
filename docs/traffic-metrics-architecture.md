@@ -63,6 +63,19 @@ served by the cluster it entered.
 Envoy ingress has no workload identity); requests between pods carry the
 calling workload.
 
+**Proxy on a node without frontends.** Hubble names the destination
+workload only for pods of its own node. The client-reported flow is recorded
+on the node where the ingress Envoy received the request: when that node runs
+no frontend (e.g. the Gateway NodePort on a Kubephos control plane), the flow
+has no `destination_workload` and the primary query returns 0. Set
+`ingress_demand_match: namespace` for those clusters in `local.yaml`: the
+client-side query then matches `destination_namespace` only, which counts the
+same requests as long as the ingress proxy is the only client-side L7 reporter
+(no egress L7 policy on the pods). Measured on a Kubephos test
+fleet: with ~7 and ~3 req/s entering two clusters, the `workload` match
+fell back to the server side and reported ~5 req/s on every cluster, the
+`namespace` match 5.4 and 2.5 req/s.
+
 The rate uses a `[1m]` window over a 15 s scrape (four samples), so a step
 in the offered load is fully visible in λᵢⁱⁿ after about a minute and
 partially after 15–30 s.
@@ -124,8 +137,7 @@ and [troubleshooting.md](troubleshooting.md).
 - The first testbed (three clusters) used the frontend NodePort directly and
   counted `source="reserved:ingress"` flows; Envoy was not engaged on that
   path, so L7 metrics were incomplete.
-- An NGINX Ingress phase used `nginx_ingress_controller_requests`
-  ([_archive/nginx-ingress-hubble-l7.md](_archive/nginx-ingress-hubble-l7.md)).
+- An NGINX Ingress phase used `nginx_ingress_controller_requests`.
 - With the Cilium Ingress the server-side `source_workload=""` count became
   the demand signal; the client-reported form replaced it as primary to stay
   correct when requests can be served across clusters.

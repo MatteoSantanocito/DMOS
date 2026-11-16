@@ -83,7 +83,9 @@ ClusterMesh).
 
 DMOS reads these Prometheus series on each cluster:
 `hubble_http_requests_total`, `hubble_http_request_duration_seconds_bucket`,
-`ping_rtt_mean_seconds`, `kube_node_status_capacity`,
+`ping_rtt_mean_seconds`, `node_cpu_seconds_total`,
+`node_memory_MemAvailable_bytes` (worker node, default), and with
+`DMOS_FREE_RESOURCES=cluster` `kube_node_status_capacity`,
 `container_cpu_usage_seconds_total`, `container_memory_working_set_bytes`
 (queries in [dmos-architecture.md §5.1](dmos-architecture.md#51-queries)).
 It writes only `scale` on the Deployments of `online-boutique`.
@@ -94,7 +96,8 @@ It writes only `scale` on the Deployments of `online-boutique`.
 export DMOS_K6_REMOTE=ubuntu@<k6-vm>
 bash experiments/run_one.sh <arm> <regime>     # one traceable cell
 python experiments/run_provenance.py audit      # exit 2 if a run is invalid
-python experiments/paper_generate_all.py        # figures and tables
+bash experiments/run_campaign.sh <plan>         # every cell of a plan, campaign TSV
+python experiments/journal_figures.py --tsv <campaign tsv>   # figures and tables
 ```
 
 `run_one.sh` exits non-zero when the cell could not run (invalid

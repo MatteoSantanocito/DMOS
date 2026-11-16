@@ -105,8 +105,150 @@ preflight() {
     fi
 }
 
+# ── netem scope "cluster" (Kubephos: piu' nodi per cluster) ────────────────
+# Con netem.scope = "cluster" (scritto da kubephos_fleet.py write-local --netem)
+# OGNI nodo del cluster ritarda solo il traffico che ESCE dal cluster: qdisc
+# prio con una 4a banda (netem) alimentata solo dai filtri; gli indirizzi dei
+# nodi del cluster restano senza ritardo (VXLAN tra i suoi nodi, Gateway sul
+# control plane -> frontend sul nodo app), tutto il resto (altri cluster, client
+# k6, DMOS) riceve delay_ms. Quindi client -> cluster i ~ d_i e cluster i <->
+# cluster j ~ d_i + d_j, come nel fleet di riferimento (un worker per cluster).
+# interface "auto" = l'interfaccia della route di default di ogni nodo.
+uses_cluster_scope() {
+    [[ "$(jq -r '[.clusters[] | select(.netem.scope == "cluster")] | length' "$ENV_JSON" | tr -d '\r')" -gt 0 ]]
+}
+
+load_ssh() {
+    SSH_KEY=$(jq -r '.ssh.key' "$ENV_JSON" | tr -d '\r'); SSH_KEY="${SSH_KEY/#\~/$HOME}"
+    SSH_USER=$(jq -r '.ssh.user' "$ENV_JSON" | tr -d '\r')
+}
+
+ssh_node() {  # $1 = IP del nodo, $2 = comando remoto
+    ssh -n -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=6 "${SSH_USER}@$1" "$2"
+}
+
+resolve_kc() {
+    local kc="${1/#\~/$HOME}"
+    if [[ "$kc" != /* ]] && [[ "$kc" != [A-Za-z]:* ]]; then kc="${REPO_ROOT}/${kc}"; fi
+    echo "$kc"
+}
+
+node_ips() {  # $1 = kubeconfig -> InternalIP di tutti i nodi del cluster
+    kubectl --kubeconfig "$1" get nodes \
+        -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+        | tr -d '\r'
+}
+
+iface_cmd() {  # $1 = interfaccia configurata ("auto" o un nome)
+    if [[ -z "$1" || "$1" == "auto" || "$1" == "null" ]]; then
+        echo 'IF=$(ip -o route get 1.1.1.1 | sed -n "s/.* dev \([^ ]*\).*/\1/p"); [ -n "$IF" ] || { echo "interfaccia della route di default non trovata" >&2; exit 9; }'
+    else
+        echo "IF=$1"
+    fi
+}
+
+cluster_rows() {
+    jq -r '.clusters[] | [.name, .kubeconfig_path, (.netem.delay_ms // 0), (.netem.jitter_ms // 0), (.netem.interface // "auto")] | @tsv' \
+        "$ENV_JSON" | tr -d '\r'
+}
+
+# IP dei client di carico (VM k6) da escludere dal ritardo: con netem su
+# "tutto cio' che esce dal cluster" anche le risposte verso k6 prendono il
+# ritardo della regione, cioe' un utente che entra da SG sarebbe a 200 ms dal
+# SUO ingress (campagna 29/10/2026: p50 ~490 ms da SG con qualsiasi braccio).
+# Escludendo k6 gli utenti di ogni regione sono vicini al proprio ingress e il
+# ritardo resta solo tra i cluster, dove lo decide il piazzamento.
+#   DMOS_NETEM_CLIENT_LOCAL=0      geografia vecchia (k6 lontano da tutti tranne il cluster a 0 ms)
+#   DMOS_NETEM_CLIENT_IPS="a b"    IP espliciti (es. k6 sul laptop: il suo IP sul lab)
+#   altrimenti                     host di DMOS_K6_REMOTE o di .k6.remote di test-env.json
+netem_client_ips() {
+    [[ "${DMOS_NETEM_CLIENT_LOCAL:-1}" == "0" ]] && return 0
+    if [[ -n "${DMOS_NETEM_CLIENT_IPS:-}" ]]; then echo "$DMOS_NETEM_CLIENT_IPS"; return 0; fi
+    local r="${DMOS_K6_REMOTE:-}"
+    [[ -n "$r" ]] || r="$(jq -r '.k6.remote // empty' "$ENV_JSON" 2>/dev/null | tr -d '\r')"
+    [[ -z "$r" || "$r" == "local" ]] && return 0
+    local h="${r##*@}"; h="${h%%:*}"
+    if [[ "$h" =~ ^[0-9]+([.][0-9]+){3}$ ]]; then echo "$h"
+    else getent hosts "$h" 2>/dev/null | awk '{print $1; exit}'; fi
+}
+
+apply_netem_cluster() {
+    hdr "Fase A — tc netem (scope cluster: tutti i nodi, solo il traffico verso l'esterno del cluster)"
+    load_ssh
+    local applied=0 failed=0 name kc delay jitter iface ips infra own j remote ip out clients
+    clients="$(netem_client_ips | tr '\n' ' ' | xargs || true)"
+    if [[ -n "$clients" ]]; then
+        info "client k6 vicini a ogni ingress (nessun ritardo verso: $clients)"
+    elif [[ "${DMOS_NETEM_CLIENT_LOCAL:-1}" != "0" ]]; then
+        warn "client k6 non trovato (DMOS_K6_REMOTE / .k6.remote / DMOS_NETEM_CLIENT_IPS): le risposte a k6 prendono il ritardo della regione"
+    fi
+    while IFS=$'\t' read -r name kc delay jitter iface; do
+        kc="$(resolve_kc "$kc")"
+        ips="$(node_ips "$kc" || true)"
+        if [[ -z "$ips" ]]; then warn "$name: nodi del cluster non letti (kubeconfig $kc)"; failed=$((failed+1)); continue; fi
+        # Senza ritardo anche lo storage del cluster: i server NFS dei PersistentVolume
+        # (su Kubephos Prometheus, Loki e Grafana scrivono su NFS; con il ritardo il
+        # TSDB si blocca e Prometheus fallisce la liveness), piu' DMOS_NETEM_EXCLUDE.
+        infra="$(kubectl --kubeconfig "$kc" get pv -o jsonpath='{range .items[*]}{.spec.csi.volumeAttributes.server} {.spec.nfs.server} {end}' 2>/dev/null \
+                 | tr -s ' \r' '\n\n' | grep -E '^[0-9]+([.][0-9]+){3}$' | sort -u | tr '\n' ' ' || true)"
+        infra="$(echo $infra ${DMOS_NETEM_EXCLUDE:-})"
+        own="$(echo $ips $infra $clients)"
+        info "$name: nessun ritardo verso i nodi del cluster${infra:+ e verso $infra (storage/esclusi)}${clients:+ e verso i client k6 $clients}"
+        j=""; [[ "$jitter" != "0" ]] && j=" ${jitter}ms distribution normal"
+        remote="$(iface_cmd "$iface"); sudo tc qdisc del dev \$IF root 2>/dev/null; "
+        if [[ "$delay" != "0" ]]; then
+            remote+="sudo tc qdisc add dev \$IF root handle 1: prio bands 4 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1 && "
+            remote+="sudo tc qdisc add dev \$IF parent 1:4 handle 40: netem delay ${delay}ms${j} && "
+            remote+="for a in ${own}; do sudo tc filter add dev \$IF parent 1: protocol ip prio 1 u32 match ip dst \$a/32 flowid 1:2 || exit 1; done && "
+            remote+="sudo tc filter add dev \$IF parent 1: protocol ip prio 2 u32 match ip dst 0.0.0.0/0 flowid 1:4 && "
+        fi
+        remote+='echo "$IF"'
+        for ip in $ips; do
+            if out="$(ssh_node "$ip" "$remote" 2>&1)"; then
+                if [[ "$delay" == "0" ]]; then ok "$name $ip (${out##*$'\n'}): nessun ritardo (cluster di riferimento)"
+                else ok "$name $ip (${out##*$'\n'}): ${delay}ms ±${jitter}ms verso l'esterno del cluster"; fi
+                applied=$((applied+1))
+            else
+                warn "$name $ip: fallito — ${out//$'\n'/ | }"
+                failed=$((failed+1))
+            fi
+        done
+    done < <(cluster_rows)
+    info "Nodi configurati: $applied, falliti: $failed"
+    [[ $failed -eq 0 ]] || fail "netem non applicato su $failed nodi: controlla SSH (utente/chiave in config/local.yaml > ssh) e sudo senza password"
+}
+
+verify_netem_cluster() {
+    load_ssh
+    local name kc delay jitter iface ip
+    while IFS=$'\t' read -r name kc delay jitter iface; do
+        printf '\n  %s%s%s  (atteso: %sms, jitter %sms, verso fuori dal cluster)\n' "${BOLD}" "$name" "${RESET}" "$delay" "$jitter"
+        for ip in $(node_ips "$(resolve_kc "$kc")" || true); do
+            ssh_node "$ip" "$(iface_cmd "$iface"); echo \"[$ip \$IF]\"; tc qdisc show dev \$IF | grep -E 'netem|prio' || echo '  nessun netem'; echo \"  filtri verso fuori dal cluster: \$(tc filter show dev \$IF parent 1: 2>/dev/null | grep -c 'flowid 1:4')\"" \
+                2>&1 | sed 's/^/    /' || warn "SSH a $ip fallito"
+        done
+    done < <(cluster_rows)
+}
+
+remove_netem_cluster() {
+    hdr "Rimuovo netem da tutti i nodi (scope cluster)"
+    load_ssh
+    local name kc delay jitter iface ip
+    while IFS=$'\t' read -r name kc delay jitter iface; do
+        for ip in $(node_ips "$(resolve_kc "$kc")" || true); do
+            if ssh_node "$ip" "$(iface_cmd "$iface"); sudo tc qdisc del dev \$IF root 2>/dev/null; true" >/dev/null 2>&1; then
+                ok "$name $ip: netem rimosso (o gia' assente)"
+            else
+                warn "$name $ip: SSH fallito"
+            fi
+        done
+    done < <(cluster_rows)
+}
+
 # ── Phase A — tc netem ──────────────────────────────────────────────────────
 apply_netem() {
+    if uses_cluster_scope; then apply_netem_cluster; return; fi
     hdr "Fase A — tc netem"
 
     local ssh_key ssh_user
@@ -209,9 +351,16 @@ install_ping_exporter() {
             # ping_rtt_mean_seconds resta assente. La applichiamo a mano qui
             # (idempotente con --overwrite), cosi' non serve un fix manuale
             # dopo ogni re-provisioning.
+            # La label `release` che seleziona il Prometheus del cluster: letta dal
+            # Prometheus stesso (kubephos-observability su Kubephos), default
+            # prometheus-stack (kube-prometheus-stack del fleet proxmox-k3s).
+            local rel
+            rel="$(kubectl --kubeconfig "$kubeconfig" get prometheus -A \
+                   -o jsonpath='{.items[0].spec.serviceMonitorSelector.matchLabels.release}' 2>/dev/null | tr -d '\r' || true)"
+            rel="${rel:-prometheus-stack}"
             if kubectl --kubeconfig "$kubeconfig" -n observability label servicemonitor \
-                   ping-exporter release=prometheus-stack --overwrite >/dev/null 2>&1; then
-                ok "$name: ServiceMonitor etichettato (release=prometheus-stack)"
+                   ping-exporter release="$rel" --overwrite >/dev/null 2>&1; then
+                ok "$name: ServiceMonitor etichettato (release=$rel)"
             else
                 warn "$name: label ServiceMonitor non applicata (verifica a mano)"
             fi
@@ -238,6 +387,7 @@ verify() {
 
     # A) Verifica netem
     hdr "  [A] tc qdisc show su ogni worker"
+    if uses_cluster_scope; then verify_netem_cluster; else
     while IFS=$'\t' read -r name ip iface; do
         printf '\n  %s%s%s\n' "${BOLD}" "$name ($ip)" "${RESET}"
         if [[ -z "$iface" || "$iface" == "null" ]]; then
@@ -254,6 +404,8 @@ verify() {
     done < <(
         jq -r '.clusters[] | [.name, .ip, (.netem.interface // "")] | @tsv' "$ENV_JSON" | tr -d '\r'
     )
+
+    fi
 
     # B) Verifica ping_exporter pod
     hdr "  [B] ping_exporter pod status"
@@ -294,6 +446,7 @@ verify() {
 
 # ── Remove netem ────────────────────────────────────────────────────────────
 remove_netem() {
+    if uses_cluster_scope; then remove_netem_cluster; return; fi
     hdr "Rimuovo netem da tutti i worker"
 
     local ssh_key ssh_user

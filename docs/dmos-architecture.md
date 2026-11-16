@@ -2,9 +2,7 @@
 
 This is the reference description of **what the code does**: every value
 below is taken from the source and the configuration files, with the place
-where it is defined. The paper-level view (equations, claims, results) is in
-[`publications/2026-nca-dmos.md`](publications/2026-nca-dmos.md), which maps
-each equation of the NCA 2026 paper to this document and to the code.
+where it is defined.
 
 | Topic | Where else |
 |---|---|
@@ -84,6 +82,21 @@ The decision has three layers (the paper's L0/L1/L2):
 Backends are not scheduled on their own: they follow the frontend on each
 cluster by **co-scaling** (§9).
 
+**Configuration evaluated in the paper** (arm `reach-pool-ps`, names in
+`experiments/run_naming.py`). Level 2 is the **predictive scaler**
+(`DMOS_SCALER=predictive`: damped Holt forecast, 10 s tick, horizon = 10 s +
+learned actuation delay, MAD headroom z = 1.5, scale-down brakes; see
+[PREDICTIVE-SCALER.md](PREDICTIVE-SCALER.md)). It sets one federation-wide
+budget from the total demand (`DMOS_ENTRY_BUDGET=pooled`, §6.2). L0 excludes
+clusters by CPU/memory (§7.2); L1 distributes the budget with the score model
+`reach`, `Sᵢ = G(ψᵢ)·Bᵢ`, where ψᵢ is the demand that can reach cluster *i*
+(weighted by `exp(−RTT/τ)`, τ = 50 ms) and Bᵢ the weighted objective sum,
+by water-filling and largest remainder (§7.4, §7.6,
+[REACH-AND-POOLED-BUDGET.md](REACH-AND-POOLED-BUDGET.md)); the backends are
+co-scaled from the frontend replicas (§9). The 30 s periodic check, the trend
+predictor and the PD correction of §6 and §8 are the reactive Level 2
+(`DMOS_SCALER=reactive`, the code default), kept for the legacy arms.
+
 ---
 
 ## 2. Testbed
@@ -120,6 +133,15 @@ harness.
 - "Frontend cap" is `max_replicas_per_cluster` of the frontend in
   `config/services.yaml`, set per hardware tier and leaving room for the
   co-scaled backends on the same node.
+
+**Fleet of the paper's campaign.** The campaign ran on a six-cluster fleet
+built by Kubephos ([KUBEPHOS.md](KUBEPHOS.md)), clusters `ms-01-cluster-01` …
+`ms-01-cluster-06` in the same regions (DE, FR, PL, US, SG, NO) with netem
+one-way egress delays 0/30/50/100/200/40 ms. Its `local.yaml`, written by
+`scripts/setup-kubephos-fleet.sh` from the calibration, sets the frontend caps
+to **4/3/2/4/2/3** and the frontend capacity to **33 req/s per replica**; these
+override the `services.yaml` values in the tables of this document (6/5/3/6/3/5
+and 60 req/s, the reference proxmox-k3s fleet).
 
 DMOS accepts any K ≥ 2: clusters are read from `local.yaml`, and the
 per-cluster caps in `services.yaml` fall back to `autoscaling.max_replicas`
@@ -174,7 +196,7 @@ code.
 | Cilium Ingress, NodePort **30080** | `deployments/ingress-frontend-cilium.yaml` (`ingressClassName: cilium`) | entry point of the load per cluster; the k6 weights decide how much load enters each cluster |
 | L7 visibility policy on the frontend | `deployments/cnp-frontend-l7.yaml` (`l7-visibility-frontend`) | `rules: http: [{}]` sends the frontend's HTTP traffic through Envoy, so Hubble counts every request (`hubble_http_requests_total`) |
 | L7 visibility policy on the backends | `deployments/cnp-backends-l7.yaml` | same for the gRPC backends (used for fan-out measurements and diagnostics) |
-| Global service: frontend | `deployments/global-service-frontend.yaml` | `service.cilium.io/global: "true"`, `service.cilium.io/shared: "true"`, `service.cilium.io/affinity: "none"` — the data plane of the NCA paper |
+| Global service: frontend | `deployments/global-service-frontend.yaml` | `service.cilium.io/global: "true"`, `service.cilium.io/shared: "true"`, `service.cilium.io/affinity: "none"` — the pooled data plane evaluated in the paper |
 | Global services: backends | `deployments/global-service-backends.yaml` | cart, productcatalog, checkout, recommendation: global with `affinity: "local"` (currency, ad, shipping are plain Services) |
 
 **Frontend policy.** Port 8080 of the frontend accepts traffic only from the
@@ -193,8 +215,7 @@ lever DMOS acts on. EndpointSlice synchronisation
 (`clustermesh-enable-endpoint-sync`) is not needed for this: it only exports
 EndpointSlices for other consumers. Every run checks the frontend's affinity
 before starting (§13, [RUN-PROVENANCE.md](RUN-PROVENANCE.md)); the
-measurements of the earlier "v1" setup, and the opt-in overflow pilot
-(`deployments/clustermesh-overflow/`), are in
+measurements of the earlier "v1" setup are in
 [CILIUM-CLUSTERMESH-NOTES.md](CILIUM-CLUSTERMESH-NOTES.md).
 
 **Why ingress demand is measured client-side.** If a request entering
@@ -223,8 +244,8 @@ a `[1m]` window (about four samples).
 | Ingress demand entering the cluster | λᵢⁱⁿ | `get_ingress_rate` | `sum(rate(hubble_http_requests_total{destination_workload="frontend", destination_namespace="online-boutique", reporter="client", traffic_direction="egress"}[1m]))`; fallback (only if 0): server-side `reporter="server", traffic_direction="ingress", source_workload=""`. Entry workload, namespace, an optional filter on the clients (`source_workload=~"<sources>"`) and the fallback are set in `services.yaml → application` (the values shown are the defaults) | budget N, L2, demand share dᵢ, trigger |
 | Request rate of the service | λᵢ | `get_request_rate` | `sum(rate(hubble_http_requests_total{destination_workload="<svc>", destination_namespace="online-boutique"}[1m]))`; fallbacks in order: Istio, `http_requests_total`, `container_network_receive_bytes_total / 4000` | Φ_pressure (legacy path only) |
 | Latency, 95th percentile | Lᵢ | `get_latency_p95` | `histogram_quantile(0.95, sum(rate(hubble_http_request_duration_seconds_bucket{destination_namespace="online-boutique"}[1m])) by (le)) * 1000` | Φ_lat |
-| Free CPU (cores) | Cᵢ | `get_cpu_available` | `sum(kube_node_status_capacity{resource="cpu"}) − sum(rate(container_cpu_usage_seconds_total{image!=""}[2m]))` | L0, Φ_cap, bid capacity |
-| Free memory (GB) | Mᵢ | `get_memory_available_gb` | `sum(kube_node_status_capacity{resource="memory"}) − sum(container_memory_working_set_bytes{image!=""})` | L0, Φ_cap, bid capacity |
+| Free CPU (cores) | Cᵢ | `get_node_cpu_available(<worker IP>)` (default, `DMOS_FREE_RESOURCES=worker`) | `count(node_cpu_seconds_total{mode="idle",instance=~"<ip>(:port)?"}) − sum(rate(node_cpu_seconds_total{mode!="idle",instance=~"<ip>(:port)?"}[2m]))`: the worker node alone. With `cluster` (legacy arm `l1l2`), or when node_exporter has no series for the worker (logged once), `get_cpu_available`: `sum(kube_node_status_capacity{resource="cpu"}) − sum(rate(container_cpu_usage_seconds_total{image!=""}[2m]))` over all the nodes | L0, Φ_cap, bid capacity |
+| Free memory (GB) | Mᵢ | `get_node_memory_available_gb(<worker IP>)` (default) | `node_memory_MemAvailable_bytes{instance=~"<ip>(:port)?"}`; with `cluster` (legacy arm `l1l2`) or as fallback `get_memory_available_gb`: `sum(kube_node_status_capacity{resource="memory"}) − sum(container_memory_working_set_bytes{image!=""})` | L0, Φ_cap, bid capacity |
 | Mean RTT to the other clusters (ms) | RTTᵢ | `get_network_rtt_ms` | `avg(ping_rtt_mean_seconds{target=~"<peer IPs>"}) * 1000`; 5 ms if unavailable | Φ_net |
 
 Notes:
@@ -234,7 +255,8 @@ Notes:
   over the frontend only. If no value is available (or the quantile is
   `+Inf`), the cluster's `latency.baseline_ms` from `local.yaml` (2 ms) is
   used.
-- **Free resources are summed over all nodes** reported by
+- **Free resources** are measured on the worker node by default; with
+  `DMOS_FREE_RESOURCES=cluster` they are summed over all nodes reported by
   kube-state-metrics, while `cpu_cores`/`memory_gb` in `local.yaml` describe
   the worker (see §13).
 - If the total ingress rate over all clusters is 0, the demand shares are set
@@ -292,13 +314,20 @@ Every run records the source of each cluster in `dmos_config.json →
 carbon.sources` (`trace:<file>`, `realistic`, `mock`, `default-300`; part of
 the `config_id`), the start-up summary prints `carbon trace k/K`, and the
 manifest raises the warning `carbon_trace_fallback` when a cluster is not
-on a trace. In the NCA 2026 campaign the trace was used for DE, FR and PL
-only: NO (no alias at the time), US-VA and SG ran on the synthetic profiles
-(DMOS logs: "Trace NO/SG/US-VA: assente → fallback 'realistic'").
+on a trace.
 
 ---
 
 ## 6. Control loop
+
+This section describes the reactive Level 2 (`DMOS_SCALER=reactive`, the code
+default). With `DMOS_SCALER=predictive` (the paper's configuration) the entry
+service is driven instead by a 10 s tick (`_predictive_tick`) that updates the
+per-cluster forecasters and enqueues a decision when one is due; the decision
+uses the budget rules of §6.2 step 3, L1 (§7) and co-scaling (§9), while the
+thresholds, the trend predictor and the PD correction of the reactive loop do
+not apply. See
+[PREDICTIVE-SCALER.md](PREDICTIVE-SCALER.md).
 
 `DMOSOrchestrator.run()` starts three kinds of threads:
 
@@ -340,11 +369,24 @@ measured phase DMOS runs a full cycle every 30 s.
 2. **Start-up grace.** For the first `startup_grace_seconds` = **120 s** after
    start the cycle stops here: traffic is observed (and the predictors fill
    their history) but nothing is scaled.
-3. **Budget N** (paper Eq. 7). For each cluster
-   `needᵢ = clip(⌈λᵢⁱⁿ / cᵢ⌉, c_minᵢ, c_maxᵢ)` with the frontend capacity
-   cᵢ = 60 req/s, `c_min` = 1 and the per-cluster cap; `N = Σᵢ needᵢ`.
-   The `needᵢ` are also the **demand floors** (passed to L1 only when the
-   demand floor is enabled).
+3. **Budget N** (`DMOSOrchestrator.entry_budget`). For each
+   cluster `needᵢ = max(c_minᵢ, ⌈λᵢⁱⁿ / cᵢ⌉)` with the frontend capacity
+   cᵢ (60 req/s in `services.yaml`, 33 req/s on the Kubephos fleet, §2) and `c_min` = 1 (0 with the `-min0` arms,
+   `DMOS_ENTRY_MIN_REPLICAS`). `DMOS_ENTRY_BUDGET` sets where the per-cluster
+   cap `c_maxᵢ` applies:
+   - `total` (code default): `N = min(Σᵢ c_maxᵢ, Σᵢ needᵢ)`.
+     The excess of a cluster at its cap stays in the budget, and L1 places it
+     on the other clusters (the bid capacity is capped at `c_maxᵢ`). Right when
+     the frontend is served by the global pool: any replica serves any request.
+   - `per_cluster` (legacy arm `l1l2`): `N = Σᵢ min(c_maxᵢ, needᵢ)`. The
+     excess of a full hot cluster is lost: at `con` 700 req/s, DE needs 11
+     replicas, counts 6, and N = 11 instead of 16.
+   - `pooled` (arms `<arm>-pool`, the paper's configuration):
+     `N = min(Σᵢ c_maxᵢ, max(Σᵢ c_minᵢ, ⌈Σᵢ λᵢⁱⁿ / r̄⌉))`, one federation-wide
+     budget from the total demand, for the frontend served by the pool of all
+     clusters ([REACH-AND-POOLED-BUDGET.md](REACH-AND-POOLED-BUDGET.md)).
+   The `min(c_maxᵢ, needᵢ)` are also the **demand floors** (passed to L1 only
+   when the demand floor is enabled). N is at least 1.
 4. **Placement.** L1 (§7) splits N across the clusters, or, with
    `--no-scheduling` (arm `l2`), N is split uniformly: ⌊N/K⌋ each, the
    remainder to the first clusters in name order. If L1 cannot place the
@@ -408,7 +450,10 @@ A cluster is excluded (score 0, no bid) if any of these holds
 | free memory < 0.2 GB | `MIN_MEMORY_GB_AVAILABLE` |
 
 Utilization is `(total − free) / total`, with *total* from `local.yaml` and
-*free* from Prometheus.
+*free* from Prometheus (§5.1): the worker node by default. With the
+cluster-wide measurement of the legacy arm `l1l2` (`DMOS_FREE_RESOURCES=cluster`)
+*free* includes the control-plane cores, the utilization can be negative
+(e.g. `cpu=-39%` in the log) and the 95 % CPU limit never triggers.
 
 ### 7.3 Objective components
 
@@ -418,7 +463,7 @@ values are the defaults of `ScoreParameters` unless noted.
 | Component | Formula | Parameters | Notes |
 |---|---|---|---|
 | latency Φ_lat | `1 / (1 + η·Lᵢ) · exp(−var/σ²)` | η = 0.001 /ms, σ² = 10⁶ ms² | the variance is always 0 in the warm phase, so Φ_lat = 1/(1 + η·p95) |
-| capacity Φ_cap | `hw · (β + (1−β)·slack)` | hw = min(1, cpu_cores/8), slack = min(free CPU fraction, free memory fraction), β = 0.3 | clipped to [0, 1] |
+| capacity Φ_cap | `hw · (β + (1−β)·slack)` | hw = min(1, cpu_cores/8), slack = min(free CPU fraction, free memory fraction) of the worker node (§5.1), β = 0.3 | clipped to [0, 1]. With the cluster-wide measurement (`DMOS_FREE_RESOURCES=cluster`) the CPU fraction exceeds 1 and the slack hardly moves with the load: Φ_cap ≈ hw |
 | network proximity Φ_net | `exp(−ρ · min(RTTᵢ, RTT_max) / RTT_max)` | **ρ = 3.0** (`weights.yaml → network_parameters.rho`), RTT_max = 500 ms | falls back to RTT = 5 ms |
 | carbon Φ_car | `exp(−ν · CIᵢ / CI_max)` | ν = 0.5, CI_max = 500 gCO₂/kWh | CI above CI_max is not clipped |
 | demand share d | `clip(dᵢ, 0, 1)` | — | §5.2 |
@@ -453,12 +498,14 @@ Models defined today:
 
 | Model | Mode | Gate (ε, g) | ω lat / cap / net / car (/ dem) | Purpose |
 |---|---|---|---|---|
-| `nca` | gate | 0.05, 2 | 0.25 / 0.35 / 0.30 / 0.10 | configuration *described* in the NCA 2026 paper (Eq. 1–2, §V-B); the campaign ran arm `l1l2` (§7.5, §13 item 2) |
+| `reach` | gate on ψ (`demand_signal: reach`, τ = 50 ms) | 0.05, 2 | same as `nca` | **DMOS of the paper** (arm `reach-pool-ps`): the gate uses the reachable demand ψᵢ = Σⱼ dⱼ·exp(−RTT(j,i)/τ) instead of dᵢ ([REACH-AND-POOLED-BUDGET.md](REACH-AND-POOLED-BUDGET.md)) |
+| `reach_green` | gate on ψ (τ = 50 ms) | 0.05, 2 | 0.05 / 0.20 / 0.10 / 0.65, ν = 2 | carbon-first variant (arm `reach_green-pool-ps-min0`) |
+| `nca` | gate | 0.05, 2 | 0.25 / 0.35 / 0.30 / 0.10 | gate on the entering demand share dᵢ; legacy configuration kept for comparison (arm `nca-pool-ps`, the "Local-demand gate" of the paper) |
 | `gate_g0` | gate | 0.05, 0 | same as `nca` | E2: no demand in the score (pure weighted sum) |
 | `gate_g1` | gate | 0.05, 1 | same as `nca` | E2: linear gate |
 | `gate_g3` | gate | 0.05, 3 | same as `nca` | E2: stronger gate |
 | `additive_dem50` | additive | — | 0.125 / 0.175 / 0.15 / 0.05 / 0.50 | E2: demand as a fifth weighted term |
-| `locality` | locality | — | same as `nca` | demand multiplies only the proximity term |
+| `locality` | locality | — | same as `nca` | demand multiplies only the proximity term (arm `locality-ps`) |
 | `latency_first` | gate | 0.05, 2 | 0.55 / 0.15 / 0.15 / 0.15 | E3 profile (proposal) |
 | `capacity_first` | gate | 0.05, 2 | 0.15 / 0.55 / 0.15 / 0.15 | E3 profile (proposal) |
 | `carbon_first` | gate | 0.05, 2 | 0.15 / 0.15 / 0.15 / 0.55 | E3 profile (proposal) |
@@ -470,14 +517,14 @@ d = 1/6 → G = 0.043; d = 0.03 → G = 0.006. A cluster without demand keeps a
 small positive score (G(0) = ε^g), so it still bids but receives almost
 nothing.
 
-**Cold start.** The first 120 s after DMOS starts are, by design (paper
-§IV-E), an observation window: the live metrics (latency, load) are not yet
+**Cold start.** The first 120 s after DMOS starts are, by design, an
+observation window: the live metrics (latency, load) are not yet
 reliable, so DMOS only listens to the system and performs no scaling
 operation — the start-up grace of the orchestrator (`startup_grace_s` =
 120 s, §6.2) stops every cycle before the score is computed. The model's
 `cold_start` field defines the score of that phase, recorded in the
 provenance: `structural` (ω_lat = ω_cap = 0, the other weights
-renormalised, demand keeps its role — the paper's description) or `same`
+renormalised, demand keeps its role) or `same`
 (the warm weights). The first allocation happens after the window, with the
 warm score.
 
@@ -508,7 +555,7 @@ brackets):
 
 | Arm | Environment | Resulting score |
 |---|---|---|
-| `l1l2` (was `l1l2coh`) | `DMOS_DEMAND_FLOOR=0 DMOS_SCORE_GATE=1 DMOS_SCORE_GATE_GAMMA=2 DMOS_LOCALITY_PURE_NET=1 DMOS_WEIGHTS_COHERENT=0.25,0.20,0.25,0.30` | `S = G(d; 0.05, 2)·(0.25 Φ_lat + 0.20 Φ_cap + 0.25 Φ_net + 0.30 Φ_car)`, no floor — **the configuration of the NCA 2026 campaign**, read back from its DMOS logs (15–17 June 2026) |
+| `l1l2` (was `l1l2coh`) | `DMOS_DEMAND_FLOOR=0 DMOS_SCORE_GATE=1 DMOS_SCORE_GATE_GAMMA=2 DMOS_LOCALITY_PURE_NET=1 DMOS_WEIGHTS_COHERENT=0.25,0.20,0.25,0.30 DMOS_ENTRY_BUDGET=per_cluster DMOS_FREE_RESOURCES=cluster` | `S = G(d; 0.05, 2)·(0.25 Φ_lat + 0.20 Φ_cap + 0.25 Φ_net + 0.30 Φ_car)`, no floor, with the per-cluster budget cap and the cluster-wide free-resource measurement — a legacy configuration kept for comparison |
 | `legacy-gate1` (was `l1l2` of `run_one.sh`) | `DMOS_DEMAND_FLOOR=0 DMOS_SCORE_GATE=1` | `flash_crowd_aware`, Φ_loc = d·Φ_net, gate g = 1 |
 | `legacy-nofloor` (was `l1l2nofloor`) | `DMOS_DEMAND_FLOOR=0` | additive `flash_crowd_aware`, no gate, no floor (negative control) |
 | `legacy-default` (was `l1l2floor`, and `l1l2` of the old matrix/sweep scripts) | none | code default: `flash_crowd_aware` with demand floors |
@@ -536,7 +583,7 @@ capacity = min(⌊free CPU / CPU request⌋, ⌊free memory / memory request⌋,
 line says the CPU/memory terms are "only for the log", but they are part of
 the minimum; on an idle cluster `c_max` is the binding term.
 
-**Allocation** (`WinnerDetermination.allocate`, paper Eq. 8):
+**Allocation** (`WinnerDetermination.allocate`):
 
 1. Floors (when enabled): each cluster starts at `min(needᵢ, capacityᵢ)`; the
    remaining budget is `N − Σ floors`.
@@ -557,11 +604,15 @@ The Jain fairness index of the allocation is logged.
 
 ## 8. Level 2 — predictor and PD correction
 
+This is the reactive Level 2 (`DMOS_SCALER=reactive`, legacy arms). The
+paper's configuration uses the predictive scaler instead, described in
+[PREDICTIVE-SCALER.md](PREDICTIVE-SCALER.md).
+
 Each (service, cluster) pair has a `ReplicaScaler`, used as a container for a
 `TrafficPredictor` and a `PDController` and for the rate limits.
 (`ReplicaScaler.compute_target_replicas` itself is not called.)
 
-### 8.1 Trend predictor (`src/level2/predictor.py`, paper Eq. 9)
+### 8.1 Trend predictor (`src/level2/predictor.py`)
 
 ```
 derivative = (λ(t) − λ(t − τ)) / τ          τ ≈ window W = 60 s (closest stored sample)
@@ -578,7 +629,7 @@ call it, so there are about two samples per 30 s per cluster. The prediction
 is used (a) to trigger cycles early (§6.1) and (b) as the reference of the PD
 correction.
 
-### 8.2 PD correction (`src/level2/pd_controller.py`, paper Eq. 10)
+### 8.2 PD correction (`src/level2/pd_controller.py`)
 
 ```
 e  = (λ̂ − λ) / λ̂                              (0 if λ̂ = 0, state reset)
@@ -597,8 +648,8 @@ only for e ≥ 0.25.
 
 ## 9. Backend co-scaling
 
-At the end of every cycle (`DMOSOrchestrator._enforce_colocation`, paper
-Eq. 11), for each backend *b* of `services.yaml → application.co_scaled_services`
+At the end of every cycle (`DMOSOrchestrator._enforce_colocation`),
+for each backend *b* of `services.yaml → application.co_scaled_services`
 (in that order) and each cluster *i*:
 
 ```
@@ -620,6 +671,10 @@ saturation. Resulting ratios with the current `services.yaml`:
 | currencyservice | 60/250 × 3.4 = 0.82 | 0.82 |
 | adservice | 60/400 × 0.43 = 0.06 | 0.30 (floor) |
 | shippingservice | 60/500 × 0.14 = 0.02 | 0.30 (floor) |
+
+With the 33 req/s frontend capacity of the Kubephos fleet (§2) the effective
+ratios are 0.33 for recommendationservice, 0.45 for currencyservice and the
+0.30 floor for the others.
 
 Co-scaling is bidirectional (it follows the frontend up and down), applies
 the change in one step (no ±rate limit) and has its own churn budget per
@@ -735,22 +790,23 @@ published); DMOS runs on the operator host.
 
 ## 13. Known limitations and paper ↔ code differences
 
-Items marked **verify** need a check on the running testbed (phase G0 of the
-test plan); items marked **decide** need a choice for the journal version.
+Items marked **verify** are worth checking on a new testbed.
 
 | # | Topic | What the code does | Consequence |
 |---|---|---|---|
-| 1 | Network sensitivity ρ | 3.0 (`network_parameters.rho`), also in the NCA campaign | Tab. I of the NCA paper says 2.0 — **decide** |
-| 2 | Weights of the NCA campaign | the campaign ran gate g = 2 with lat/cap/net/car = 0.25/0.20/0.25/0.30 and Φ_loc = Φ_net, floor off (arm `l1l2`, §7.5; DMOS logs of 15–17 June 2026) | §V-B of the paper states (0.25, 0.35, 0.30, 0.10), which is the `nca` model: the published results come from `l1l2` — **decide** which is "DMOS" for the journal |
-| 3 | Carbon traces | not distributed with the repository (Electricity Maps terms); a cluster without its file uses the synthetic `realistic` profile, which depends on the wall-clock hour and month (§5.3); NO uses its trace via `zone_aliases` | download the six zones with an access that includes historical data (academic access); in the NCA campaign NO, US-VA and SG were all synthetic. Each run records the source per cluster |
+| 1 | Network sensitivity ρ | 3.0 (`network_parameters.rho`); the code default is 2.0 | the value in effect is recorded in each run's `dmos_config.json` |
+| 2 | Legacy arm `l1l2` vs model `nca` | `l1l2` runs gate g = 2 with lat/cap/net/car = 0.25/0.20/0.25/0.30 and Φ_loc = Φ_net, floor off (§7.5); the model `nca` uses (0.25, 0.35, 0.30, 0.10) | two different legacy configurations kept for comparison; the paper's DMOS is `reach-pool-ps` (§1, §7.4) |
+| 3 | Carbon traces | not distributed with the repository (Electricity Maps terms); a cluster without its file uses the synthetic `realistic` profile, which depends on the wall-clock hour and month (§5.3); NO uses its trace via `zone_aliases` | download the six zones with an access that includes historical data (academic access). Each run records the source per cluster |
 | 4 | Cycle aborted when the budget does not fit | `success = false` → nothing scaled in that cycle, backends included (§6.2) | only when a cluster is excluded by L0 or its CPU/memory-based bid capacity is below its need — **verify** in `dmos.log` ("Scheduling fallito") |
 | 5 | Cluster excluded by L0 | it receives no allocation and is scaled down to `c_min` in one step when the 90 s guards allow (§6.2 step 6) | under saturation an overloaded cluster can lose replicas at once — **verify** ("Cluster esclusi" in `dmos.log`) |
 | 6 | Latency signal | p95 over all L7 flows of the namespace on the cluster; 2 ms baseline when missing | a cluster without L7 data looks fast (Φ_lat ≈ 1) |
-| 7 | Free resources | summed over all nodes in kube-state-metrics, totals from `local.yaml` (worker) — **verify** whether the control-plane node is included | free fraction can exceed 1 (Φ_cap clipped), L0 thresholds less strict than they read |
-| 8 | Data plane | frontend global, shared, `affinity: none` as in the paper (§4), checked before every run; the four backends stay `affinity: local` | the paper says "the services are exposed as global services with affinity: none" — **decide** whether that includes the backends |
-| 9 | Geo-boost | one replica moved to the best-scored cluster in a tie (§7.6) | not described in the paper |
-| 10 | PD clamp, co-scaling floor | ±1 applied, floor 0.3 | Tab. II reports the raw ±3; the floor is not in Eq. 11 |
+| 7 | Free resources | measured on the worker node (`DMOS_FREE_RESOURCES=worker`, default). With `cluster` (legacy arm `l1l2`) they are summed over all the nodes (control plane included) and divided by the worker's totals | with `cluster`: free CPU fraction above 1 (e.g. `cpu=-39%` in the log), Φ_cap ≈ hardware tier, the L0 CPU limit never triggers. **verify** that node_exporter has series for each worker IP (otherwise DMOS falls back to the cluster-wide measurement and logs it) |
+| 8 | Data plane | frontend global, shared, `affinity: none` (§4), checked before every run; the four backends stay `affinity: local` | with a Cilium affected by bug [#46623](https://github.com/cilium/cilium/issues/46623) (explicit `affinity: "none"` drops the remote backends; Cilium 1.19.4 has it, later 1.19 releases fix it) the frontend is served **locally**: each cluster serves the demand entering it, whatever its replica share. The pooled distribution needs a Cilium with the fix — **verify** with `cilium-dbg service list` (pool of all clusters) |
+| 15 | Budget cap per cluster | only the total is capped (`DMOS_ENTRY_BUDGET=total`, default, and `pooled`, the paper's configuration; §6.2) | legacy `per_cluster` (arm `l1l2`): the excess of a hot cluster at its cap was lost from N; harmless with local serving, under-provisioning with the shared pool at high load or with a small hot cluster (PL, SG: cap 3) |
+| 16 | Entry minimum | 1 replica per cluster (`services.yaml`); 0 with the `-min0` arms (`DMOS_ENTRY_MIN_REPLICAS`) | with 0 a cluster without demand may hold no frontend: needs the true distribution (#8), and the demand entering that cluster must still be measured — **verify** |
+| 9 | Geo-boost | one replica moved to the best-scored cluster in a tie (§7.6) | a tie-break on top of the proportional allocation |
+| 10 | PD clamp, co-scaling floor | ±1 applied, floor 0.3 | the PD output before the clamp ranges over ±3; the floor is an addition to the proportional co-scaling ratio |
 | 11 | Unused configuration | `scheduling_interval_seconds`, `carbon_parameters`, `global_autoscaling` (services.yaml), `objectives` | values there have no effect; see [configuration-reference.md](configuration-reference.md) |
 | 12 | Single process | DMOS is not replicated; state (predictor history, cooldowns) is in memory | a restart resets history and grace |
 | 13 | Demand floor on (code default) | budget = Σ floors, so the score distributes nothing (§7.5) | `legacy-default` and `profile-*` arms place replicas by demand only |
-| 14 | Online Boutique `loadgenerator` | the reset scripts scale it to 0; every run refuses to start if it has replicas and the manifest flags it (error `loadgenerator_running`) | in the June 2026 runs it was running (the reset scaled it to 1): the archived runs show loadgenerator → frontend flows in Hubble on five of the six clusters; its rate was not recorded |
+| 14 | Online Boutique `loadgenerator` | the reset scripts scale it to 0; every run refuses to start if it has replicas and the manifest flags it (error `loadgenerator_running`) | a running `loadgenerator` would add its own requests to the measured demand |

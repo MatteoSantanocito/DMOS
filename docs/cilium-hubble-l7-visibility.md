@@ -132,6 +132,6 @@ Helm-managed Cilium use the Helm values above instead.
 
 ## 5. History
 
-The NGINX-ingress setup and its debugging (namespace-scoped endpoint
-selectors, ClusterIP identities, proxy activation per port) are in
-[_archive/nginx-ingress-hubble-l7.md](_archive/nginx-ingress-hubble-l7.md).
+An earlier NGINX-ingress setup needed its own debugging (namespace-scoped
+endpoint selectors, ClusterIP identities, proxy activation per port); it is
+not part of this release.

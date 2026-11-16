@@ -1,0 +1,42 @@
+# Campagna definitiva del paper (journal), piano v2 — PRE-REGISTRATO, non modificare dopo l'avvio.
+# Avvio: bash experiments/run_campaign.sh experiments/plans/2026-11-02-definitive.plan
+#
+# Codice: scaler v4 (POLICY_VERSION 4) + l2 uniforme N/K nei cap + modello reach_green (patch del 1/11),
+# tutto committato prima dell'avvio. Analisi solo sui run con status OK nel .tsv della campagna.
+#
+# Disegno: 5 ripetizioni (D1..D5). In ogni ripetizione i regimi in ordine casuale e, dentro ogni
+# regime, i bracci in ordine casuale (random.Random(20261102 + ripetizione)). off e hpa-none in ogni
+# blocco come controllo delle derive. 18 celle per ripetizione, 90 run, circa 35 h con le finestre Cilium.
+#   R1 core:           off, hpa-none, l2-pool-ps, reach-pool-ps          x bal, con, con-tosg
+#   R4 ablazione:      locality-ps, nca-pool-ps (reach-pool-ps da R1)     x con
+#   R3 sostenibilita': reach-pool-ps-min0, reach_green-pool-ps-min0      x bal, con
+#
+# Metriche primarie (flash_crowd_summary.json, dmos_live.jsonl, paper_sustainability.run_metrics):
+#   p95 globale k6; repl*min dei frontend pronti; CO2 dinamica per richiesta riuscita; CI servita.
+# Test: permutazione esatta 5 contro 5, a una coda nella direzione indicata (p minimo 1/252 = 0,004),
+# Holm dentro ogni famiglia. Effetti riportati come differenza % con IC bootstrap 95%.
+#   F1 (primaria, 9 test): reach-pool-ps < hpa-none su p95 e su repl*min;
+#                          reach-pool-ps < l2-pool-ps su p95; in ognuno dei 3 regimi.
+#   F2 (sostenibilita', 6 test, bal e con): reach_green-pool-ps-min0 < reach-pool-ps-min0 su CI servita
+#                          e CO2/req; reach-pool-ps-min0 < reach-pool-ps su repl*min.
+#   F3 (ablazione, con, 3 test su p95): reach-pool-ps < nca-pool-ps; reach-pool-ps < locality-ps;
+#                          nca-pool-ps vs locality-ps a due code.
+#   Descrittivi, senza test: errori per fase, p99, pod avviati, repliche nel calo, SG a 0, vs off.
+# Deviazioni dal piano: annotate in fondo a questo file con data e motivo, senza toccare le celle.
+#
+# Se la campagna si ferma: copiare questo file, togliere le celle gia' OK nel .tsv e rilanciare la copia.
+
+# preStop 15 s + grace 30 s su frontend e servizi co-scalati
+@prestop
+
+# RIPRESA 03/11: due VM spente durante D5 nca-pool-ps con (08:24), run annullato e spostato in _retried.
+# Restano le 7 celle sotto, nello stesso ordine del piano. Stesso nome file: log e .tsv continuano.
+
+# ── ripetizione 5 (ripresa) ──
+D5 nca-pool-ps                con
+D5 hpa-none                   con
+D5 reach-pool-ps              con
+D5 l2-pool-ps                 con-tosg
+D5 off                        con-tosg
+D5 reach-pool-ps              con-tosg
+D5 hpa-none                   con-tosg

@@ -24,19 +24,18 @@ of each cluster (`dmos_config.json → carbon.sources`, warning
 | `SG_2025_hourly.csv` | Singapore | ms-cluster-05 |
 | `NO-NO1_2025_hourly.csv` | Norway, Oslo (NO1) | ms-cluster-06 (region code `NO`, via `trace.zone_aliases`) |
 
-The NCA 2026 campaign used traces for DE, FR and PL only (NO, US-VA and SG
-ran on the built-in profiles).
+On the paper's Kubephos fleet the clusters are `ms-01-cluster-01` …
+`ms-01-cluster-06`, in the same order and regions.
 
-**Versions used for the journal experiments** (record yours here when you
+**Versions used for the paper's experiments** (record yours here when you
 download):
 
 | Zones | Source | Version | Hours estimated by Electricity Maps |
 |---|---|---|---|
 | DE, FR, PL, US-MIDA-PJM, SG, NO-NO1 | portal datasets, Carbon Intensity, hourly, 2025 | 2026-02-10 | DE 12, FR 5, PL 0, US-MIDA-PJM 12, SG 135, NO-NO1 0 (of 8760) |
 
-The NCA 2026 runs used earlier files of DE, FR and PL downloaded through the
-API on 2026-05-29: same annual means (within 0.2 gCO₂eq/kWh), different hourly values (DE: correlation 0.93)
-(revisions between data versions).
+Files of other data versions can differ in their hourly values (revisions
+between versions), even with the same annual means.
 
 ## How to get them
 

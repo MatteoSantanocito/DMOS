@@ -99,14 +99,43 @@ changing how many frontends each cluster runs.
 ## 5. Why not NGINX
 
 An earlier iteration used the NGINX Ingress controller with a policy for L7
-visibility ([_archive/nginx-ingress-hubble-l7.md](_archive/nginx-ingress-hubble-l7.md)).
+visibility.
 The Cilium Ingress removes a component and a hop (Envoy runs in the Cilium
 agent), works natively with ClusterMesh, and makes external requests
 distinguishable: they reach the frontend from the `reserved:ingress`
 identity with an empty `source_workload`, whereas with NGINX every flow came
 from the NGINX pod.
 
-## 6. References
+## 7. Gateway API variant
+
+Clusters whose Cilium has the Gateway API enabled but not the Ingress
+controller (e.g. those built by Kubephos, GatewayClass `kubephos-cilium` with
+a NodePort Service) use [`deployments/gateway-frontend.yaml`](../deployments/gateway-frontend.yaml)
+instead of the Ingress: a `Gateway` (listener HTTP :80) and an `HTTPRoute` `/`
+→ `frontend:80`.
+
+```powershell
+pwsh scripts/setup-dmos-on-clusters.ps1 -IngressMode gateway -GatewayClass kubephos-cilium ...
+```
+
+- **Same data path.** Cilium serves the Gateway with the same per-node Envoy
+  and the same `reserved:ingress` identity as the Ingress, so
+  `cnp-frontend-l7.yaml` and the queries of §3 are unchanged.
+- **Port.** Kubernetes assigns the NodePort of the Service Cilium creates for
+  the Gateway (`cilium-gateway-frontend-gateway`); a GatewayClass cannot fix
+  it. The setup script prints it for every cluster: write it as
+  `ingress_port` of the cluster in `config/local.yaml` and re-run
+  `scripts/render-runtime-files.sh` (k6, the reset and the harness read the
+  URL from `.cache/test-env.json`). It stays the same as long as the Gateway
+  is not deleted.
+- With `-IngressMode gateway` the Cilium upgrade of the script changes only
+  the Hubble metrics, not the Ingress controller.
+- **Demand signal.** If the Gateway NodePort is reached on a node without
+  frontend pods (Kubephos: the control plane), set
+  `ingress_demand_match: namespace` for the cluster
+  ([traffic-metrics-architecture.md §2](traffic-metrics-architecture.md#2-the-signal)).
+
+## 8. References
 
 - [`deployments/ingress-frontend-cilium.yaml`](../deployments/ingress-frontend-cilium.yaml),
   [`deployments/cnp-frontend-l7.yaml`](../deployments/cnp-frontend-l7.yaml),

@@ -295,6 +295,12 @@ def build_effective_config(orch) -> Dict[str, Any]:
             "demand_floor": bool(orch.demand_floor_enabled),
             "colocation": bool(orch.colocation_enabled),
             "monitored_services": list(orch.monitored_services),
+            # DMOS_ENTRY_MIN_REPLICAS ('-min<k>' arms); None = services.yaml
+            "entry_min_replicas": getattr(orch, "entry_min_replicas", None),
+            # DMOS_ENTRY_BUDGET: 'total' (default) | 'per_cluster' (NCA 2026) | 'pooled'
+            "entry_budget": getattr(orch, "entry_budget_mode", "per_cluster"),
+            # DMOS_FREE_RESOURCES: 'worker' (default) | 'cluster' (NCA 2026)
+            "free_resources": getattr(sched, "free_resources_mode", "cluster"),
         },
         "level1": {
             "score_profile": getattr(cfg, "active_score_profile", None),
@@ -351,21 +357,50 @@ def build_effective_config(orch) -> Dict[str, Any]:
             # wall-clock hour, 'mock', 'default-300').
             "sources": carbon_sources(sched, cfg),
         },
-        "clusters": {
-            name: {
-                "region": c.region,
-                "cpu_cores": c.cpu_cores,
-                "memory_gb": c.memory_gb,
-                "prometheus_port": c.prometheus_port,
-                "carbon_region": (c.carbon or {}).get("region_code"),
-                "carbon_baseline_gco2_kwh": (c.carbon or {}).get("baseline_gco2_kwh"),
-            }
-            for name, c in cfg.clusters.items()
-        },
+        "clusters": {name: cluster_snapshot(c) for name, c in cfg.clusters.items()},
     }
+    # Reach-weighted demand in the gate (score model demand_signal 'reach'):
+    # algorithmic, so it enters config_id; recorded only when selected, so the
+    # config_id of the models that use the raw demand share is unchanged.
+    model = getattr(sched, "score_model", None)
+    if model is not None and getattr(model, "demand_signal", "share") == "reach":
+        effective["level1"]["demand_signal"] = {"signal": "reach",
+                                                "tau_ms": model.reach_tau_ms}
+    # Predictive Level 2 (DMOS_SCALER=predictive): recorded only when selected,
+    # so the config_id of the reactive arms is unchanged.
+    ps = getattr(orch, "ps", None)
+    if ps is not None:
+        effective["modes"]["scaler"] = "predictive"
+        effective["level2"]["predictive_scaler"] = ps.snapshot()
     effective["config_id"] = config_fingerprint(effective)
     effective["summary"] = summary_line(effective)
     return effective
+
+
+def cluster_snapshot(c) -> Dict[str, Any]:
+    """One cluster of the effective configuration."""
+    snap = {
+        "region": c.region,
+        "cpu_cores": c.cpu_cores,
+        "memory_gb": c.memory_gb,
+        "prometheus_port": c.prometheus_port,
+        "carbon_region": (c.carbon or {}).get("region_code"),
+        "carbon_baseline_gco2_kwh": (c.carbon or {}).get("baseline_gco2_kwh"),
+    }
+    # Only when not the default, so the config_id of existing setups is unchanged
+    match = getattr(c, "ingress_demand_match", "workload")
+    if match != "workload":
+        snap["ingress_demand_match"] = match
+    caps = getattr(c, "max_replicas", None)
+    if caps:
+        snap["max_replicas"] = dict(sorted(caps.items()))
+    capacities = getattr(c, "capacity_req_per_sec", None)
+    if capacities:
+        snap["capacity_req_per_sec"] = dict(sorted(capacities.items()))
+    workers = getattr(c, "worker_ips", None)
+    if workers:
+        snap["worker_ips"] = list(workers)
+    return snap
 
 
 def application_snapshot(cfg) -> Dict[str, Any]:
@@ -429,6 +464,20 @@ def summary_line(effective: Dict[str, Any]) -> str:
         measured += f" | demand from {'|'.join(demand_cfg['source_workloads'])}"
     if demand_cfg and not demand_cfg.get("server_side_fallback", True):
         measured += " | no server-side fallback"
+    if modes.get("entry_min_replicas") is not None:
+        measured += f" | entry min {modes['entry_min_replicas']}/cluster"
+    # the NCA-2026 behaviours are shown only when selected (defaults stay quiet)
+    if modes.get("entry_budget") == "per_cluster":
+        measured += " | budget per-cluster (NCA)"
+    elif modes.get("entry_budget") == "pooled":
+        measured += " | budget pooled"
+    signal = (effective.get("level1") or {}).get("demand_signal") or {}
+    if signal.get("signal") == "reach":
+        measured += f" | demand reach tau={signal.get('tau_ms'):.0f}ms"
+    if modes.get("free_resources") == "cluster":
+        measured += " | free resources cluster-wide (NCA)"
+    if modes.get("scaler") == "predictive":
+        measured += " | scaler=predictive"
     return (f"[{effective.get('config_id', '?')}] {arm} | {warm.get('formula', '?')}"
             f" | demand via {','.join(warm.get('demand_roles', [])) or 'none'}"
             f" | floor={floor} | {weights}{carbon}{measured}")

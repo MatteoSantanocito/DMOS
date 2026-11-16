@@ -44,6 +44,9 @@
 # ENV (override opzionali)
 #   DMOS_K6_REMOTE DMOS_K6_SSH_KEY DMOS_PEAK_RPS DMOS_BASELINE_RPS
 #   DMOS_SPIKE_REGION DMOS_PHASE_TIMES DMOS_VU_FACTOR DMOS_RAW_OUT=0
+#   DMOS_K6_PROGRESS=1  barra di avanzamento di k6 (default: una riga di stato al minuto)
+#   DMOS_SHIFT_W1..6 DMOS_SHIFT_AT DMOS_SHIFT_RAMP DMOS_SHIFT_REGION
+#   (punto caldo che si sposta: li imposta run_naming.py per i regimi -to<cluster>)
 #   KUBECONFIG_DIR
 # =============================================================================
 
@@ -70,7 +73,7 @@ K6_REMOTE="${DMOS_K6_REMOTE:-}"
 K6_SSH_KEY="${DMOS_K6_SSH_KEY:-}"
 PEAK_RPS="${DMOS_PEAK_RPS:-250}"
 BASELINE_RPS="${DMOS_BASELINE_RPS:-50}"
-SPIKE_REGION="${DMOS_SPIKE_REGION:-ms-cluster-01}"
+SPIKE_REGION="${DMOS_SPIKE_REGION:-}"     # vuoto = primo cluster di test-env.json
 PHASE_TIMES="${DMOS_PHASE_TIMES:-180,300,600,720,900}"
 VU_FACTOR="${DMOS_VU_FACTOR:-20}"
 RAW_OUT="${DMOS_RAW_OUT:-1}"
@@ -91,6 +94,23 @@ for i in 1 2 3 4 5 6; do
     [[ -n "$_valI" ]] && SPIKE_EARGS="${SPIKE_EARGS} -e ${_vI}=${_valI}"
 done
 [[ -n "${DMOS_SPIKE_WEIGHT:-}" ]] && SPIKE_EARGS="${SPIKE_EARGS} -e DMOS_SPIKE_WEIGHT=${DMOS_SPIKE_WEIGHT}"
+
+# ── Punto caldo che si sposta (regimi <domanda>-to<cluster>) ─────────────────
+# DMOS_SHIFT_W{1..6} = distribuzione dopo lo spostamento, DMOS_SHIFT_AT e
+# DMOS_SHIFT_RAMP in secondi, DMOS_SHIFT_REGION = cluster di arrivo. Inoltrati
+# come gli altri pesi (anche alla k6 remota) e registrati nel manifest.
+SHIFT_W_REC=""
+for i in 1 2 3 4 5 6; do
+    _vT="DMOS_SHIFT_W${i}"; _valT="${!_vT:-}"
+    [[ -n "$_valT" ]] && SPIKE_EARGS="${SPIKE_EARGS} -e ${_vT}=${_valT}"
+    [[ -n "$_valT" ]] && SHIFT_W_REC="${SHIFT_W_REC}${SHIFT_W_REC:+,}W${i}=${_valT}"
+done
+SHIFT_AT="${DMOS_SHIFT_AT:-}"; SHIFT_RAMP="${DMOS_SHIFT_RAMP:-}"; SHIFT_REGION="${DMOS_SHIFT_REGION:-}"
+if [[ -n "$SHIFT_W_REC" ]]; then
+    [[ -n "$SHIFT_AT" ]] || { echo "  [x] DMOS_SHIFT_W* impostati senza DMOS_SHIFT_AT" >&2; exit 1; }
+    SPIKE_EARGS="${SPIKE_EARGS} -e DMOS_SHIFT_AT=${SHIFT_AT} -e DMOS_SHIFT_RAMP=${SHIFT_RAMP:-0}"
+    [[ -n "$SHIFT_REGION" ]] && SPIKE_EARGS="${SPIKE_EARGS} -e DMOS_SHIFT_REGION=${SHIFT_REGION}"
+fi
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -177,6 +197,7 @@ python -c "import requests" 2>/dev/null \
 [[ -f "$COLLECTOR" ]]  || fail "Collector mancante: $COLLECTOR"
 [[ -f "$MANIFEST_PY" ]] || fail "write_manifest.py mancante: $MANIFEST_PY"
 [[ -f "$ENV_JSON" ]]   || fail ".cache/test-env.json mancante — lancia render-runtime-files.sh"
+[[ -n "$SPIKE_REGION" ]] || SPIKE_REGION="$(jq -r '.clusters[0].name' "$ENV_JSON" | tr -d '\r')"
 ok "Tool e file presenti"
 
 if [[ -z "$K6_REMOTE" ]]; then
@@ -264,6 +285,8 @@ python "$MANIFEST_PY" start --run-dir "$RUN_DIR" --label "$LABEL" $NO_DMOS_ARG \
     --k6-args "$K6_EARGS" --raw-out "$RAW_OUT" \
     --peak-rps "$PEAK_RPS" --baseline-rps "$BASELINE_RPS" \
     --spike-region "$SPIKE_REGION" --spike-weights "$SPIKE_W_REC" \
+    --shift-weights "$SHIFT_W_REC" --shift-at "$SHIFT_AT" --shift-ramp "$SHIFT_RAMP" \
+    --shift-region "$SHIFT_REGION" \
     --phase-times "$PHASE_TIMES" --test-duration "$TEST_DURATION" --vu-factor "$VU_FACTOR" \
     || fail "write_manifest.py start fallito"
 ok "manifest.json scritto (config k6, git, host, config_snapshot/)"
@@ -290,6 +313,11 @@ fi
 # ── 3. Lancio il collector (background, sul laptop) ─────────────────────────
 hdr "Avvio collector metriche DMOS+cluster (collect_dmos_live.py)"
 COLLECTOR_OUT="${RUN_DIR}/dmos_live.jsonl"
+# Shared anchor of the carbon-trace replay: the instant the load (and the
+# collector) start. DMOS reads it through DMOS_CARBON_T0_FILE (set by
+# run_common.sh) and the offline analysis uses the same file, so every arm of
+# every run sees the same carbon-intensity timeline relative to the load.
+python -c "import time; print(f'{time.time():.3f}')" > "${RUN_DIR}/carbon_t0"
 NO_DMOS_FLAG=""
 [[ "$NO_DMOS" == "1" ]] && NO_DMOS_FLAG="--no-dmos"
 python "$COLLECTOR" "$COLLECTOR_DURATION" \
@@ -308,14 +336,38 @@ K6_EXIT=0
 if [[ -z "$K6_REMOTE" ]]; then
     # ---- modo LOCALE -------------------------------------------------------
     hdr "k6 in LOCALE — durata ~${EST_MIN} min"
-    echo "  Output live qui sotto; il riepilogo per-fase compare alla fine."
     cd "$REPO_ROOT"
     rm -f flash_crowd_summary.json
     LOCAL_RAW=""
     [[ "$RAW_OUT" == "1" ]] && LOCAL_RAW="--out json=${RUN_DIR}/k6_events.json"
+    # Fuori da un terminale vero (Git Bash) la barra di k6 stampa una riga al
+    # secondo: di default k6 --quiet + una riga di stato al minuto.
+    # DMOS_K6_PROGRESS=1 rimette la barra di k6.
+    K6_QUIET="--quiet"; HB_PID=""
+    if [[ "${DMOS_K6_PROGRESS:-0}" == "1" ]]; then
+        K6_QUIET=""
+        echo "  Output live di k6 qui sotto; il riepilogo per-fase compare alla fine."
+    else
+        echo "  Una riga di stato al minuto; il riepilogo per-fase compare alla fine."
+        (
+            IFS=, read -r -a bounds <<< "$PHASE_TIMES"
+            names=(baseline spike peak decay cooldown)
+            t0=$SECONDS
+            while sleep 60; do
+                kill -0 $$ 2>/dev/null || break
+                e=$(( SECONDS - t0 )); i=0
+                while (( i < ${#bounds[@]} - 1 && e >= bounds[i] )); do i=$(( i + 1 )); done
+                printf '  k6 %02d:%02d / %02d:%02d   fase %s\n' $(( e / 60 )) $(( e % 60 )) \
+                    $(( TEST_DURATION / 60 )) $(( TEST_DURATION % 60 )) "${names[i]:-?}"
+                (( e >= TEST_DURATION )) && break
+            done
+        ) &
+        HB_PID=$!
+    fi
     set +e
-    k6 run $K6_EARGS $LOCAL_RAW experiments/k6_flash_crowd.js 2>&1 | tee "${RUN_DIR}/k6_stdout.txt"
+    k6 run $K6_QUIET $K6_EARGS $LOCAL_RAW experiments/k6_flash_crowd.js 2>&1 | tee "${RUN_DIR}/k6_stdout.txt"
     K6_EXIT=${PIPESTATUS[0]}
+    [[ -n "$HB_PID" ]] && kill "$HB_PID" 2>/dev/null
     set -e
     [[ -f flash_crowd_summary.json ]] && mv flash_crowd_summary.json "${RUN_DIR}/"
 else

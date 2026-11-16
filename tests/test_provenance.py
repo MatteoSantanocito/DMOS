@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parent.parent
 ALGO_ENV = ("DMOS_SCORE_GATE", "DMOS_SCORE_GATE_GAMMA", "DMOS_SCORE_GATE_EPS",
             "DMOS_LOCALITY_PURE_NET", "DMOS_WEIGHTS_COHERENT", "DMOS_DEMAND_FLOOR",
             "DMOS_SCORE_PROFILE", "DMOS_PREDICTOR_WINDOW_S", "DMOS_PREDICTOR_HORIZON_S",
-            "DMOS_CONFIG_DUMP")
+            "DMOS_CONFIG_DUMP", "DMOS_ENTRY_MIN_REPLICAS", "DMOS_SCORE_MODEL")
 
 
 @pytest.fixture
@@ -190,3 +190,37 @@ def test_render_formula_variants():
     SF.gate_enabled = True
     assert prov.render_formula(SF).startswith("S = G(d; eps=0.05, g=1) * (")
     assert prov.demand_roles(SF)[0] == "gate"
+
+
+def test_entry_min_replicas_override(config_dir, monkeypatch):
+    base = _build(config_dir)
+    monkeypatch.setenv("DMOS_ENTRY_MIN_REPLICAS", "0")
+    orch = _build(config_dir)
+    entry = orch.config.application.entry_service
+    assert orch.entry_min_replicas == 0
+    assert all(s.min_replicas == 0 for s in orch.scalers[entry].values())
+    # backends keep their own minimum
+    for svc in orch.config.application.co_scaled_services:
+        if svc in orch.scalers:
+            assert all(s.min_replicas >= 1 for s in orch.scalers[svc].values())
+    cfg = orch.effective_config
+    assert cfg["modes"]["entry_min_replicas"] == 0
+    assert "entry min 0/cluster" in cfg["summary"]
+    assert orch.config_id != base.config_id                 # a different algorithm
+    assert base.effective_config["modes"]["entry_min_replicas"] is None
+
+
+@pytest.mark.parametrize("bad", ["-1", "zero", "1.5"])
+def test_entry_min_replicas_rejects_bad_values(config_dir, monkeypatch, bad):
+    monkeypatch.setenv("DMOS_ENTRY_MIN_REPLICAS", bad)
+    with pytest.raises(ValueError):
+        _build(config_dir)
+
+
+def test_sustainability_profiles_are_valid_models(config_dir, monkeypatch):
+    for name, carbon, gamma in (("balanced_nu2", 0.10, 2.0), ("green_nu2", 0.65, 2.0),
+                                ("green_nu2_g1", 0.65, 1.0)):
+        monkeypatch.setenv("DMOS_SCORE_MODEL", name)
+        orch = _build(config_dir)
+        sf = orch.scheduler.score_func_warm
+        assert sf.params.nu == 2.0 and sf.omega_carbon == carbon and sf.gate_gamma == gamma

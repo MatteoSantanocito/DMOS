@@ -34,9 +34,11 @@ where DMOS is supposed to add the most value — fast traffic transients
 across geographically distributed ingresses with heterogeneous
 inter-cluster latency (tc netem 0–200 ms).
 
-The canonical evaluation sweeps **six traffic-concentration regimes**
-(hottest-cluster share 0.167 → 0.85, see §5) against three system arms
-(§7), with 3 repetitions per cell.
+Six **traffic-concentration regimes** are defined (hottest-cluster share
+0.167 → 0.85, see §5). The paper's campaign
+(`experiments/plans/2026-11-02-definitive.plan`, run by
+`experiments/run_campaign.sh`) uses the regimes `bal`, `con` and `con-tosg`
+against eight arms (§7), with 5 repetitions per cell: 90 runs.
 
 The active load-generation tool is **Grafana k6**. The script lives at
 `experiments/k6_flash_crowd.js` and is orchestrated per-run by
@@ -117,7 +119,7 @@ not react.
 
 Each of the six clusters runs an independent K3s + Cilium + Hubble +
 Prometheus stack, joined by ClusterMesh. The frontend and four backends are
-Cilium global services. As in the NCA paper, the frontend has `affinity:
+Cilium global services. As in the paper, the frontend has `affinity:
 none`: each cluster's ingress spreads the requests that enter it uniformly
 over the ready frontend pods of all clusters, so a cluster serves a share of
 the traffic equal to its share of the frontend replicas
@@ -250,12 +252,15 @@ amplifies the inter-cluster latency penalty across 8 microservices.
 The evaluation runs the same `flash_crowd` scenario against system arms
 that isolate each DMOS component's contribution:
 
-| Arm (run label `dmos-<arm>__<regime>`) | L1 (placement) | L2 (budget + predictor + PD) + co-scaling | What it isolates |
+| Arm (run label `dmos-<arm>__<regime>`) | L1 (placement) | L2 (budget + scaler) + co-scaling | What it isolates |
 |---|---|---|---|
-| **`l1l2`** | ON | ON | full system as run in the NCA 2026 campaign (gate g = 2, weights 0.25/0.20/0.25/0.30) |
-| a score model, e.g. **`nca`** | ON | ON | full system with a named score (`nca` = the configuration described in the paper) |
-| **`l2`** | OFF (uniform N/K) | ON | contribution of the placement |
+| **`reach-pool-ps`** | ON (score model `reach`) | ON (pooled budget, predictive scaler) | the DMOS evaluated in the paper |
+| **`l2-pool-ps`** | OFF (uniform N/K) | ON (same as `reach-pool-ps`) | contribution of the placement |
+| **`nca-pool-ps`**, **`locality-ps`** | ON (local-demand gate `nca`; `locality` score) | ON | role of the demand signal in the score (`nca-pool-ps` is the "Local-demand gate" of the paper) |
+| **`reach-pool-ps-min0`**, **`reach_green-pool-ps-min0`** | ON (`reach`; carbon-first `reach_green`) | ON, entry minimum 0 per cluster | scale to zero and carbon-aware weights |
+| **`hpa-none`** | OFF (DMOS off) | Kubernetes HPA per service and cluster | standard autoscaling baseline |
 | **`off`** | OFF | OFF | static baseline: 1 replica per cluster per service |
+| `l1l2`, `l2`, score models such as `nca` with the reactive Level 2 | ON / OFF | ON (reactive) | legacy configurations kept for comparison |
 
 Every name — arm and regime — is defined in `experiments/run_naming.py` and
 means the same configuration in every script and in the analysis
@@ -266,9 +271,12 @@ historical configurations reachable
 ([dmos-architecture.md §7.4–7.5](dmos-architecture.md#74-score-models-the-role-of-demand)).
 
 A regime name can also move the hot share to another cluster and change the
-peak: `<demand>[-<hot>][-p<peak>]`, e.g. `con-sg` (85 % on Singapore),
+peak: `<demand>[-<hot>][-to<hot2>][-p<peak>]`, e.g. `con-sg` (85 % on Singapore),
 `s50-p500` (50 % on DE at 500 req/s). With another hot cluster the weights
-of §5 are swapped between ms-cluster-01 and that cluster.
+of §5 are swapped between ms-cluster-01 and that cluster. With `-to<hot2>`
+the hot spot moves during the peak: at 450 s the shares of the hot cluster
+and of `<hot2>` swap, linearly over 30 s, and the total rate does not change
+(`con-tosg`: 85 % from DE, then 85 % from SG).
 
 All arms use the same flash-crowd profile and `tc netem` settings and are
 swept over the concentration regimes of §5, with repeated sessions per (arm,
@@ -285,15 +293,17 @@ runs k6 on the load-generation VM and records the provenance
 
 ```bash
 export DMOS_K6_REMOTE=ubuntu@<K6_VM_IP>
-bash experiments/run_one.sh l1l2 con       # peak 350 req/s, regime con
-bash experiments/run_one.sh l2   con
-bash experiments/run_one.sh off  con
-bash experiments/run_one.sh nca  con-sg    # 85 % of the demand on Singapore
+bash experiments/run_one.sh reach-pool-ps con       # peak 350 req/s, regime con
+bash experiments/run_one.sh l2-pool-ps    con
+bash experiments/run_one.sh hpa-none      con
+bash experiments/run_one.sh off           con
+bash experiments/run_one.sh reach-pool-ps con-sg    # 85 % of the demand on Singapore
 ```
 
-`run_matrix_session.sh --arms "…" --regimes "…"` runs one repetition of a
-matrix (default: off / l2 / l1l2 × the six regimes), `run_skew_sweep.sh` the
-s50/s65/s75 part; `--dry-run` prints the plan.
+`bash experiments/run_campaign.sh <plan>` runs every cell of a plan file
+(the paper's campaign: `experiments/plans/2026-11-02-definitive.plan`) and
+writes the campaign TSV used by the analysis
+([../experiments/RUNBOOK.md](../experiments/RUNBOOK.md)).
 `experiments/run_flash_crowd.sh --label <label>` runs only the k6 part (with
 DMOS started by hand, or `--no-dmos`); `k6 run experiments/k6_flash_crowd.js`
 runs the script alone.
@@ -364,8 +374,10 @@ The canonical analysis pipeline aggregates the archived runs:
 - `experiments/paper_lib.py` — shared library: run discovery by
   `<arm>__<regime>` label, per-phase/per-cluster aggregation, statistics
   across repetitions;
-- `experiments/paper_generate_all.py` — regenerates all figures and
-  tables from the archived run folders;
+- `experiments/journal_figures.py`, `journal_tests.py`,
+  `journal_control.py` (shared library `journal_data.py`) — the figures,
+  tables and statistical tests of the paper from the campaign TSV
+  ([METRICS-AND-OUTPUTS.md](METRICS-AND-OUTPUTS.md));
 - `experiments/collect_dmos_live.py` — the scheduler-side collector whose
   JSONL timeline (Φ scores, replica trajectories, scaling events) is
   correlated with the k6 events for cause-effect analysis.
@@ -374,11 +386,8 @@ The canonical analysis pipeline aggregates the archived runs:
 
 ## 11. Legacy Locust workload <a name="11-legacy-locust"></a>
 
-The repository still contains `experiments/locustfile_multiingress.py`
-from earlier work. It is **not** used for the canonical evaluation
-and is preserved only for reproducing pre-migration runs. New work should
-use the k6 scenario described above. There is no plan to keep the Locust
-workload in sync with future changes to the test methodology.
+Earlier work used a Locust workload. It is not part of this release and is
+not used for the evaluation: use the k6 scenario described above.
 
 ---
 
@@ -387,7 +396,7 @@ workload in sync with future changes to the test methodology.
 - Active script: [`experiments/k6_flash_crowd.js`](../experiments/k6_flash_crowd.js)
 - Per-run orchestrator: [`experiments/run_flash_crowd.sh`](../experiments/run_flash_crowd.sh)
 - Scheduler-side collector: [`experiments/collect_dmos_live.py`](../experiments/collect_dmos_live.py)
-- Analysis pipeline: [`experiments/paper_lib.py`](../experiments/paper_lib.py) + [`experiments/paper_generate_all.py`](../experiments/paper_generate_all.py)
+- Analysis pipeline: [`experiments/journal_figures.py`](../experiments/journal_figures.py), [`experiments/journal_tests.py`](../experiments/journal_tests.py), [`experiments/journal_control.py`](../experiments/journal_control.py) (library [`experiments/journal_data.py`](../experiments/journal_data.py))
 - Capacity calibration with k6 (different scenario): [`docs/capacity-testing.md`](capacity-testing.md)
 - Geographic netem setup: [`scripts/setup-netem-and-ping.sh`](../scripts/setup-netem-and-ping.sh)
 - DMOS architecture overview: [`docs/dmos-architecture.md`](dmos-architecture.md)

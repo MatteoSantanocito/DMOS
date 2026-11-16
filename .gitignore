@@ -105,6 +105,7 @@ venv_wsl/
 # ── Paper (materiale del paper resta locale, mai su git) ──────────────────
 /paper/
 /paper_artifacts/
+/out/
 /experiments/relazione-capacity-grpc/
 
 # ── Esperimenti: archivio storico e output di run vecchi (locale) ─────────
@@ -128,3 +129,6 @@ venv_wsl/
 # ── Tooling / cache ────────────────────────────────────────────────────────
 .pytest_cache/
 texput.log
+
+# Grafana dashboard rendered for the local fleet (contains lab IPs): scripts/grafana_dashboard.py render
+/deployments/grafana/dmos-fleet-dashboard.json

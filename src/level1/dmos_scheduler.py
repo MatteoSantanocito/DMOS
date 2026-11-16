@@ -11,6 +11,7 @@ Architecture (PROM_MAP, approccio Romano):
 """
 
 import dataclasses
+import os
 import time
 import math
 from typing import List, Dict, Optional, Tuple
@@ -19,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..utils.logger import get_logger
 from ..utils.config_loader import ConfigLoader
 from .score_functions import ScoreFunctions, ClusterMetrics, ScoreParameters
-from .score_model import ScoreModel, select_model, ignored_legacy_env
+from .score_model import ScoreModel, select_model, ignored_legacy_env, reach_shares
 from .winner_determination import WinnerDetermination, ClusterBid, Allocation
 from ..metrics.prometheus_client import PrometheusClient
 from ..metrics.carbon_client import CarbonClient
@@ -47,6 +48,25 @@ MIN_MEMORY_GB_AVAILABLE = 0.2   # Almeno 0.2 GB liberi (per evitare cluster sovr
 # Riferimenti: FIRM (OSDI'20), Sinan (ASPLOS'21), Cilantro (OSDI'23).
 COLD_START_SECONDS = 120  # durata Phase 1 in secondi
 
+# Where the free CPU / memory of a cluster (slack of Φ_cap, L0 hard limits)
+# is measured. DMOS_FREE_RESOURCES:
+#   worker   the workload nodes alone (node_exporter): `worker_ips` of
+#            local.yaml, or its `ip` (one worker per cluster), consistent with
+#            the cores/memory of local.yaml used as denominator. Default from
+#            the journal campaign on.
+#   cluster  all the nodes of the cluster minus every container's usage, over
+#            the worker's cores: the share exceeds 1 (control-plane cores
+#            counted as free) and hardly moves with the load. What the NCA 2026
+#            campaign ran with; kept to reproduce it.
+FREE_RESOURCES_MODES = ("worker", "cluster")
+
+
+def free_resources_mode() -> str:
+    mode = os.environ.get("DMOS_FREE_RESOURCES", "worker").strip().lower() or "worker"
+    if mode not in FREE_RESOURCES_MODES:
+        raise ValueError(f"DMOS_FREE_RESOURCES must be one of {FREE_RESOURCES_MODES}, got {mode!r}")
+    return mode
+
 class DMOSScheduler:
     
     def __init__(self, config_path: str = "config", probe_prometheus: bool = True):
@@ -54,6 +74,10 @@ class DMOSScheduler:
 
         # Winner determination algorithm
         self.winner_det = WinnerDetermination()
+
+        # Free-resource measurement (see FREE_RESOURCES_MODES)
+        self.free_resources_mode = free_resources_mode()
+        self._free_fallback_warned: set = set()
 
         # ── PROM_MAP: per-cluster Prometheus (approccio Romano) ──────
         # Le porte sono lette per-cluster da local.yaml (default 32090 per
@@ -68,6 +92,7 @@ class DMOSScheduler:
                 timeout=5,
                 cluster_name=name,
                 test_connection=probe_prometheus,
+                ingress_demand_match=cfg.ingress_demand_match,
             )
         for prom in self.prom_map.values():
             prom._locust_available = False
@@ -90,6 +115,14 @@ class DMOSScheduler:
             name: [ip for n, ip in all_ips.items() if n != name]
             for name in self.cluster_configs
         }
+        self._ip_to_cluster: Dict[str, str] = {ip: n for n, ip in all_ips.items()}
+        # Last RTT matrix (ms) between clusters, for the 'reach' demand signal;
+        # kept when a refresh fails (ping RTTs change slowly).
+        self._rtt_matrix: Dict[str, Dict[str, float]] = {}
+        self._reach_fallback_warned = False
+        # Last raw demand shares and reach-weighted shares (diagnostics).
+        self.last_demand_shares: Dict[str, float] = {}
+        self.last_reach_shares: Dict[str, float] = {}
 
         # ── Two-phase scheduling ──────────────────────────────────────
         # Timestamp di avvio per determinare Phase 1 vs Phase 2.
@@ -125,6 +158,8 @@ class DMOSScheduler:
                                                   model=self.score_model)
             self.score_func_cold = ScoreFunctions(weights={}, parameters=score_params,
                                                   model=self.score_model.cold_variant())
+            if probe_prometheus and self.score_model.demand_signal == "reach":
+                self._probe_reach_rtts()
         else:
             self._init_legacy_score_functions(score_params)
 
@@ -225,8 +260,14 @@ class DMOSScheduler:
             # in parallelo sullo stesso Prometheus per ridurre il tempo di
             # raccolta da ~5s (sequenziale) a ~1s (bottleneck = query più lenta).
             with ThreadPoolExecutor(max_workers=5) as pool:
-                fut_cpu    = pool.submit(prom.get_cpu_available)
-                fut_mem    = pool.submit(prom.get_memory_available_gb)
+                if self.free_resources_mode == "worker":
+                    nodes = cluster_cfg.workload_node_ips
+                    nodes = nodes[0] if len(nodes) == 1 else nodes
+                    fut_cpu = pool.submit(prom.get_node_cpu_available, nodes)
+                    fut_mem = pool.submit(prom.get_node_memory_available_gb, nodes)
+                else:
+                    fut_cpu = pool.submit(prom.get_cpu_available)
+                    fut_mem = pool.submit(prom.get_memory_available_gb)
                 fut_rtt    = pool.submit(prom.get_network_rtt_ms, peer_ips)
                 fut_carbon = pool.submit(
                     self.carbon_client.get_carbon_intensity, carbon_region
@@ -245,9 +286,23 @@ class DMOSScheduler:
                     )
 
             # ── Raccolta risultati ────────────────────────────────────
-            cpu_available  = fut_cpu.result()    or 0.0
+            cpu_free, mem_free = fut_cpu.result(), fut_mem.result()
+            if self.free_resources_mode == "worker" and (cpu_free is None or mem_free is None):
+                # node_exporter has no series for the worker IP: fall back to
+                # the cluster-wide measurement (logged once per cluster)
+                if cluster_name not in self._free_fallback_warned:
+                    self._free_fallback_warned.add(cluster_name)
+                    logger.warning(
+                        f"{cluster_name}: no node_exporter series for the workload nodes "
+                        f"{cluster_cfg.workload_node_ips} — free CPU/memory measured "
+                        f"cluster-wide (DMOS_FREE_RESOURCES=cluster behaviour)")
+                if cpu_free is None:
+                    cpu_free = prom.get_cpu_available()
+                if mem_free is None:
+                    mem_free = prom.get_memory_available_gb()
+            cpu_available  = cpu_free or 0.0
             cpu_total      = cluster_cfg.cpu_cores
-            memory_available = fut_mem.result()  or 0.0
+            memory_available = mem_free or 0.0
             memory_total   = cluster_cfg.memory_gb
             network_rtt_ms = fut_rtt.result()
             carbon_intensity = fut_carbon.result() or 300.0
@@ -573,6 +628,11 @@ class DMOSScheduler:
                 "Φ_demand uniforme (1/N per cluster)"
             )
 
+        self.last_demand_shares = dict(demand_shares)
+        gate_shares = demand_shares
+        if self.score_model is not None and self.score_model.demand_signal == "reach":
+            gate_shares = self._reach_demand_shares(demand_shares)
+
         bids = []
         excluded = []
 
@@ -583,7 +643,7 @@ class DMOSScheduler:
                     self._compute_cluster_score,
                     cluster_name, service_name, predicted_load,
                     ingress_rates.get(cluster_name, 0.0),
-                    demand_shares.get(cluster_name, 1.0 / n),
+                    gate_shares.get(cluster_name, 1.0 / n),
                     cold_start,
                     active_score_func,
                 ): cluster_name
@@ -616,6 +676,59 @@ class DMOSScheduler:
         
         return bids
     
+    def refresh_rtt_matrix(self) -> Dict[str, Dict[str, float]]:
+        """RTT (ms) from every cluster to every other one (ping_exporter of the
+        source cluster), as {source: {destination: ms}}. Pairs that cannot be
+        read keep their previous value."""
+        def one(name: str) -> Tuple[str, Dict[str, float]]:
+            prom = self.prom_map.get(name)
+            if prom is None:
+                return name, {}
+            by_ip = prom.get_peer_rtts_ms(self._peer_ips.get(name, []))
+            return name, {self._ip_to_cluster[ip]: v for ip, v in by_ip.items()
+                          if ip in self._ip_to_cluster}
+
+        with ThreadPoolExecutor(max_workers=max(1, len(self.prom_map))) as ex:
+            for name, row in ex.map(one, list(self.prom_map)):
+                if row:
+                    self._rtt_matrix.setdefault(name, {}).update(row)
+        return self._rtt_matrix
+
+    def _probe_reach_rtts(self) -> int:
+        """At start-up: the 'reach' signal needs the RTT between every pair of
+        clusters; say loudly if ping_exporter cannot give them (the scheduler
+        would fall back to the raw demand shares, i.e. the NCA gate)."""
+        rtt = self.refresh_rtt_matrix()
+        pairs = sum(len(v) for v in rtt.values())
+        n = len(self.cluster_configs)
+        if pairs == 0:
+            logger.error("reach demand signal: NO RTT between the clusters from ping_exporter "
+                         "(query rejected or no data): the gate will use the raw demand shares")
+        elif pairs < n * (n - 1):
+            logger.warning(f"reach demand signal: RTT for {pairs}/{n * (n - 1)} cluster pairs "
+                           f"(missing pairs use the other direction or count as unreachable)")
+        else:
+            logger.info(f"reach demand signal: RTT for all {pairs} cluster pairs")
+        return pairs
+
+    def _reach_demand_shares(self, demand_shares: Dict[str, float]) -> Dict[str, float]:
+        """ψ_i of the active score model (score_model.reach_shares); without
+        any RTT measurement it falls back to the raw shares (the NCA gate)."""
+        rtt = self.refresh_rtt_matrix()
+        if not any(rtt.values()):
+            if not self._reach_fallback_warned:
+                self._reach_fallback_warned = True
+                logger.error("reach demand signal: no ping_exporter RTT between the "
+                             "clusters — using the raw demand shares")
+            self.last_reach_shares = dict(demand_shares)
+            return demand_shares
+        psi = reach_shares(demand_shares, rtt, self.score_model.reach_tau_ms)
+        self.last_reach_shares = psi
+        logger.info("Reach-weighted demand (τ=%.0f ms): %s" % (
+            self.score_model.reach_tau_ms,
+            ", ".join(f"{c}: d={demand_shares[c]:.3f}→ψ={psi[c]:.3f}" for c in demand_shares)))
+        return psi
+
     def schedule_service(
         self,
         service_name: str,

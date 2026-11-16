@@ -54,7 +54,7 @@ of where the users are. How demand corrects this depends on the score model
 
 | Mode | Proximity term | Effect |
 |---|---|---|
-| `gate` (NCA design) | ω_net · Φ_net inside the sum, the sum multiplied by G(d) | proximity ranks the clusters that have demand; a central cluster without demand is suppressed by the gate |
+| `gate` (models `reach`, `nca`) | ω_net · Φ_net inside the sum, the sum multiplied by G(d) | proximity ranks the clusters that have demand; a central cluster without demand is suppressed by the gate |
 | `locality` | ω_net · (d · Φ_net) | only the proximity term is demand-weighted; latency, capacity and carbon still attract replicas to clusters without demand |
 | `additive` | ω_net · Φ_net + ω_dem · d | demand compensates proximity linearly; a central cluster without demand keeps its proximity score |
 
@@ -135,5 +135,5 @@ check on netem prevents an unintended run without emulated geography.
   proximity (distance from where the demand enters) would be closer to the
   intent; the mean keeps the score a per-cluster quantity.
 - **Choice of ρ.** ρ = 2 gives a 1.9× spread between the most and the least
-  central cluster, ρ = 3 gives 2.6×. The code uses 3.0, the NCA paper reports
-  2.0 (to be aligned).
+  central cluster, ρ = 3 gives 2.6×. The configuration uses 3.0
+  (`network_parameters.rho`); the code default is 2.0.

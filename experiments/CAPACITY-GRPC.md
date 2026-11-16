@@ -1,205 +1,208 @@
-# Capacity Test gRPC dei Backend — Documentazione
+# Backend gRPC Capacity Test — Documentation
 
-> Manuale di `experiments/run_capacity_grpc.sh` + `experiments/k6_capacity_grpc.js`:
-> cosa misura, come funziona, come si interpreta il risultato.
+> Manual for `experiments/run_capacity_grpc.sh` + `experiments/k6_capacity_grpc.js`:
+> what it measures, how it works, how to read the result.
 >
-> **In una frase**: misura empiricamente quante richieste/secondo regge **una
-> replica** di ciascun microservizio backend gRPC (cartservice,
-> productcatalogservice, recommendationservice, checkoutservice), eseguendo k6
-> **dentro il cluster**, per sostituire le stime a occhio di
-> `capacity_req_per_sec` in `config/services.yaml` con valori **misurati**.
+> **In one sentence**: it measures empirically how many requests per second
+> **one replica** of each gRPC backend microservice (cartservice,
+> productcatalogservice, recommendationservice, checkoutservice) can sustain,
+> running k6 **inside the cluster**, to replace the rough guesses of
+> `capacity_req_per_sec` in `config/services.yaml` with **measured** values.
 >
 > **Cross-reference**:
-> - `experiments/run_capacity_grpc.sh` — l'orchestratore
-> - `experiments/k6_capacity_grpc.js` — il client di carico gRPC (gira in-cluster)
-> - `experiments/demo.proto` — il proto di Online Boutique (hipstershop)
-> - `experiments/run_capacity.sh` — l'equivalente HTTP per il **frontend**
-> - `config/services.yaml` — dove finiscono i valori misurati
-> - `experiments/THROTTLE-CHECK.md` — il test gemello lato CPU/cluster
-> - `dmos-iac/HETEROGENEOUS-CLUSTER-SETUP.md` sez. 4.4 — il modello di capacita'
->   (`dmos-iac` è il repository esterno di provisioning del fleet, non incluso qui)
+> - `experiments/run_capacity_grpc.sh` — the orchestrator
+> - `experiments/k6_capacity_grpc.js` — the gRPC load client (runs in-cluster)
+> - `experiments/demo.proto` — the Online Boutique proto (hipstershop)
+> - `experiments/run_capacity.sh` — the HTTP equivalent for the **frontend**
+> - `config/services.yaml` — where the measured values end up
+> - `experiments/THROTTLE-CHECK.md` — the companion test on the CPU/cluster side
+> - `docs/BACKEND-CO-SCALING.md` — how DMOS uses the backend capacities
 >
-> **Copertura:** i quattro backend sopra hanno capacità misurate. DMOS co-scala
-> anche `currencyservice`, `adservice` e `shippingservice`, le cui capacità in
-> `services.yaml` sono ancora **stime**: lo script non ha un mapping per loro.
+> **Coverage:** the four backends above have measured capacities. DMOS also
+> co-scales `currencyservice`, `adservice` and `shippingservice`, whose
+> capacities in `services.yaml` are still **estimates**: the script has no
+> mapping for them.
 
 ---
 
-## Indice
+## Contents
 
-1. [Cos'e' e perche' serve](#1-cose-e-perche-serve)
-2. [Perche' un test separato da quello HTTP](#2-perche-un-test-separato-da-quello-http)
-3. [Perche' IN-CLUSTER e non kubectl port-forward](#3-perche-in-cluster-e-non-kubectl-port-forward)
-4. [Come funziona lo script](#4-come-funziona-lo-script)
-5. [Il problema dell'isolamento (caveat per backend)](#5-il-problema-dellisolamento-caveat-per-backend)
-6. [Metodologia: knee-point e SLA](#6-metodologia-knee-point-e-sla)
-7. [Uso: comandi e variabili env](#7-uso-comandi-e-variabili-env)
-8. [Output di esempio e interpretazione](#8-output-di-esempio-e-interpretazione)
-9. [Come aggiornare config/services.yaml](#9-come-aggiornare-configservicesyaml)
-10. [Capacity gRPC vs Capacity HTTP vs Throttle check](#10-capacity-grpc-vs-capacity-http-vs-throttle-check)
-11. [Limiti noti e quando rieseguirlo](#11-limiti-noti-e-quando-rieseguirlo)
+1. [What it is and why it is needed](#1-what-it-is-and-why-it-is-needed)
+2. [Why a test separate from the HTTP one](#2-why-a-test-separate-from-the-http-one)
+3. [Why IN-CLUSTER and not kubectl port-forward](#3-why-in-cluster-and-not-kubectl-port-forward)
+4. [How the script works](#4-how-the-script-works)
+5. [The isolation problem (per-backend caveats)](#5-the-isolation-problem-per-backend-caveats)
+6. [Methodology: knee point and SLA](#6-methodology-knee-point-and-sla)
+7. [Usage: commands and env variables](#7-usage-commands-and-env-variables)
+8. [Example output and interpretation](#8-example-output-and-interpretation)
+9. [How to update config/services.yaml](#9-how-to-update-configservicesyaml)
+10. [gRPC capacity vs HTTP capacity vs throttle check](#10-grpc-capacity-vs-http-capacity-vs-throttle-check)
+11. [Known limits and when to rerun it](#11-known-limits-and-when-to-rerun-it)
 
 ---
 
-## 1. Cos'e' e perche' serve
+## 1. What it is and why it is needed
 
-DMOS calcola la capacita' di un cluster per ogni servizio come:
+DMOS computes the capacity of a cluster for each service as:
 
 ```
-capacita' cluster = capacity_req_per_sec x max_replicas_per_cluster
+cluster capacity = capacity_req_per_sec x max_replicas_per_cluster
 ```
 
-Per il **frontend** `capacity_req_per_sec = 60` e' misurato (`run_capacity.sh`).
-Per i **4 backend gRPC** i valori in `config/services.yaml` erano **stime a
-occhio**:
+For the **frontend**, `capacity_req_per_sec = 60` in `config/services.yaml` is
+measured (`run_capacity.sh`); a per-cluster calibration in `config/local.yaml`
+can override it. For the **4 gRPC backends** the values in
+`config/services.yaml` were originally **rough guesses**:
 
-| Backend | `capacity_req_per_sec` stimato | Origine |
+| Backend | estimated `capacity_req_per_sec` | Origin |
 |---|---|---|
-| cartservice | 50 | stima ("1 replica gRPC gestisce facilmente 50+ rps") |
-| productcatalogservice | 80 | stima ("Go read-only, 100+ rps facilmente") |
-| recommendationservice | 40 | stima ("Python piu' lento, 30+ rps") |
-| checkoutservice | 20 | stima ("lento ma poco traffico, 20+ rps") |
+| cartservice | 50 | guess ("1 gRPC replica easily handles 50+ rps") |
+| productcatalogservice | 80 | guess ("read-only Go, 100+ rps easily") |
+| recommendationservice | 40 | guess ("Python is slower, 30+ rps") |
+| checkoutservice | 20 | guess ("slow but little traffic, 20+ rps") |
 
-Una stima non e' un dato pubblicabile: se DMOS decide lo scheduling su numeri
-inventati, il componente **Phi_cap** della score function poggia sul nulla.
-Questo strumento sostituisce le 4 stime con 4 **misure**.
+A guess is not publishable data: the backend capacities enter the co-scaling
+ratio `r_b = max(0.3, f_b · μ / μ_b)` (see `docs/BACKEND-CO-SCALING.md`), so
+sizing the backends on invented numbers would rest on nothing. This tool
+replaces the 4 guesses with 4 **measurements**.
 
-> Risultato dello script: una riga `capacity_req_per_sec: <N>` per ogni backend,
-> da incollare in `config/services.yaml`.
-
----
-
-## 2. Perche' un test separato da quello HTTP
-
-`run_capacity.sh` testa il **frontend** mandando richieste **HTTP** all'Ingress
-Cilium. Non puo' testare i backend perche':
-
-1. **I backend parlano gRPC, non HTTP.** Espongono solo un Service gRPC su
-   ClusterIP. Non c'e' un Ingress HTTP che li raggiunge.
-2. **Non sono esposti all'esterno.** Solo il frontend ha un Ingress.
-
-Quindi serve un client che parli gRPC con `demo.proto`: `k6_capacity_grpc.js`
-usa il modulo integrato `k6/net/grpc`.
+> Output of the script: one `capacity_req_per_sec: <N>` line per backend, to
+> paste into `config/services.yaml`.
 
 ---
 
-## 3. Perche' IN-CLUSTER e non kubectl port-forward
+## 2. Why a test separate from the HTTP one
 
-> Questa sezione documenta una scelta di metodologia importante (utile anche
-> per il capitolo "metodi" della tesi).
+`run_capacity.sh` tests the **frontend** by sending **HTTP** requests to the
+Cilium Ingress. It cannot test the backends because:
 
-La **prima versione** dello strumento lanciava k6 sul PC e raggiungeva il
-backend con `kubectl port-forward`. **Era sbagliato.** Un run completo sui 4
-backend lo ha dimostrato con i dati:
+1. **The backends speak gRPC, not HTTP.** They only expose a gRPC Service on a
+   ClusterIP. No HTTP Ingress reaches them.
+2. **They are not exposed externally.** Only the frontend has an Ingress.
 
-**Prova 1 — tassa fissa di latenza.** Il `p50` (mediana) al carico piu' basso,
-su tutti e 4 i backend:
+So a client that speaks gRPC with `demo.proto` is needed:
+`k6_capacity_grpc.js` uses the built-in `k6/net/grpc` module.
 
-| Backend | Carico minimo | p50 misurato | p50 atteso (servizio) |
+---
+
+## 3. Why IN-CLUSTER and not kubectl port-forward
+
+> This section documents an important methodological choice.
+
+The **first version** of the tool ran k6 on the operator's machine and
+reached the backend through `kubectl port-forward`. **That was wrong.** A full
+run on the 4 backends proved it with data:
+
+**Evidence 1 — a fixed latency tax.** The `p50` (median) at the lowest load,
+on all 4 backends:
+
+| Backend | Minimum load | measured p50 | expected p50 (service) |
 |---|---|---|---|
 | cartservice | 25 rps | 47 ms | ~1-3 ms |
 | productcatalogservice | 100 rps | 47 ms | ~3-8 ms |
 | recommendationservice | 10 rps | 49 ms | ~10-30 ms |
-| checkoutservice | 5 rps | 54 ms | variabile |
+| checkoutservice | 5 rps | 54 ms | variable |
 
-Quattro servizi di complessita' diversa, a carico quasi nullo, **inchiodati a
-~47-54 ms**: non e' il microservizio, e' il round-trip del `kubectl
-port-forward` (PC -> API server -> pod). Una tassa fissa su *ogni* richiesta.
-cartservice e productcatalog hanno SLA p95 = 50 ms: il pavimento da ~47 ms se
-lo mangiava -> `knee n/a` con il pod completamente scarico.
+Four services of different complexity, at almost zero load, **pinned at
+~47-54 ms**: this is not the microservice, it is the round trip of `kubectl
+port-forward` (local machine -> API server -> pod), a fixed tax on *every*
+request. cartservice and productcatalog have an SLA of p95 = 50 ms: the
+~47 ms floor ate it up -> `knee n/a` with the pod completely idle.
 
-**Prova 2 — il port-forward crolla sotto carico.** Ai rate alti i log k6 erano
-pieni di:
+**Evidence 2 — port-forward collapses under load.** At high rates the k6 logs
+were full of:
 
 ```
 dial tcp 127.0.0.1:50555: connectex: No connection could be made
 because the target machine actively refused it
 ```
 
-`127.0.0.1:50555` e' il listener **locale** del port-forward. Quando k6 sale di
-rate crea molte VU -> molte connessioni TCP nuove -> `kubectl port-forward` non
-regge e le rifiuta. I "knee" osservati (recommendation a 150 rps, checkout a 50
-rps) erano il limite del **port-forward**, non del microservizio.
+`127.0.0.1:50555` is the **local** listener of the port-forward. When k6 ramps
+up the rate it creates many VUs -> many new TCP connections -> `kubectl
+port-forward` cannot keep up and refuses them. The observed "knees"
+(recommendation at 150 rps, checkout at 50 rps) were the limit of the
+**port-forward**, not of the microservice.
 
-**Conclusione**: `kubectl port-forward` non e' uno strumento valido per
-benchmarkare un microservizio. La misura va fatta **in-cluster**.
+**Conclusion**: `kubectl port-forward` is not a valid tool for benchmarking a
+microservice. The measurement must be taken **in-cluster**.
 
-**La soluzione**: k6 gira come **Job dentro il cluster**, nel namespace
-`online-boutique`, e colpisce il backend via ClusterIP (es. `cartservice:7070`).
-Vantaggi:
+**The solution**: k6 runs as a **Job inside the cluster**, in the
+`online-boutique` namespace, and hits the backend through its ClusterIP (e.g.
+`cartservice:7070`). Advantages:
 
-- gRPC **pod-to-pod**: latenza sub-millisecondo, nessuna tassa fissa.
-- Nessun listener fragile: la rete del cluster regge migliaia di connessioni.
-- Il traffico attraversa lo stesso **proxy L7 Cilium** del traffico reale
-  frontend->backend (le `CiliumNetworkPolicy` `l7-visibility-*` parsano quelle
-  porte come HTTP). Misuriamo il **percorso di produzione**.
-- E' anche il metodo che un reviewer si aspetta.
+- **Pod-to-pod** gRPC: sub-millisecond latency, no fixed tax.
+- No fragile listener: the cluster network handles thousands of connections.
+- The traffic goes through the same **Cilium L7 proxy** as the real
+  frontend->backend traffic (the `l7-visibility-*` `CiliumNetworkPolicy`
+  objects parse those ports as HTTP). We measure the **production path**.
+- It is also the method a reviewer expects.
 
-> Le CNP `l7-visibility-backends` ammettono ingress `fromEndpoints: [{}]` —
-> qualsiasi pod **dello stesso namespace**. Il Job k6, essendo in
-> `online-boutique`, e' autorizzato a chiamare i backend senza modifiche alle
-> policy.
+> The `l7-visibility-backends` CNPs admit ingress `fromEndpoints: [{}]`, i.e.
+> any pod **in the same namespace**. Since the k6 Job runs in
+> `online-boutique`, it is allowed to call the backends without changing the
+> policies.
 
 ---
 
-## 4. Come funziona lo script
+## 4. How the script works
 
-`run_capacity_grpc.sh`, per ogni backend, esegue in ordine:
+For each backend, `run_capacity_grpc.sh` runs, in order:
 
 ```
- 0. Pre-flight: kubectl, jq, k6 script, demo.proto, kubeconfig target
- 1. loadgenerator -> 0 su TUTTI i cluster   (niente traffico di fondo)
+ 0. Pre-flight: kubectl, jq, k6 script, demo.proto, target kubeconfig
+ 1. loadgenerator -> 0 on ALL clusters   (no background traffic)
  2. ConfigMap dmos-k6-cap-scripts  (k6_capacity_grpc.js + demo.proto)
- 3. backend target -> 1 replica sul cluster target
- 4. dipendenze del backend -> 4 repliche sul cluster target   (boost)
- 5. attende Ready: backend + dipendenze (rollout status)
- 6. crea un Job k6 (immagine grafana/k6) che monta la ConfigMap su /scripts
-    e colpisce <backend>:<porta> via ClusterIP
- 7. segue `kubectl logs -f` del pod k6  (output pulito, righe appese)
- 8. estrae il JSON di summary dai log (fra marcatori) -> results/
- 9. cancella il Job, ripristina le dipendenze -> 1 replica
-10. stampa il capacity_req_per_sec consigliato (80% del knee-point)
+ 3. target backend -> 1 replica on the target cluster
+ 4. backend dependencies -> 4 replicas on the target cluster   (boost)
+ 5. wait for Ready: backend + dependencies (rollout status)
+ 6. create a k6 Job (grafana/k6 image) that mounts the ConfigMap on /scripts
+    and hits <backend>:<port> via ClusterIP
+ 7. follow `kubectl logs -f` of the k6 pod  (clean output, appended lines)
+ 8. extract the summary JSON from the logs (between markers) -> results/
+ 9. delete the Job, restore the dependencies -> 1 replica
+10. print the recommended capacity_req_per_sec (80% of the knee point)
 ```
 
-Con `--all` ripete i passi 3-10 per tutti e 4 i backend e stampa una tabella
-riepilogativa + lo snippet pronto per `services.yaml`.
+With `--all` it repeats steps 3-10 for all 4 backends and prints a summary
+table + the snippet ready for `services.yaml`.
 
-### Mappatura backend -> metodo gRPC
+### Backend -> gRPC method mapping
 
-| Backend | Porta gRPC | Metodo testato |
+| Backend | gRPC port | Method tested |
 |---|---|---|
 | cartservice | 7070 | `hipstershop.CartService/GetCart` |
 | productcatalogservice | 3550 | `hipstershop.ProductCatalogService/ListProducts` |
 | recommendationservice | 8080 | `hipstershop.RecommendationService/ListRecommendations` |
 | checkoutservice | 5050 | `hipstershop.CheckoutService/PlaceOrder` |
 
-### Il Job k6
+### The k6 Job
 
-- Immagine: `grafana/k6:latest` (k6 standard, modulo gRPC integrato).
-  Sovrascrivibile con `DMOS_K6_IMAGE` se serve un registry interno.
-- ConfigMap `dmos-k6-cap-scripts` montata su `/scripts`: contiene
-  `k6_capacity_grpc.js` e `demo.proto`. k6 carica il proto con
-  `load(['.'], 'demo.proto')` (accanto allo script).
-- Risorse del pod k6: requests `500m`/`512Mi`, limits `3`/`2Gi` (il generatore
-  di carico ha bisogno di CPU). Per questo conviene eseguire il test su un
-  cluster con margine — il default `ms-cluster-01` (tier HIGH, 8 vCPU).
-- Il JSON machine-readable arriva fra i marcatori
-  `===DMOS_CAPACITY_JSON_BEGIN===` / `===DMOS_CAPACITY_JSON_END===` su stdout,
-  recuperato da `kubectl logs`.
+- Image: `grafana/k6:latest` (standard k6, built-in gRPC module).
+  Can be overridden with `DMOS_K6_IMAGE` if an internal registry is needed.
+- ConfigMap `dmos-k6-cap-scripts` mounted on `/scripts`: it contains
+  `k6_capacity_grpc.js` and `demo.proto`. k6 loads the proto with
+  `load(['.'], 'demo.proto')` (next to the script).
+- k6 pod resources: requests `500m`/`512Mi`, limits `4`/`4Gi` (the load
+  generator needs CPU). This is why the test is best run on a cluster with
+  headroom: the default `ms-cluster-01` (HIGH tier, 8 vCPU).
+- The machine-readable JSON is printed between the markers
+  `===DMOS_CAPACITY_JSON_BEGIN===` / `===DMOS_CAPACITY_JSON_END===` on stdout
+  and retrieved with `kubectl logs`.
 
-### Perche' si potenziano le dipendenze (passo 4)
+### Why the dependencies are boosted (step 4)
 
-Se misuro recommendationservice ma productcatalogservice (1 replica) satura per
-primo, sto misurando productcatalog. Per evitarlo le dipendenze del backend
-vengono scalate a 4 repliche **sul cluster target**; con
-`service.cilium.io/affinity: local` il backend chiama le repliche locali.
-A fine test tornano a 1.
+If I measure recommendationservice but productcatalogservice (1 replica)
+saturates first, I am measuring productcatalog. To avoid this, the backend's
+dependencies are scaled to 4 replicas **on the target cluster**; with
+`service.cilium.io/affinity: local` the backend calls the local replicas.
+They go back to 1 at the end of the test.
 
-### Perche' loadgenerator -> 0 (passo 1)
+### Why loadgenerator -> 0 (step 1)
 
-Se il loadgenerator gira, il frontend chiama in continuazione i backend e quel
-traffico contamina la misura. Lo script lo spegne su **tutti** i cluster e lo
-**lascia a 0** — va riacceso a mano prima della fase di traffico:
+If the loadgenerator is running, the frontend keeps calling the backends and
+that traffic contaminates the measurement. The script turns it off on **all**
+clusters and **leaves it at 0**: it must be turned back on by hand before the
+traffic phase:
 
 ```bash
 for c in 01 02 03 04 05 06; do
@@ -210,124 +213,127 @@ done
 
 ---
 
-## 5. Il problema dell'isolamento (caveat per backend)
+## 5. The isolation problem (per-backend caveats)
 
-Non tutti i backend si isolano allo stesso modo. Va dichiarato apertamente
-(anche nella tesi) cosa misura davvero il test:
+Not all backends can be isolated in the same way. What the test really
+measures must be stated openly:
 
-| Backend | Isolamento | Cosa misura davvero |
+| Backend | Isolation | What it really measures |
 |---|---|---|
-| **cartservice** | Pulito | cartservice + 1 GET su redis-cart (redis e' velocissimo). Misura reale del pod. |
-| **productcatalogservice** | Pulito | Go in-memory, nessuna dipendenza. Misura pulita. |
-| **recommendationservice** | Parziale | `ListRecommendations` fa 1 chiamata a `productcatalog.ListProducts`. Potenziamo productcatalog a 4 repliche; la latenza dell'hop entra comunque nella misura. |
-| **checkoutservice** | Fan-out | `PlaceOrder` orchestra 6 servizi (cart, catalog, currency, payment, shipping, email). Tutti potenziati a 4. Test con utenti casuali e **carrello vuoto**. |
+| **cartservice** | Clean | cartservice + 1 GET on redis-cart (redis is very fast). A real measurement of the pod. |
+| **productcatalogservice** | Clean | In-memory Go, no dependencies. A clean measurement. |
+| **recommendationservice** | Partial | `ListRecommendations` makes 1 call to `productcatalog.ListProducts`. We boost productcatalog to 4 replicas; the latency of the hop still enters the measurement. |
+| **checkoutservice** | Fan-out | `PlaceOrder` orchestrates 6 services (cart, catalog, currency, payment, shipping, email). All boosted to 4. Tested with random users and an **empty cart**. |
 
-### Nota sul carrello vuoto di checkoutservice
+### Note on checkoutservice's empty cart
 
-`k6_capacity_grpc.js` invia `PlaceOrder` con `user_id` casuali, quindi carrelli
-vuoti. Nel demo Online Boutique `PlaceOrder` **funziona lo stesso** (ordine con
-sola spedizione). Implicazioni:
+`k6_capacity_grpc.js` sends `PlaceOrder` with random `user_id`s, hence empty
+carts. In the Online Boutique demo `PlaceOrder` **works anyway** (an order
+with shipping only). Implications:
 
-- **Vantaggio**: test stateless, niente pre-seeding (e comunque `PlaceOrder`
-  svuota il carrello a fine flusso: pre-popolare non reggerebbe un rate alto).
-- **Limite**: con 0 articoli ci sono meno chiamate a `GetProduct` e `Convert`
-  (una per articolo). Il fan-out misurato e' un po' piu' leggero di un ordine
-  reale.
-- **Perche' va bene**: il costo CPU di checkoutservice e' dominato
-  dall'orchestrazione (7 chiamate gRPC, serializzazione, gestione errori), che
-  e' circa costante e viene catturata. Valore = proxy ragionevole.
+- **Advantage**: stateless test, no pre-seeding (and `PlaceOrder` empties the
+  cart at the end of the flow anyway: pre-populating would not hold up at a
+  high rate).
+- **Limit**: with 0 items there are fewer calls to `GetProduct` and `Convert`
+  (one per item). The measured fan-out is somewhat lighter than a real order.
+- **Why it is acceptable**: checkoutservice's CPU cost is dominated by the
+  orchestration (7 gRPC calls, serialisation, error handling), which is
+  roughly constant and is captured. The value is a reasonable proxy.
 
 ---
 
-## 6. Metodologia: knee-point e SLA
+## 6. Methodology: knee point and SLA
 
-1. **Step a rate fisso.** Per ogni valore di `DMOS_STEPS` k6 genera traffico a
-   *quel* rate esatto con l'executor `constant-arrival-rate`.
-2. **Settle + Measure.** Ogni step ha una fase `settle` (default 12s, scartata)
-   e una `measure` (default 60s, registrata).
-3. **Knee-point** = ultimo step in cui valgono **entrambe**:
+1. **Fixed-rate steps.** For each value of `DMOS_STEPS`, k6 generates traffic
+   at *exactly* that rate with the `constant-arrival-rate` executor.
+2. **Settle + Measure.** Each step has a `settle` phase (default 12 s,
+   discarded) and a `measure` phase (default 60 s, recorded).
+3. **Knee point** = the last step for which **all** of these hold:
    - `p95 < DMOS_SLA_P95_MS`
+   - `p99 < 4 x DMOS_SLA_P95_MS` (`DMOS_P99_SLA_FACTOR`, default 4: a step
+     with an exploding tail, e.g. from CFS throttling, is not a valid
+     operating point)
    - `error_rate < DMOS_SLA_ERR_RATE` (default 2%)
-   Il test si ferma dopo 2 step consecutivi che violano lo SLA.
-4. **Capacita' raccomandata = 80% del knee** (margine di sicurezza).
-   `services.yaml` riceve `round(knee_rps x 0.80)`.
+   The analysis stops after 2 consecutive steps that violate the SLA.
+4. **Recommended capacity = 80% of the knee** (safety margin).
+   `services.yaml` gets `round(knee_rps x 0.80)`.
 
-### SLA e step di default (per backend)
+### Default SLA and steps (per backend)
 
-In-cluster la latenza e' bassa (~1-30 ms), quindi gli SLA assoluti hanno ampio
-margine. Tutti i valori sono **sovrascrivibili** via env.
+In-cluster the latency is low (~1-30 ms), so the absolute SLAs have ample
+margin. All values can be **overridden** via env.
 
-| Backend | SLA p95 default | Step default (rps) |
+| Backend | Default p95 SLA | Default steps (rps) |
 |---|---|---|
-| cartservice | 50 ms | 25,50,75,100,150,200,300,400 |
-| productcatalogservice | 50 ms | 50,100,200,300,400,500,600,800 |
-| recommendationservice | 120 ms | 10,25,50,75,100,150,200,300 |
-| checkoutservice | 500 ms | 5,10,20,30,40,50,75,100 |
+| cartservice | 50 ms | 300,400,500,600,700,800,1000,1300 |
+| productcatalogservice | 50 ms | 500,1000,1500,2000,2500,3000,4000,5000 |
+| recommendationservice | 120 ms | 100,110,120,130,140,150,170,200 |
+| checkoutservice | 500 ms | 100,150,200,250,300,350,450,600 |
 
-Se il test esce con "knee N/A" (SLA gia' violato al primo step) o non raggiunge
-mai la saturazione (tutti gli step OK), si rilancia con `DMOS_STEPS` adatti.
+If the test ends with "knee N/A" (SLA already violated at the first step) or
+never reaches saturation (all steps OK), rerun it with suitable `DMOS_STEPS`.
 
 ---
 
-## 7. Uso: comandi e variabili env
+## 7. Usage: commands and env variables
 
-Eseguire da **Git Bash** su Windows, dalla root del repo.
+Run from **Git Bash** on Windows (or any bash), from the repository root.
 
 ```bash
-# Un solo backend (default: cartservice su ms-cluster-01)
+# A single backend (default: cartservice on ms-cluster-01)
 bash experiments/run_capacity_grpc.sh
 
-# Un backend specifico
+# A specific backend
 bash experiments/run_capacity_grpc.sh --backend productcatalogservice
 bash experiments/run_capacity_grpc.sh --backend recommendationservice
 bash experiments/run_capacity_grpc.sh --backend checkoutservice
 
-# Tutti e 4 in sequenza (consigliato per la calibrazione completa)
+# All 4 in sequence (recommended for a full calibration)
 bash experiments/run_capacity_grpc.sh --all
 
-# Su un cluster diverso
+# On a different cluster
 bash experiments/run_capacity_grpc.sh --backend cartservice --cluster ms-cluster-04
 
-# Aiuto
+# Help
 bash experiments/run_capacity_grpc.sh --help
 ```
 
-### Variabili env (override opzionali)
+### Env variables (optional overrides)
 
-| Variabile | Default | Effetto |
+| Variable | Default | Effect |
 |---|---|---|
-| `DMOS_BACKEND` | cartservice | backend target (come `--backend`) |
-| `DMOS_CLUSTER` | ms-cluster-01 | cluster target (come `--cluster`) |
-| `DMOS_STEPS` | per-backend | lista rps degli step, es. `"50,100,150,200"` |
-| `DMOS_STEP_DURATION_S` | 60 | durata fase measure per step |
-| `DMOS_SETTLE_S` | 12 | durata fase settle per step |
-| `DMOS_SLA_P95_MS` | per-backend | SLA p95 per il knee |
-| `DMOS_SLA_ERR_RATE` | 0.02 | SLA error rate per il knee |
-| `DMOS_K6_IMAGE` | grafana/k6:latest | immagine del Job k6 |
-| `DMOS_NO_RESTORE` | 0 | `1` = non ripristina le dipendenze (debug) |
-| `KUBECONFIG_DIR` | `$HOME/dmos-iac` | cartella dei kubeconfig |
+| `DMOS_BACKEND` | cartservice | target backend (same as `--backend`) |
+| `DMOS_CLUSTER` | ms-cluster-01 | target cluster (same as `--cluster`) |
+| `DMOS_STEPS` | per backend | list of step rates, e.g. `"50,100,150,200"` |
+| `DMOS_STEP_DURATION_S` | 60 | duration of the measure phase per step |
+| `DMOS_SETTLE_S` | 12 | duration of the settle phase per step |
+| `DMOS_SLA_P95_MS` | per backend | p95 SLA for the knee |
+| `DMOS_SLA_ERR_RATE` | 0.02 | error-rate SLA for the knee |
+| `DMOS_K6_IMAGE` | grafana/k6:latest | image of the k6 Job |
+| `DMOS_NO_RESTORE` | 0 | `1` = do not restore the dependencies (debug) |
+| `KUBECONFIG_DIR` | from `.cache/test-env.json`, else `$HOME/dmos-iac` | directory of the kubeconfigs |
 
-Esempio — recommendationservice con range custom e SLA piu' largo:
+Example — recommendationservice with a custom range and a looser SLA:
 
 ```bash
 DMOS_STEPS="20,40,60,80,100,120" DMOS_SLA_P95_MS=150 \
   bash experiments/run_capacity_grpc.sh --backend recommendationservice
 ```
 
-### Durata
+### Duration
 
-~9-10 min per backend (8 step x 72s), piu' il primo pull dell'immagine k6.
-`--all` ~ 40 min.
+~9-10 min per backend (8 steps x 72 s), plus the first pull of the k6 image.
+`--all` takes ~40 min.
 
-### netem e' indifferente
+### netem makes no difference
 
-Il `tc netem` simula latenze geografiche sul traffico **inter-cluster**. Il
-traffico k6->backend e' **intra-cluster** (pod k6 e backend nello stesso
-cluster): netem non lo tocca. Si puo' lasciare netem acceso o spento.
+`tc netem` emulates geographic latencies on **inter-cluster** traffic. The
+k6->backend traffic is **intra-cluster** (k6 pod and backend on the same
+cluster): netem does not touch it. netem can be left on or off.
 
 ---
 
-## 8. Output di esempio e interpretazione
+## 8. Example output and interpretation
 
 ```
 ================================================================================
@@ -357,16 +363,17 @@ cluster): netem non lo tocca. Si puo' lasciare netem acceso o spento.
 ================================================================================
 ```
 
-Come si legge:
+How to read it:
 
-- **p50 basso e crescente** (2 -> 19 ms): in-cluster non c'e' la tassa da 47 ms
-  del port-forward; la latenza parte bassa e sale **gradualmente** verso il
-  knee — il segno di una saturazione CPU **vera**.
-- **rps tgt vs rps obt**: finche' coincidono il pod sta al passo. Quando
-  `rps obt < rps tgt` (step 7) il pod non smaltisce piu' il rate -> saturo.
-- **knee-point = 150**: ultimo step con SLA rispettato. **raccomandato = 120**.
+- **Low, rising p50** (2 -> 19 ms): in-cluster there is no 47 ms port-forward
+  tax; latency starts low and rises **gradually** towards the knee, the sign
+  of **genuine** CPU saturation.
+- **rps tgt vs rps obt**: as long as they match, the pod keeps up. When
+  `rps obt < rps tgt` (step 7) the pod can no longer drain the rate ->
+  saturated.
+- **knee point = 150**: the last step that meets the SLA. **recommended = 120**.
 
-Con `--all`, la tabella finale:
+With `--all`, the final table:
 
 ```
 === Riepilogo capacity backend gRPC ===
@@ -378,105 +385,107 @@ Con `--all`, la tabella finale:
   checkoutservice          | 60.0             | 48
 ```
 
-> I numeri sopra sono **illustrativi**. I valori veri escono eseguendo il test.
+> The numbers above are **illustrative**. The real values come out of running
+> the test.
 
-### File prodotti
+### Files produced
 
-- `experiments/results/capacity_grpc_<backend>_<timestamp>.json` — summary
-  machine-readable (estratto dai log del Job)
-- `experiments/results/capacity_grpc_<backend>_<timestamp>.k6log.txt` — log
-  completo del Job k6
+- `experiments/results/capacity_grpc_<backend>_<timestamp>.json` —
+  machine-readable summary (extracted from the Job logs)
+- `experiments/results/capacity_grpc_<backend>_<timestamp>.k6log.txt` — full
+  log of the k6 Job
 
 ---
 
-## 9. Come aggiornare config/services.yaml
+## 9. How to update config/services.yaml
 
-Lo script stampa, alla fine, lo snippet pronto. Per ogni backend, in
-`config/services.yaml`, sotto `services: <backend>:`, sostituire il valore:
+At the end the script prints the ready-made snippet. For each backend, in
+`config/services.yaml`, under `services: <backend>:`, replace the value:
 
 ```yaml
   cartservice:
     ...
-    # Capacita' per replica (req/s) — MISURATA con k6 gRPC in-cluster.
+    # Capacity per replica (req/s) — MEASURED with in-cluster k6 gRPC.
     # Test: experiments/run_capacity_grpc.sh --backend cartservice
-    #   metodo hipstershop.CartService/GetCart, 1 replica isolata, Job k6
-    #   dentro il cluster, knee = 150 rps/replica, raccomandato 80% = 120.
-    capacity_req_per_sec: 120     # era 50 (stima)
+    #   method hipstershop.CartService/GetCart, 1 isolated replica, k6 Job
+    #   inside the cluster, knee = 150 rps/replica, recommended 80% = 120.
+    capacity_req_per_sec: 120     # was 50 (guess)
 ```
 
-### Verifica del budget CPU dopo l'aggiornamento
+### Checking the CPU budget after the update
 
-`capacity_req_per_sec` va riguardato insieme a `max_replicas`. Il modello DMOS
-resta lineare **solo se** il worker ha CPU per tutte le repliche senza
+`capacity_req_per_sec` must be reviewed together with `max_replicas`. The DMOS
+model stays linear **only if** the worker has CPU for all the replicas without
 throttling:
 
 ```
-max_replicas x CPU_limit(backend) + altri_pod  <=  CPU_worker
+max_replicas x CPU_limit(backend) + other_pods  <=  CPU_worker
 ```
 
-Se la capacita' misurata e' molto piu' alta della stima, puo' avere senso
-**abbassare** `max_replicas` (meno repliche per la stessa capacita' di
-cluster). Vedi `dmos-iac/HETEROGENEOUS-CLUSTER-SETUP.md` sez. 4.4.
+If the measured capacity is much higher than the guess, it may make sense to
+**lower** `max_replicas` (fewer replicas for the same cluster capacity).
 
 ---
 
-## 10. Capacity gRPC vs Capacity HTTP vs Throttle check
+## 10. gRPC capacity vs HTTP capacity vs throttle check
 
 | | `run_capacity.sh` (HTTP) | `run_capacity_grpc.sh` (gRPC) | `throttle_check.sh` |
 |---|---|---|---|
-| **Domanda** | quante rps regge 1 replica frontend? | quante rps regge 1 replica di un backend? | N repliche scalano linearmente? |
-| **Servizio** | frontend | i 4 backend gRPC | frontend (estendibile) |
-| **Dove gira k6** | sul PC, via Ingress | **dentro il cluster** (Job) | sul PC, via Ingress |
-| **Metrica chiave** | p95 latency lato client | p95 latency lato client (in-cluster) | CFS throttled periods |
-| **Calibra** | `capacity_req_per_sec` frontend | `capacity_req_per_sec` backend | conferma `max_replicas` |
-| **netem** | va spento (falsa la p95) | indifferente (traffico intra-cluster) | indifferente (misura CPU) |
-| **Durata** | ~17 min | ~10 min/backend | ~4 min/cluster |
+| **Question** | how many rps can 1 frontend replica sustain? | how many rps can 1 backend replica sustain? | do N replicas scale linearly? |
+| **Service** | frontend | the 4 gRPC backends | frontend (extensible) |
+| **Where k6 runs** | on the operator's machine, via Ingress | **inside the cluster** (Job) | on the operator's machine, via Ingress |
+| **Key metric** | client-side p95 latency | client-side p95 latency (in-cluster) | CFS throttled periods |
+| **Calibrates** | frontend `capacity_req_per_sec` | backend `capacity_req_per_sec` | confirms `max_replicas` |
+| **netem** | must be off (it skews the p95) | no difference (intra-cluster traffic) | no difference (measures CPU) |
+| **Duration** | ~17 min | ~10 min/backend | ~4 min/cluster |
 
-Insieme verificano i **due fattori** del modello di capacita' DMOS:
-`run_capacity*` misura `capacity_req_per_sec`, `throttle_check` valida
-`max_replicas`. Il prodotto e' la capacita' di cluster usata in `Phi_cap`.
+Together they validate the **two factors** of the DMOS capacity model:
+`run_capacity*` measures `capacity_req_per_sec`, `throttle_check` validates
+`max_replicas`. For the frontend, their product is the per-cluster capacity
+used by Level 2; the backend capacities enter the co-scaling ratio.
 
 ---
 
-## 11. Limiti noti e quando rieseguirlo
+## 11. Known limits and when to rerun it
 
-### Limiti noti
+### Known limits
 
-- **recommendation/checkout non perfettamente isolati**: vedi sez. 5. La misura
-  include la latenza degli hop a valle (per design: e' cio' che il pod fa anche
-  in produzione).
-- **checkout a carrello vuoto**: vedi sez. 5.
-- **Il pod k6 condivide il cluster col backend**: il generatore di carico gira
-  sullo stesso cluster del backend sotto test. Su un cluster con margine (tier
-  HIGH, 8 vCPU) non e' un problema: k6 e' limitato a 3 vCPU e il backend ha le
-  sue requests garantite. Per questo il default e' `ms-cluster-01`.
-- **Capacita' uniforme tra i tier**: il pod backend ha un CPU limit fisso
+- **recommendation/checkout are not perfectly isolated**: see sec. 5. The
+  measurement includes the latency of the downstream hops (by design: it is
+  what the pod also does in production).
+- **checkout with an empty cart**: see sec. 5.
+- **The k6 pod shares the cluster with the backend**: the load generator runs
+  on the same cluster as the backend under test. On a cluster with headroom
+  (HIGH tier, 8 vCPU) this is not a problem: k6 is limited to 4 vCPU and the
+  backend has its requests guaranteed. This is why the default is
+  `ms-cluster-01`.
+- **Uniform capacity across tiers**: the backend pod has a fixed CPU limit
   (cartservice 300m, productcatalog 250m, checkout 500m, recommendation 500m),
-  quindi `capacity_req_per_sec` non dipende dal tier del worker — stesso
-  ragionamento del frontend. Basta misurare **una volta**, su un cluster
-  qualsiasi.
-- **Il proxy L7 Cilium e' nel percorso**: il traffico k6->backend passa da
-  Envoy (le CNP `l7-visibility-*` parsano quelle porte come HTTP). E' il
-  percorso reale di produzione, quindi corretto; ai rate del test (centinaia di
-  rps) Envoy non e' un collo di bottiglia.
+  so `capacity_req_per_sec` does not depend on the worker's tier, by the same
+  reasoning as for the frontend. Measuring **once**, on any cluster, is
+  enough.
+- **The Cilium L7 proxy is in the path**: the k6->backend traffic goes through
+  Envoy (the `l7-visibility-*` CNPs parse those ports as HTTP). This is the
+  real production path, so it is correct; at the test rates (hundreds of rps)
+  Envoy is not a bottleneck.
 
-### Quando rieseguirlo
+### When to rerun it
 
-- Dopo ogni **re-provisioning** del fleet.
-- Dopo aver cambiato il **CPU limit** di un backend in `config/services.yaml`.
-- Dopo aver cambiato la **versione dell'immagine** di un microservizio.
-- Quando cambia il **metodo gRPC rappresentativo** considerato.
+- After every **re-provisioning** of the fleet.
+- After changing a backend's **CPU limit** in `config/services.yaml`.
+- After changing a microservice's **image version**.
+- When the **representative gRPC method** being considered changes.
 
-### Posizione nella pipeline
+### Position in the pipeline
 
-Passo di **calibrazione**, una tantum dopo il re-provisioning, prima della fase
-di traffico:
+A **calibration** step, run once after re-provisioning, before the traffic
+phase:
 
 ```
-re-provision -> setup DMOS sui cluster -> verify-cilium -> netem + ping
+re-provision -> DMOS setup on the clusters -> verify-cilium -> netem + ping
    -> run_capacity.sh (frontend, netem OFF)
-   -> run_capacity_grpc.sh --all (backend)        <-- QUESTO STRUMENTO
-   -> aggiorna config/services.yaml
+   -> run_capacity_grpc.sh --all (backends)        <-- THIS TOOL
+   -> update config/services.yaml
    -> throttle_check.sh
-   -> riaccendi loadgenerator / fase di traffico -> lancio DMOS
+   -> turn loadgenerator back on / traffic phase -> start DMOS
 ```

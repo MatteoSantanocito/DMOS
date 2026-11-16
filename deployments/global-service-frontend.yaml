@@ -1,6 +1,6 @@
 # Global Service — Frontend (Cilium ClusterMesh)
 #
-# Data plane of the IEEE NCA 2026 paper (§III-A, §V-B): the frontend is a
+# Pooled data plane used by DMOS: the frontend is a
 # Cilium ClusterMesh global service with affinity "none". The eBPF load
 # balancer of every cluster balances each connection across the union of the
 # READY frontend endpoints of all clusters, uniformly per endpoint: the share

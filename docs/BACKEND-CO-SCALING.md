@@ -1,182 +1,195 @@
 # Backend Co-Scaling in DMOS
 
-Documentazione tecnica del dimensionamento dei servizi backend in DMOS.
-Descrive **cosa**, **perché** e **come** — con l'algoritmo preciso, le
-proprietà, i limiti e il posizionamento rispetto alla letteratura. Nel paper
-NCA 2026 corrisponde all'Eq. 11; il quadro complessivo è in
-[`dmos-architecture.md` §9](dmos-architecture.md#9-backend-co-scaling).
-
----
-
-## 1. Contesto e problema
-
-Online Boutique è un'applicazione a microservizi: un servizio **frontend**
-rivolto all'utente che, a ogni richiesta HTTP, effettua un **fan-out** di
-chiamate gRPC verso più servizi **backend** (`cartservice`,
-`productcatalogservice`, `checkoutservice`, `recommendationservice`,
-`currencyservice`, `adservice`, `shippingservice`).
-
-DMOS deve decidere, per ogni servizio e ogni cluster, **quante repliche**
-allocare. La domanda chiave: **su quale segnale si dimensiona un backend?**
-
-### 1.1 Perché NON sul conteggio di richieste del backend
-
-L'istinto è: misurare il tasso di richieste che arrivano al backend
-(`hubble_http_requests_total{destination_workload=<backend>}` via Cilium
-Hubble) e
-dimensionare di conseguenza. **Questo segnale è inaffidabile sotto saturazione.**
-
-Hubble conta **ogni richiesta HTTP/gRPC sul filo**. Quando il sistema è in
-distress, le chiamate gRPC interne falliscono e vengono **ritentate** (retry di
-gRPC / Envoy). Ogni retry è una nuova richiesta che Hubble conta — e **non
-esiste un'etichetta che distingua un retry da un originale**. Risultato: il
-contatore si gonfia di un fattore `fan-out × amplificazione-retry`.
-
-Misurazione reale (run flash-crowd, fase di cooldown, carico esterno offerto =
-50 req/s):
-
-| Metrica | Lettura | Verità |
-|---|---|---|
-| `hubble_http_requests_total` (productcatalogservice) | ~1040 req/s | ~50 req/s esterni |
-| Fattore di gonfiaggio | ~20× | — |
-
-Uno scaler che si fida di questo numero **scala su una bugia**. Peggio: lo
-scaling provoca churn degli endpoint Cilium/Envoy → più connessioni gRPC rotte
-→ più retry → contatore ancora più gonfio → **loop di feedback positivo**.
-È la firma di un **metastable failure** (Bronson et al., HotOS 2021): un guasto
-che persiste anche dopo la rimozione del trigger, sostenuto dai retry.
-
-**Conclusione:** il volume di traffico interno è un segnale di domanda
-**corrotto** sotto saturazione. Va escluso dall'anello di controllo.
-
----
-
-## 2. Principio di design
-
-Due regole:
-
-1. **Misurare la domanda al confine, non dentro il mesh.** L'unico segnale di
-   domanda immune ai retry è il **tasso di ingress esterno** — il traffico che
-   entra dalla Cilium Ingress, misurato da `get_ingress_rate()` (query
-   client-side all'origine; fallback server-side con `source_workload=""` —
-   vedi [`traffic-metrics-architecture.md`](traffic-metrics-architecture.md)). Il generatore di carico non
-   ritenta, e il fan-out interno non passa dall'Ingress → questo conteggio =
-   domanda reale.
-
-2. **Propagare la domanda lungo il grafo delle dipendenze.** Il carico di un
-   backend **non è una variabile indipendente**: è *causato* dal fan-out del
-   frontend. Quindi il backend si dimensiona **derivandolo dal frontend**, non
-   misurandolo. Questo è **dependency-aware autoscaling**.
-
-Schema:
+Technical documentation of how DMOS sizes the backend services. It describes
+**what**, **why** and **how**: the exact algorithm, its properties, its
+limits and how it relates to the literature. In compact form the rule is
 
 ```
-   ingress rate (esterno, pulito)
+n_{i,b} = clip( ceil(r_b · n_i), 1, max_b ),    r_b = max( 0.3, f_b · μ / μ_b )
+```
+
+where `n_i` is the number of frontend replicas on cluster *i*, `f_b` the calls
+backend *b* receives per frontend request (measured with Hubble), `μ` and
+`μ_b` the per-replica capacities of the frontend and of the backend, and
+`max_b` the replica cap of the backend on that cluster. The overall picture is
+in [`dmos-architecture.md` §9](dmos-architecture.md#9-backend-co-scaling).
+
+---
+
+## 1. Context and problem
+
+Online Boutique is a microservice application: a user-facing **frontend**
+service that, for every HTTP request, **fans out** gRPC calls to several
+**backend** services (`cartservice`, `productcatalogservice`,
+`checkoutservice`, `recommendationservice`, `currencyservice`, `adservice`,
+`shippingservice`).
+
+For every service and every cluster, DMOS must decide **how many replicas** to
+allocate. The key question: **which signal should a backend be sized on?**
+
+### 1.1 Why NOT on the backend's request count
+
+The obvious approach is to measure the rate of requests reaching the backend
+(`hubble_http_requests_total{destination_workload=<backend>}` via Cilium
+Hubble) and size accordingly. **This signal is unreliable under saturation.**
+
+Hubble counts **every HTTP/gRPC request on the wire**. When the system is in
+distress, internal gRPC calls fail and are **retried** (gRPC / Envoy retries).
+Every retry is a new request that Hubble counts, and **there is no label that
+distinguishes a retry from an original request**. As a result the counter is
+inflated by a factor of `fan-out × retry amplification`.
+
+Real measurement (flash-crowd run, cooldown phase, offered external load =
+50 req/s):
+
+| Metric | Reading | Ground truth |
+|---|---|---|
+| `hubble_http_requests_total` (productcatalogservice) | ~1040 req/s | ~50 external req/s |
+| Inflation factor | ~20× | — |
+
+A scaler that trusts this number **scales on a lie**. Worse, scaling causes
+Cilium/Envoy endpoint churn → more broken gRPC connections → more retries →
+an even more inflated counter → a **positive feedback loop**. This is the
+signature of a **metastable failure** (Bronson et al., HotOS 2021): a failure
+that persists after the trigger is removed, sustained by the retries.
+
+**Conclusion:** the volume of internal traffic is a **corrupted** demand
+signal under saturation. It must be kept out of the control loop.
+
+---
+
+## 2. Design principle
+
+Two rules:
+
+1. **Measure demand at the edge, not inside the mesh.** The only demand
+   signal immune to retries is the **external ingress rate**, the traffic
+   entering through the Cilium Ingress, measured by `get_ingress_rate()`
+   (client-side query at the source; server-side fallback with
+   `source_workload=""`, see
+   [`traffic-metrics-architecture.md`](traffic-metrics-architecture.md)). The
+   load generator does not retry, and the internal fan-out does not go through
+   the Ingress, so this count is the real demand.
+
+2. **Propagate demand along the dependency graph.** A backend's load **is not
+   an independent variable**: it is *caused* by the frontend's fan-out. The
+   backend is therefore sized **by deriving it from the frontend**, not by
+   measuring it. This is **dependency-aware autoscaling**.
+
+Diagram:
+
+```
+   ingress rate (external, clean)
         │
         ▼
-   budget N + placement L1 + correzione L2 (frontend)
+   budget N + L1 placement + L2 correction (frontend)
         │
         ▼
-   repliche frontend per cluster                             (fatto Kubernetes)
+   frontend replicas per cluster                             (Kubernetes fact)
         │
-        ▼  co-location (questo documento)
-   N repliche backend per cluster   (cart / pcatalog / checkout / reco /
+        ▼  co-location (this document)
+   N backend replicas per cluster   (cart / pcatalog / checkout / reco /
                                      currency / ad / shipping)
 ```
 
-Il conteggio Hubble corrotto **non entra** in nessuno dei due passi: il
-frontend usa l'ingress rate, i backend usano un fatto Kubernetes (il numero di
-repliche del frontend).
+The corrupted Hubble count enters **neither** step: the frontend uses the
+ingress rate, the backends use a Kubernetes fact (the number of frontend
+replicas).
 
 ---
 
-## 3. L'algoritmo di co-scaling
+## 3. The co-scaling algorithm
 
-Implementato in `_enforce_colocation()` (`src/dmos_main.py`), invocato al
-termine di `schedule_service('frontend')` — quindi a ogni ciclo di scheduling
-del frontend (~30 s).
+Implemented in `_enforce_colocation()` (`src/dmos_main.py`), called at the end
+of `schedule_service('frontend')` (on both the reactive and the predictive
+path), i.e. at every scheduling cycle of the frontend (~30 s).
 
-### 3.1 Grafo delle dipendenze
+### 3.1 Dependency graph
 
-Il servizio d'ingresso e i servizi co-scalati, nell'ordine in cui vengono
-processati (condividono il budget di churn del ciclo), si leggono da
-`config/services.yaml → application` (vedi
+The entry service and the co-scaled services, in the order in which they are
+processed (they share the per-cycle churn budget), are read from
+`config/services.yaml → application` (see
 [configuration-reference.md §4.1](configuration-reference.md#41-application--the-application-dmos-manages)).
-Per Online Boutique:
+For Online Boutique:
 
 ```yaml
 application:
   entry_service: frontend
   co_scaled_services: [cartservice, productcatalogservice, checkoutservice,
                        recommendationservice, currencyservice, adservice,
-                       shippingservice]   # stateless sul path caldo; redis-cart escluso (stateful)
+                       shippingservice]   # stateless on the hot path; redis-cart excluded (stateful)
 ```
 
-DMOS ne ricava `service_dependencies = {entry_service: co_scaled_services}`.
+DMOS derives `service_dependencies = {entry_service: co_scaled_services}` from it.
 
-Un grafo a una stella di profondità 1: il `frontend` è il parent, i sette
-backend sono i dipendenti.
+A star graph of depth 1: the `frontend` is the parent, the seven backends are
+the dependents.
 
 ### 3.2 Formula
 
-Per ogni backend `dep` e ogni cluster `c`:
+For every backend `dep` and every cluster `c`:
 
 ```
-parent_reps(c)   = repliche correnti del frontend su c        [k8s, lettura fresca]
-ratio_nominale   = ( capacita_frontend(c) / capacita_backend(c) ) × fanout(dep)
-ratio_effettivo  = max( ratio_nominale, r_floor )             [r_floor = 0.3]
-target(dep,c)    = clamp( min_repliche(dep,c),
-                          max_repliche(dep,c),
-                          ceil( parent_reps(c) × ratio_effettivo ) )
-current(dep,c)   = repliche correnti del backend su c         [k8s, lettura fresca]
+parent_reps(c)   = current frontend replicas on c             [k8s, fresh read]
+nominal_ratio    = ( frontend_capacity(c) / backend_capacity(c) ) × fanout(dep)
+effective_ratio  = max( nominal_ratio, r_floor )              [r_floor = 0.3]
+target(dep,c)    = clamp( min_replicas(dep,c),
+                          max_replicas(dep,c),
+                          ceil( parent_reps(c) × effective_ratio ) )
+current(dep,c)   = current backend replicas on c              [k8s, fresh read]
 delta            = target(dep,c) − current(dep,c)
 ```
 
-- `capacita_*` = `capacity_req_per_sec` da `config/services.yaml`, con override
-  per-cluster (`get_capacity_for_cluster`). Sono i valori **misurati** dal
-  capacity test gRPC.
-- `fanout(dep)` = `calls_per_request` da `config/services.yaml`: quante chiamate
-  riceve il backend per richiesta esterna, **misurato con Hubble**. Un servizio
-  chiamato N volte per richiesta riceve N× traffico e va scalato N volte di più
-  (es. `currencyservice` ~3.4×: senza fanout resterebbe sotto-provisionato).
-- `r_floor` = `backend_colocation_floor = 0.3` (`src/dmos_main.py`): pavimento
-  sul rapporto. I benchmark a replica isolata **sovrastimano** la capacità
-  effettiva sotto fan-out gRPC (esaurimento connection-pool, tail-latency
-  cascade — Dean & Barroso, "The Tail at Scale"); con rapporti nominali molto
-  bassi (es. cart: 60/400×0.65 ≈ 0.10) i backend resterebbero a 1 replica anche
-  col frontend scalato → cascata di saturazione. Valore calibrato
-  empiricamente: 0.5 sovra-provisionava a carichi moderati, 0.3 è l'equilibrio.
-- `clamp` rispetta `min/max_replicas_per_cluster` di ogni backend (tier-aware).
-- Le letture k8s sono **fresche** (subito prima della decisione) per evitare
-  decisioni su valori cachati obsoleti.
+- `*_capacity` = `capacity_req_per_sec` from `config/services.yaml`, with
+  per-cluster overrides (`get_capacity_for_cluster`). These are the values
+  **measured** by the capacity tests. A per-cluster calibration in
+  `config/local.yaml` (`capacity_req_per_sec: {frontend: r}`, see
+  [KUBEPHOS.md](KUBEPHOS.md)) overrides the frontend value: on the reference
+  fleet it is μ = 33 req/s instead of the 60 req/s of `services.yaml`.
+- `fanout(dep)` = `calls_per_request` from `config/services.yaml`: how many
+  calls the backend receives per external request, **measured with Hubble**.
+  A service called N times per request receives N× the traffic and must be
+  scaled N times more (e.g. `currencyservice` ~3.4×: without the fan-out term
+  it would stay under-provisioned).
+- `r_floor` = `backend_colocation_floor = 0.3` (`src/dmos_main.py`): a floor on
+  the ratio. Isolated-replica benchmarks **overestimate** the effective
+  capacity under gRPC fan-out (connection-pool exhaustion, tail-latency
+  cascade; Dean & Barroso, "The Tail at Scale"); with very low nominal ratios
+  (e.g. cart: 60/400 × 0.65 ≈ 0.10) the backends would stay at 1 replica even
+  with the frontend scaled out → saturation cascade. The value was calibrated
+  empirically: 0.5 over-provisioned at moderate load, 0.3 is the balance point.
+- `clamp` honours each backend's `min_replicas` (1 for every backend) and
+  `max_replicas_per_cluster` (tier-aware).
+- The k8s reads are **fresh** (right before the decision) to avoid decisions
+  based on stale cached values.
 
-### 3.3 Bidirezionale + budget di churn
+### 3.3 Bidirectional + churn budget
 
-`delta` viene applicato in **entrambe le direzioni**: quando il frontend sale i
-backend salgono, quando il frontend scende i backend scendono. La co-location è
-il **dimensionatore unico** dei backend. Il `delta` è applicato in un solo
-passo (il rate limit +6/−1 vale per il frontend, non per il co-scaling); il
-co-scaling non è soggetto a cooldown né a dead zone.
+`delta` is applied in **both directions**: when the frontend grows the
+backends grow, when the frontend shrinks the backends shrink. Co-location is
+the **sole sizer** of the backends. `delta` is applied in a single step (the
++6/−1 rate limit applies to the frontend, not to co-scaling); co-scaling is
+subject to neither the cooldown nor the dead zone.
 
-Ogni operazione rispetta i **budget di churn per ciclo** (anti-thundering-herd).
-Il co-scaling ha budget **dedicati**, separati da quelli reattivi del frontend
-(8 up / 2 down): senza separazione la rampa del frontend esauriva il budget e
-affamava il co-scaling, lasciando i backend a 1 replica.
+Every operation honours the **per-cycle churn budgets** (anti-thundering-herd).
+Co-scaling has **dedicated** budgets, separate from the frontend's reactive
+ones (8 up / 2 down): without that separation the frontend ramp used up the
+budget and starved co-scaling, leaving the backends at 1 replica.
 
-| Budget | Valore | Significato |
+| Budget | Value | Meaning |
 |---|---|---|
-| `backend_scale_up_budget_per_cycle` | 12 | max pod backend aggiunti per ciclo (30 s), totale fleet |
-| `backend_scale_down_budget_per_cycle` | 6 | max pod backend terminati per ciclo, totale fleet |
+| `backend_scale_up_budget_per_cycle` | 12 | max backend pods added per cycle (30 s), whole federation |
+| `backend_scale_down_budget_per_cycle` | 6 | max backend pods removed per cycle, whole federation |
 
-Se il budget è esaurito, l'operazione viene **rimandata** al ciclo successivo
-(loggata come `deferred — backend budget esaurito`). Lo scaling si distribuisce
-così su più cicli, dando al data-plane Cilium/Envoy il tempo di stabilizzarsi.
+If the budget is used up, the operation is **deferred** to the next cycle
+(logged as `deferred — backend budget esaurito`). Scaling is thus spread over
+several cycles, giving the Cilium/Envoy data plane time to settle.
 
-### 3.4 Esempio numerico
+### 3.4 Numerical example
 
-Capacità per replica e fanout (da `services.yaml`; frontend = 60 req/s):
+Per-replica capacity and fan-out (from `services.yaml`; frontend = 60 req/s):
 
-| Backend | capacità (req/s) | fanout | ratio nominale = 60/cap × fanout | ratio effettivo = max(nominale, 0.3) |
+| Backend | capacity (req/s) | fanout | nominal ratio = 60/cap × fanout | effective ratio = max(nominal, 0.3) |
 |---|---|---|---|---|
 | cartservice | 400 | 0.65 | 0.098 | 0.30 (floor) |
 | productcatalogservice | 1200 | 2.25 | 0.113 | 0.30 (floor) |
@@ -186,9 +199,10 @@ Capacità per replica e fanout (da `services.yaml`; frontend = 60 req/s):
 | adservice | 400 | 0.43 | 0.065 | 0.30 (floor) |
 | shippingservice | 500 | 0.14 | 0.017 | 0.30 (floor) |
 
-Se al picco il frontend ha **6 repliche** su `ms-cluster-01` (cap tier HIGH):
+If at the peak the frontend has **6 replicas** on `ms-cluster-01` (HIGH tier
+cap):
 
-| Backend | `ceil(6 × ratio_eff)` | target (post-clamp) |
+| Backend | `ceil(6 × effective_ratio)` | target (after clamp) |
 |---|---|---|
 | cartservice | ceil(1.80) = 2 | 2 (max 2) |
 | productcatalogservice | ceil(1.80) = 2 | 2 |
@@ -198,132 +212,146 @@ Se al picco il frontend ha **6 repliche** su `ms-cluster-01` (cap tier HIGH):
 | adservice | ceil(1.80) = 2 | 2 |
 | shippingservice | ceil(1.80) = 2 | 2 (max 2) |
 
-I backend "deboli" (capacità effettiva per replica bassa: recommendation) o ad
-alto fanout (currency, ~3.4 chiamate per richiesta) scalano sul termine
-capacità×fanout e ricevono più repliche; per gli altri governa il floor 0.3,
-che li fa comunque crescere col frontend invece di lasciarli a 1 replica.
+"Weak" backends (low effective capacity per replica: recommendation) and
+high-fan-out ones (currency, ~3.4 calls per request) scale on the
+capacity × fan-out term and get more replicas; for the others the 0.3 floor
+governs, which still makes them grow with the frontend instead of leaving
+them at 1 replica.
+
+With the calibrated μ = 33 req/s of the reference fleet the nominal ratios
+are lower: only recommendationservice (33/40 × 0.40 = 0.33) and
+currencyservice (33/250 × 3.4 = 0.45) stay above the floor, and with 6
+frontends they get ceil(1.98) = 2 and ceil(2.69) = 3 replicas; every other
+backend runs on the floor (2 replicas).
 
 ---
 
-## 4. Per-cluster: perché conta
+## 4. Per cluster: why it matters
 
-Il rapporto di co-scaling è calcolato **per cluster**, non globale, per due
-motivi:
+The co-scaling ratio is computed **per cluster**, not globally, for two
+reasons:
 
-1. **Fleet eterogeneo.** I cluster sono su tre tier hardware (HIGH 8 vCPU,
-   MEDIUM 6 vCPU, LOW 4 vCPU). `get_capacity_for_cluster` e
-   `get_max_replicas_for_cluster` possono riflettere il tier: oggi in
-   `services.yaml` variano per tier solo i tetti (`max_replicas_per_cluster`),
-   mentre le capacità per replica sono uguali su tutti i cluster.
+1. **Heterogeneous fleet.** The clusters are on three hardware tiers (HIGH
+   8 vCPU, MEDIUM 6 vCPU, LOW 4 vCPU). `get_capacity_for_cluster` and
+   `get_max_replicas_for_cluster` can reflect the tier: in `services.yaml`
+   today only the caps (`max_replicas_per_cluster`) vary by tier, while the
+   per-replica capacities are the same on every cluster.
 
-2. **Località gRPC.** Co-locare il backend **sullo stesso cluster** del
-   frontend che lo chiama tiene il fan-out gRPC **intra-cluster**. Un backend
-   piazzato altrove costringerebbe ogni chiamata a un hop inter-cluster
-   (decine/centinaia di ms via ClusterMesh). La co-location per-cluster
-   preserva la località: dove c'è frontend, lì ci sono i suoi backend.
+2. **gRPC locality.** Co-locating the backend **on the same cluster** as the
+   frontend that calls it keeps the gRPC fan-out **intra-cluster**. A backend
+   placed elsewhere would force every call through an inter-cluster hop (tens
+   to hundreds of ms via ClusterMesh). Per-cluster co-location preserves
+   locality: wherever there is a frontend, its backends are there too. The
+   frontend itself is a global service with `affinity: none`, so a request
+   may be served by a frontend on another cluster than the one it entered;
+   that frontend then calls the backends of its own cluster (the backends are
+   local or `affinity: local`, see
+   [CILIUM-CLUSTERMESH-NOTES.md](CILIUM-CLUSTERMESH-NOTES.md)). This is why the
+   backends follow the frontend replicas of their cluster rather than the
+   demand entering it.
 
 ---
 
-## 5. Proprietà
+## 5. Properties
 
-| Proprietà | Come è garantita |
+| Property | How it is guaranteed |
 |---|---|
-| **Immune alla corruzione da retry** | Usa solo fatti Kubernetes (repliche del frontend) + capacità misurate. Nessuna metrica di volume corruttibile nell'anello. |
-| **Località gRPC preservata** | Co-scaling per-cluster: i backend stanno dove sta il frontend chiamante. |
-| **Convergenza** | Bidirezionale: i backend inseguono il frontend in su e in giù; nessuna deriva possibile. |
-| **Churn limitato** | Ogni operazione rispetta i budget per-ciclo; lo scaling si spalma nel tempo. |
-| **Coerente con L1** | Nell'arm L1+L2, Level 1 piazza il frontend geo-aware; i backend ereditano quella distribuzione → restano vicini al chiamante. |
+| **Immune to retry corruption** | Uses only Kubernetes facts (frontend replicas) + measured capacities. No corruptible volume metric in the loop. |
+| **gRPC locality preserved** | Per-cluster co-scaling: the backends live where the calling frontend lives. |
+| **Convergence** | Bidirectional: the backends track the frontend up and down; no drift is possible. |
+| **Bounded churn** | Every operation honours the per-cycle budgets; scaling is spread over time. |
+| **Consistent with L1** | In the L1+L2 arm, Level 1 places the frontend geo-aware; the backends inherit that distribution → they stay close to the caller. |
 
 ---
 
-## 6. Implementazione
+## 6. Implementation
 
-Modifiche in `src/dmos_main.py` (insieme di patch "option-1"):
+Changes in `src/dmos_main.py`:
 
-1. **`_get_per_cluster_traffic`** — per il `frontend` usa `get_ingress_rate()`
-   invece di `get_request_rate()` (sorgente di domanda pulita).
-2. **`monitored_services = [entry_service]`** (il `frontend`) — solo il
-   servizio d'ingresso è schedulato a traffico. Lo scaler L2 per-backend (che leggeva il conteggio Hubble
-   corrotto) **non viene più invocato**.
-3. **`_enforce_colocation`** — riscritta come dimensionatore unico,
-   bidirezionale, per-cluster (questo documento).
-4. **Rimossi** i blocchi *Backend reset* e *scale-down graduale backend* da
-   `periodic_check_thread`: con la co-location come unico sizer bidirezionale i
-   backend non possono andare alla deriva → reti di sicurezza obsolete.
+1. **`_get_per_cluster_traffic`**: for the `frontend` it uses
+   `get_ingress_rate()` instead of `get_request_rate()` (clean demand source).
+2. **`monitored_services = [entry_service]`** (the `frontend`): only the entry
+   service is scheduled on traffic. The per-backend L2 scaler (which read the
+   corrupted Hubble count) **is no longer invoked**.
+3. **`_enforce_colocation`**: rewritten as the sole, bidirectional,
+   per-cluster sizer (this document).
+4. **Removed** the *Backend reset* and *gradual backend scale-down* blocks
+   from `periodic_check_thread`: with co-location as the only bidirectional
+   sizer the backends cannot drift, so those safety nets became obsolete.
 
-### Interazione con Level 1 e Level 2
+### Interaction with Level 1 and Level 2
 
 | Arm | Frontend | Backend |
 |---|---|---|
-| `off` | 1 replica fissa (DMOS spento) | 1 replica fissa |
-| `l2` (`--no-scheduling`) | budget N dall'ingress rate, distribuzione uniforme N/K, correzione L2 | co-location |
-| `l1l2` (campagna NCA), `nca` e gli altri modelli di score, `profile-*`, `legacy-*` (nomi di `experiments/run_naming.py`) | L1 (score) piazza il budget N; L2 corregge | co-location |
+| `off` | 1 fixed replica (DMOS off) | 1 fixed replica |
+| `l2` (`--no-scheduling`) | budget N from the ingress rate, uniform distribution N/K, L2 correction | co-location |
+| `l1l2` (an earlier campaign), the score models of `config/weights.yaml`, `profile-*`, `legacy-*` (names from `experiments/run_naming.py`) | L1 (score) places the budget N; L2 corrects | co-location |
 
-In tutti gli arm con DMOS la co-location è invocata identica al termine di
-`schedule_service('frontend')`. La **score function di Level 1 non è
-modificata**: continua a decidere la geo-distribuzione — la decide per il
-frontend, e i backend la ereditano.
+In every arm with DMOS, co-location is invoked identically at the end of
+`schedule_service('frontend')`. The **Level 1 score function is not
+modified**: it keeps deciding the geo-distribution. It decides it for the
+frontend, and the backends inherit it.
 
-**Alternativa sperimentale.** Con `--naive-backends` la co-location è
-sostituita da uno scaling reattivo dei backend sul loro rate L7 osservato
-(`ceil(rps / 50)`, budget del frontend): è il baseline "metastabile" usato per
-mostrare il problema del §1; nessun harness attuale lo usa.
+**Experimental alternative.** With `--naive-backends`, co-location is replaced
+by reactive scaling of the backends on their observed L7 rate
+(`ceil(rps / 50)`, frontend budgets): it is the "metastable" baseline used to
+show the problem of §1; no current harness uses it.
 
-**Osservabilità.** Il collector (`dmos_live.jsonl`) registra repliche e CPU di
-cartservice, productcatalogservice, checkoutservice e recommendationservice,
-ma non di currencyservice, adservice e shippingservice; le loro decisioni si
-leggono in `dmos.log` (righe `Co-location: <cluster> — <servizio>: a → b`).
-
----
-
-## 7. Limiti e assunzioni
-
-Onestà intellettuale — la co-location è un controllo **feed-forward**
-(anello aperto):
-
-- **Assume un fan-out stabile.** Il rapporto fisso (capacità e
-  `calls_per_request` costanti) è corretto se il
-  rapporto chiamate-frontend / chiamate-backend non varia. Vale finché il mix
-  di endpoint del workload è fisso (k6: 40 % `/`, 25 % pagine prodotto, 25 %
-  carrello, 5 % cambio valuta, 5 % checkout); con un mix che cambia nel tempo
-  il fan-out varierebbe.
-- **Grafo a profondità 1.** Modella `frontend → backend`. Non cattura
-  dipendenze `backend → backend` (in Online Boutique sono marginali).
-- **Nessun feedback dallo stato reale del backend.** Se il modello di capacità
-  è impreciso per un backend, non c'è correzione a posteriori.
-
-Mitigazione/estensione possibile (fase 2): un **ritocco closed-loop sulla CPU**
-del backend (segnale limitato [0,100%], non gonfiabile come il conteggio) sopra
-il floor feed-forward della co-location.
+**Observability.** The collector (`dmos_live.jsonl`) records replicas and CPU
+of cartservice, productcatalogservice, checkoutservice and
+recommendationservice, but not of currencyservice, adservice and
+shippingservice; their decisions can be read in `dmos.log` (lines
+`Co-location: <cluster> — <service>: a → b`).
 
 ---
 
-## 8. Posizionamento nella letteratura
+## 7. Limits and assumptions
 
-La co-location è la versione **white-box e interpretabile** di un approccio
-riconosciuto:
+To be explicit: co-location is a **feed-forward** (open-loop) control:
 
-- **Dependency-aware / call-graph-aware autoscaling** è una direzione mainstream
-  (survey 2025, arXiv:2507.17128): "incorporare l'analisi del percorso di
-  invocazione nelle decisioni di scaling permette azioni coordinate ed evita la
-  propagazione dei guasti".
-- **Propagazione della domanda dall'ingress** lungo il grafo per dimensionare i
-  componenti è un metodo noto (scaling guidato dal traffico utente con SLO
-  trace-level).
-- Le versioni **apprese** sostituiscono il rapporto fisso con un modello:
-  Graph-PHPA (LSTM per il workload + GNN per la relazione workload→risorse),
-  STaleX (spatiotemporal-aware). Utili per workload eterogenei o grafi profondi,
-  al costo di interpretabilità e di un onere di training.
-- Il problema che la co-location **evita** — lo scaler che alimenta un loop di
-  feedback via metriche gonfiate dai retry — è un **metastable failure**
-  (Bronson et al., HotOS 2021).
+- **It assumes a stable fan-out.** The fixed ratio (constant capacities and
+  `calls_per_request`) is correct as long as the ratio of frontend calls to
+  backend calls does not change. This holds while the endpoint mix of the
+  workload is fixed (k6: 40 % `/`, 25 % product pages, 25 % cart, 5 %
+  currency change, 5 % checkout); with a mix that changes over time the
+  fan-out would vary.
+- **Depth-1 graph.** It models `frontend → backend`. It does not capture
+  `backend → backend` dependencies (marginal in Online Boutique).
+- **No feedback from the actual backend state.** If the capacity model is
+  inaccurate for a backend, nothing corrects it afterwards.
 
-**Sintesi per la tesi:** DMOS adotta una propagazione feed-forward
-interpretabile, ancorata a capacità misurate, adeguata al workload omogeneo
-dell'esperimento; un modello graph-based appreso è l'estensione naturale,
-lasciata come lavoro futuro.
+Possible mitigation/extension: a **closed-loop CPU adjustment** of the backend
+(a bounded signal in [0, 100 %], which cannot be inflated like the request
+count) on top of the feed-forward co-location floor.
 
-### Riferimenti
+---
+
+## 8. Relation to the literature
+
+Co-location is the **white-box, interpretable** version of an established
+approach:
+
+- **Dependency-aware / call-graph-aware autoscaling** is a mainstream
+  direction (survey 2025, arXiv:2507.17128): incorporating the analysis of the
+  invocation path into scaling decisions enables coordinated actions and
+  prevents failure propagation.
+- **Propagating demand from the ingress** along the graph to size the
+  components is a known method (scaling driven by user traffic with
+  trace-level SLOs).
+- **Learned** versions replace the fixed ratio with a model: Graph-PHPA (LSTM
+  for the workload + GNN for the workload→resources relation), STaleX
+  (spatiotemporal-aware). Useful for heterogeneous workloads or deep graphs,
+  at the cost of interpretability and a training burden.
+- The problem that co-location **avoids**, a scaler feeding a feedback loop
+  through retry-inflated metrics, is a **metastable failure** (Bronson et
+  al., HotOS 2021).
+
+**Summary:** DMOS adopts an interpretable feed-forward propagation, anchored
+to measured capacities, suited to the homogeneous workload of the
+experiments; a learned graph-based model is the natural extension, left as
+future work.
+
+### References
 
 - N. Bronson et al., *Metastable Failures in Distributed Systems*, HotOS 2021.
 - *Auto-scaling Approaches for Microservice Applications: A Survey and

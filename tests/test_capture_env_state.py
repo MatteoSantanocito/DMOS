@@ -101,9 +101,11 @@ if "daemonset" in a:
 if "clustermesh-apiserver" in a:
     out({"spec": {"replicas": 1}, "status": {"readyReplicas": 1}})
 if "deploy" in a:
-    items = [{"metadata": {"name": "frontend"}, "spec": {"replicas": 2, "template": {"spec": {
+    fe = int(os.environ.get("FAKE_FE_REPLICAS", "2"))
+    ready = int(os.environ.get("FAKE_FE_READY", fe))
+    items = [{"metadata": {"name": "frontend"}, "spec": {"replicas": fe, "template": {"spec": {
         "containers": [{"name": "server", "image": "fe:v1", "resources": {"limits": {"cpu": "500m"}}}]}}},
-        "status": {"readyReplicas": 2, "availableReplicas": 2}}]
+        "status": {"replicas": fe, "readyReplicas": ready, "availableReplicas": ready}}]
     lg = os.environ.get("FAKE_LOADGEN")          # replicas of Online Boutique's loadgenerator
     if lg is not None:
         items.append({"metadata": {"name": "loadgenerator"},
@@ -122,6 +124,7 @@ FAKE_SSH = r'''
 import sys, os
 target = [x for x in sys.argv[1:] if "@" in x][0]
 mode = os.environ.get("FAKE_NETEM_MODE", "ok")
+filters = os.environ.get("FAKE_FILTERS")      # hex IPs exempt from the delay, comma list
 if target.endswith("10.0.0.2"):
     if mode == "missing":
         print("qdisc fq_codel 0: root refcnt 2")
@@ -129,6 +132,14 @@ if target.endswith("10.0.0.2"):
         print("qdisc netem 8001: root refcnt 2 limit 1000 delay 30ms  5ms")
 else:
     print("qdisc fq_codel 0: root refcnt 2")
+if filters is not None and "@@DMOS_TC_FILTERS@@" in sys.argv[-1]:
+    print("@@DMOS_TC_FILTERS@@")
+    if target.endswith("10.0.0.2"):
+        for i, h in enumerate(x for x in filters.split(",") if x):
+            print(f"filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::{800 + i} order {2048 + i} key ht 800 bkt 0 flowid 1:2 not_in_hw ")
+            print(f"  match {h}/ffffffff at 16")
+        print("filter parent 1: protocol ip pref 2 u32 chain 0 fh 801::800 order 2048 key ht 801 bkt 0 flowid 1:4 not_in_hw ")
+        print("  match 00000000/00000000 at 16")
 '''
 
 
@@ -221,6 +232,34 @@ def test_gate_loadgenerator(fake_env, monkeypatch):
                for x in snap["expectations"]["violations"])
 
 
+def test_gate_reset_to_one_replica(fake_env, monkeypatch):
+    tmp, env_path = fake_env
+    monkeypatch.setenv("FAKE_LOADGEN", "0")                 # loadgenerator at 0 is not a violation
+    rc, snap = _capture(env_path, tmp / "pre0.json", "--expect-reset")
+    assert rc == 3                                          # frontend at 2 on both clusters
+    assert any("frontend@ms-cluster-01: not reset" in x and "2/2/2" in x
+               for x in snap["expectations"]["violations"])
+    monkeypatch.setenv("FAKE_FE_REPLICAS", "1")
+    rc, snap = _capture(env_path, tmp / "pre1.json", "--expect-reset")
+    assert rc == 0 and snap["expectations"]["expect_reset"] is True
+    monkeypatch.setenv("FAKE_FE_READY", "0")                # pod there but not ready yet
+    rc, snap = _capture(env_path, tmp / "pre2.json", "--expect-reset")
+    assert rc == 3 and any("1/1/0" in x for x in snap["expectations"]["violations"])
+    rc, _ = _capture(env_path, tmp / "pre3.json")           # recorded only, no gate
+    assert rc == 0
+
+
+def test_gate_reset_unreadable_cluster(fake_env, monkeypatch):
+    tmp, env_path = fake_env
+    monkeypatch.setenv("FAKE_FE_REPLICAS", "1")
+    env = json.loads(env_path.read_text(encoding="utf-8"))
+    env["clusters"][0]["kubeconfig_path"] = str(tmp / "does-not-exist")
+    env_path.write_text(json.dumps(env), encoding="utf-8")
+    rc, snap = _capture(env_path, tmp / "pre.json", "--expect-reset")
+    assert rc == 3
+    assert any("deployments of ms-cluster-01 not read" in x for x in snap["expectations"]["violations"])
+
+
 def test_missing_kubeconfig_is_recorded_not_fatal(fake_env):
     tmp, env_path = fake_env
     env = json.loads(env_path.read_text(encoding="utf-8"))
@@ -230,3 +269,65 @@ def test_missing_kubeconfig_is_recorded_not_fatal(fake_env):
     assert rc == 0
     assert "kubeconfig not found" in snap["verdicts"]["collection_errors"]["ms-cluster-01"][0]
     assert snap["verdicts"]["netem"]["ms-cluster-01"] == "ok"   # netem still checked
+
+
+# ── netem exemptions (k6 client close to every ingress) ─────────────────────
+
+TC_FILTERS = """filter parent 1: protocol ip pref 1 u32 chain 0
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800: ht divisor 1
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 flowid 1:2 not_in_hw
+  match c0a8007e/ffffffff at 16
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::801 order 2049 key ht 800 bkt 0 flowid 1:2 not_in_hw
+  match c0a8008c/ffffffff at 16
+filter parent 1: protocol ip pref 2 u32 chain 0 fh 801::800 order 2048 key ht 801 bkt 0 flowid 1:4 not_in_hw
+  match 00000000/00000000 at 16
+"""
+
+
+def test_parse_tc_filters_reads_the_exempt_destinations():
+    assert ces.parse_tc_filters(TC_FILTERS) == ["192.168.0.126", "192.168.0.140"]
+    assert ces.parse_tc_filters("") == []
+    assert ces.parse_tc_filters(TC_FILTERS, unshaped_class="1:4") == []   # /0 is not an IP
+
+
+def test_gate_client_local(fake_env, monkeypatch):
+    tmp, env_path = fake_env
+    k6 = "192.168.0.140"
+    monkeypatch.setenv("FAKE_FILTERS", "0a000002,c0a8008c")      # node + k6 exempt
+    rc, snap = _capture(env_path, tmp / "ok.json", "--expect-client-local", k6)
+    assert rc == 0
+    assert snap["verdicts"]["netem_unshaped_ips"] == {"ms-cluster-02": ["10.0.0.2", k6]}
+    assert snap["expectations"]["expect_client_local"] == [k6]
+
+    monkeypatch.setenv("FAKE_FILTERS", "0a000002")               # k6 delayed
+    rc, snap = _capture(env_path, tmp / "delayed.json", "--expect-client-local", k6)
+    assert rc == 3
+    assert any(f"netem delays the k6 client {k6} on ms-cluster-02" in x
+               for x in snap["expectations"]["violations"])
+    rc_no_gate, _ = _capture(env_path, tmp / "nogate.json")     # without the flag: no gate
+    assert rc_no_gate == 0
+
+    monkeypatch.delenv("FAKE_FILTERS")                           # filters not readable
+    rc, snap = _capture(env_path, tmp / "unknown.json", "--expect-client-local", k6)
+    assert rc == 3
+    assert any("netem filters not readable on ms-cluster-02" in x
+               for x in snap["expectations"]["violations"])
+
+
+def test_pod_lifecycle_is_recorded():
+    dep = {"items": [{"metadata": {"name": "frontend"}, "spec": {"replicas": 2, "minReadySeconds": 5,
+        "template": {"spec": {"terminationGracePeriodSeconds": 30, "containers": [{
+            "name": "server", "image": "fe:v1",
+            "lifecycle": {"preStop": {"sleep": {"seconds": 15}}},
+            "readinessProbe": {"periodSeconds": 15, "initialDelaySeconds": 10}}]}}},
+        "status": {}},
+        {"metadata": {"name": "cartservice"}, "spec": {"replicas": 1,
+            "template": {"spec": {"containers": [{"name": "server", "image": "c:v1"}]}}}, "status": {}}]}
+    out = ces.summarize_deployments(dep)
+    assert out["frontend"]["lifecycle"] == {"termination_grace_s": 30, "pre_stop": "sleep 15s",
+                                            "min_ready_s": 5,
+                                            "readiness": {"initialDelaySeconds": 10, "periodSeconds": 15,
+                                                          "failureThreshold": None,
+                                                          "successThreshold": None}}
+    assert out["cartservice"]["lifecycle"] == {"termination_grace_s": None, "pre_stop": None,
+                                               "min_ready_s": 0, "readiness": None}

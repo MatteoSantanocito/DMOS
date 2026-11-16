@@ -1,9 +1,9 @@
 # Cilium Network Policies — Complete Documentation
 ## Context: DMOS Multi-Cluster with Cilium ClusterMesh
 
-> Originally written 2026-02-27 following the debugging session that resolved
-> the 100% timeout issue in multiingress Locust tests. Updated for the current
-> Cilium-Ingress-based DMOS deployment.
+> Originally written after resolving a 100% timeout issue in an earlier
+> multi-ingress load test. Updated for the current Cilium-Ingress-based DMOS
+> deployment.
 
 ---
 
@@ -228,9 +228,7 @@ traffic and the `reserved:ingress` proxy itself).
 > **Historical note**: in the NGINX Ingress era, this same property combined
 > with NodePort `world` traffic to produce 100% timeouts during Locust load
 > tests. With Cilium Ingress, external traffic is intercepted by Envoy *before*
-> the policy engine evaluates it, so the failure mode no longer applies. See
-> [`_archive/nginx-ingress-hubble-l7.md`](_archive/nginx-ingress-hubble-l7.md)
-> for the full archived narrative.
+> the policy engine evaluates it, so the failure mode no longer applies.
 
 ---
 
@@ -411,8 +409,8 @@ Start-Sleep 30
 The previous DMOS deployment used NGINX Ingress as the entry point and required
 a different `l7-visibility-frontend` CNP shape (with `fromEntities: cluster, host`
 to admit NGINX). That setup, including the diagnosis of the 100% Locust timeout
-issue and the three CNP bugs that came out of it, is archived at
-[`_archive/nginx-ingress-hubble-l7.md`](_archive/nginx-ingress-hubble-l7.md).
+issue and the three CNP bugs that came out of it, is not part of this
+release.
 
 ---
 

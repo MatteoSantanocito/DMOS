@@ -17,13 +17,13 @@ clustermesh-apiserver readiness, Nodes, netem (`tc qdisc` on the worker via
 SSH, same criteria as preflight_runs.sh) and ping RTT from Prometheus.
 
 Gate mode: --require-netem / --expect-affinity / --expect-no-hpa /
---expect-no-loadgenerator turn violations into exit code 3, so the harness
+--expect-no-loadgenerator / --expect-no-karmada turn violations into exit code 3, so the harness
 can refuse to start a run on a testbed in the wrong state.
 
 USAGE
   python experiments/capture_env_state.py --phase pre --out RUN_DIR/env_state_pre.json \
       [--require-netem] [--expect-affinity none|local] [--affinity-services frontend] \
-      [--expect-no-hpa] [--expect-no-loadgenerator]
+      [--expect-no-hpa] [--expect-no-loadgenerator] [--expect-no-karmada]
 
 EXIT CODES
   0 = captured, expectations met     3 = captured, expectation violated
@@ -124,6 +124,33 @@ def parse_tc_qdisc(text: str) -> Dict[str, Any]:
     return out
 
 
+FILTER_MARK = "@@DMOS_TC_FILTERS@@"
+_U32_MATCH_RE = re.compile(r"^\s*match\s+([0-9a-fA-F]{8})/([0-9a-fA-F]{8})\s+at\s+16\b")
+_FLOWID_RE = re.compile(r"\bflowid\s+(\S+)")
+
+
+def parse_tc_filters(text: str, unshaped_class: str = "1:2") -> List[str]:
+    """Destination IPs that `tc filter show` sends to the class WITHOUT delay.
+
+    scripts/setup-netem-and-ping.sh adds one u32 filter per exempt address
+    (`match ip dst A/32 flowid 1:2`); tc prints it as `match <hex ip>/ffffffff
+    at 16` under the line that carries the flowid."""
+    ips: List[str] = []
+    flow = None
+    for line in (text or "").splitlines():
+        m = _FLOWID_RE.search(line)
+        if m:
+            flow = m.group(1)
+            continue
+        m = _U32_MATCH_RE.match(line)
+        if m and flow == unshaped_class and m.group(2).lower() == "ffffffff":
+            v = int(m.group(1), 16)
+            ip = ".".join(str((v >> s) & 0xFF) for s in (24, 16, 8, 0))
+            if ip not in ips:
+                ips.append(ip)
+    return ips
+
+
 def netem_verdict(expected_ms: float, parsed: Optional[Dict[str, Any]],
                   ssh_ok: bool, tol_ms: float = NETEM_TOL_MS) -> str:
     """
@@ -176,12 +203,42 @@ def summarize_deployments(dep_list: Dict[str, Any]) -> Dict[str, Dict[str, Any]]
                     containers[0] if containers else {})
         out[meta.get("name", "?")] = {
             "spec_replicas": spec.get("replicas"),
+            "replicas": status.get("replicas", 0),     # pods of the Deployment, not terminating
             "ready_replicas": status.get("readyReplicas", 0),
             "available_replicas": status.get("availableReplicas", 0),
             "image": main.get("image"),
             "resources": main.get("resources", {}),
+            # Karmada: label on member objects it applies (karmada_baseline.py)
+            "karmada_managed": (meta.get("labels") or {}).get("karmada.io/managed") == "true",
+            "revision": (meta.get("annotations") or {}).get("deployment.kubernetes.io/revision"),
+            # Pod lifecycle (experiments/apply_pod_lifecycle.sh): whether a replica
+            # removed by a scale-down drains before SIGTERM, and how fast a new
+            # one is declared ready. Recorded since 31/10/2026: the 503 of the
+            # cooldown and the latency bursts of the scaling actions depend on it.
+            "lifecycle": pod_lifecycle(spec, main),
         }
     return out
+
+
+def pod_lifecycle(spec: Dict[str, Any], main: Dict[str, Any]) -> Dict[str, Any]:
+    pod = spec.get("template", {}).get("spec", {})
+    pre = ((main.get("lifecycle") or {}).get("preStop") or {})
+    pre_stop = None
+    if "sleep" in pre:
+        pre_stop = f"sleep {pre['sleep'].get('seconds')}s"
+    elif "exec" in pre:
+        pre_stop = "exec " + " ".join(pre["exec"].get("command") or [])[:80]
+    elif "httpGet" in pre:
+        pre_stop = "httpGet"
+    rp = main.get("readinessProbe") or {}
+    return {
+        "termination_grace_s": pod.get("terminationGracePeriodSeconds"),
+        "pre_stop": pre_stop,
+        "min_ready_s": spec.get("minReadySeconds", 0),
+        "readiness": ({k: rp.get(k) for k in ("initialDelaySeconds", "periodSeconds",
+                                               "failureThreshold", "successThreshold")}
+                      if rp else None),
+    }
 
 
 def summarize_hpas(hpa_list: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -258,12 +315,25 @@ class Collector:
                           "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=6"]
         if self.ssh_key:
             cmd += ["-i", self.ssh_key]
-        cmd += [f"{self.ssh_user}@{cl.get('ip')}", f"tc qdisc show dev {iface}"]
+        # interface "auto" (Kubephos, netem scope cluster): the interface is the one
+        # of the default route of each node, so look at every device of the node.
+        # The filters say which destinations are exempt from the delay (the
+        # nodes of the cluster, its storage and the k6 client, see
+        # scripts/setup-netem-and-ping.sh).
+        if iface == "auto":
+            tc = ("tc qdisc show && echo " + FILTER_MARK + " && { for d in $(ls /sys/class/net); do "
+                  "tc filter show dev $d parent 1: 2>/dev/null; done; true; }")
+        else:
+            tc = (f"tc qdisc show dev {iface} && echo {FILTER_MARK} && "
+                  f"{{ tc filter show dev {iface} parent 1: 2>/dev/null; true; }}")
+        cmd += [f"{self.ssh_user}@{cl.get('ip')}", tc]
         rc, out, err = _run(cmd, self.timeout)
         ssh_ok = rc == 0
-        parsed = parse_tc_qdisc(out) if ssh_ok else None
-        res.update({"raw": out.strip() if ssh_ok else err.strip()[:200],
+        qdisc_text, _, filter_text = (out or "").partition(FILTER_MARK)
+        parsed = parse_tc_qdisc(qdisc_text) if ssh_ok else None
+        res.update({"raw": qdisc_text.strip() if ssh_ok else err.strip()[:200],
                     **(parsed or {"present": None, "delay_ms": None, "jitter_ms": None})})
+        res["unshaped_ips"] = parse_tc_filters(filter_text) if ssh_ok and FILTER_MARK in out else None
         res["verdict"] = netem_verdict(expected, parsed, ssh_ok)
         return res
 
@@ -356,13 +426,21 @@ def build_verdicts(clusters: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     # frontend that is not part of the experiment's load. None = not deployed.
     loadgen = {n: ((c.get("deployments") or {}).get("loadgenerator") or {}).get("spec_replicas")
                for n, c in clusters.items()}
+    karmada = {n: sorted(d for d, s in (c.get("deployments") or {}).items() if s.get("karmada_managed"))
+               for n, c in clusters.items()}
+    karmada = {n: v for n, v in karmada.items() if v}
     nodes_not_ready = {n: [x["name"] for x in (c.get("nodes") or []) if not x["ready"]]
                        for n, c in clusters.items()}
     nodes_not_ready = {n: v for n, v in nodes_not_ready.items() if v}
     errors = {n: c.get("errors") for n, c in clusters.items() if c.get("errors")}
 
+    # Destinations exempt from the delay on each shaped cluster (None = not read)
+    unshaped = {n: (c.get("netem") or {}).get("unshaped_ips") for n, c in clusters.items()
+                if float((c.get("netem") or {}).get("expected_delay_ms") or 0) > 0}
+
     return {
         "netem": netem,
+        "netem_unshaped_ips": unshaped,
         # Same severity as preflight_runs.sh: missing / unverifiable netem on a
         # shaped cluster invalidates the run; mismatch / unexpected are warnings.
         "netem_ok": not netem_bad,
@@ -379,6 +457,8 @@ def build_verdicts(clusters: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         "loadgenerator_replicas": loadgen,
         "loadgenerator_running": any((r or 0) > 0 for r in loadgen.values()),
         "nodes_not_ready": nodes_not_ready,
+        "karmada_managed": karmada,
+        "any_karmada_managed": bool(karmada),
         "collection_errors": errors,
     }
 
@@ -386,8 +466,40 @@ def build_verdicts(clusters: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 def check_expectations(verdicts: Dict[str, Any], require_netem: bool,
                        expect_affinity: Optional[str], expect_no_hpa: bool,
                        services: Optional[List[str]],
-                       expect_no_loadgenerator: bool = False) -> List[str]:
+                       expect_no_loadgenerator: bool = False,
+                       expect_no_karmada: bool = False,
+                       expect_client_local: Optional[List[str]] = None,
+                       clusters: Optional[Dict[str, Any]] = None) -> List[str]:
     violations: List[str] = []
+    if clusters is not None:
+        # every run starts from the reset: each Deployment at exactly 1 pod,
+        # ready (the loadgenerator has its own gate)
+        for n, c in clusters.items():
+            deps = c.get("deployments")
+            if not deps:
+                violations.append(f"deployments of {n} not read: cannot verify the reset to 1 replica")
+                continue
+            for d, s in sorted(deps.items()):
+                if d == "loadgenerator":
+                    continue
+                got = (s.get("spec_replicas"), s.get("replicas"), s.get("ready_replicas"))
+                if got != (1, 1, 1):
+                    violations.append(f"{d}@{n}: not reset to 1 replica "
+                                      f"(spec/pods/ready = {got[0]}/{got[1]}/{got[2]})")
+    if expect_client_local:
+        # every shaped cluster must exempt the load generator: its users are
+        # close to the ingress they enter (journal geography, 30/10/2026)
+        for n, ips in (verdicts.get("netem_unshaped_ips") or {}).items():
+            if verdicts["netem"].get(n) in ("missing", "skipped", "ssh_error"):
+                continue
+            if ips is None:
+                violations.append(f"netem filters not readable on {n}: cannot verify that "
+                                  f"the k6 client {','.join(expect_client_local)} is not delayed")
+                continue
+            missing = [ip for ip in expect_client_local if ip not in ips]
+            if missing:
+                violations.append(f"netem delays the k6 client {','.join(missing)} on {n} "
+                                  f"(re-apply: bash scripts/setup-netem-and-ping.sh netem-only)")
     if require_netem:
         for n, v in verdicts["netem"].items():
             if v in ("missing", "ssh_error"):
@@ -404,6 +516,9 @@ def check_expectations(verdicts: Dict[str, Any], require_netem: bool,
     if expect_no_loadgenerator and verdicts.get("loadgenerator_running"):
         running = {n: r for n, r in verdicts["loadgenerator_replicas"].items() if (r or 0) > 0}
         violations.append("Online Boutique loadgenerator running: " + json.dumps(running))
+    if expect_no_karmada and verdicts.get("any_karmada_managed"):
+        violations.append("Deployments managed by Karmada (label karmada.io/managed): "
+                          + json.dumps(verdicts["karmada_managed"]))
     return violations
 
 
@@ -425,6 +540,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--expect-no-hpa", action="store_true", help="exit 3 if any HPA exists")
     ap.add_argument("--expect-no-loadgenerator", action="store_true",
                     help="exit 3 if the Online Boutique loadgenerator has replicas > 0")
+    ap.add_argument("--expect-no-karmada", action="store_true",
+                    help="exit 3 if a Deployment is managed by Karmada (label karmada.io/managed=true)")
+    ap.add_argument("--expect-client-local", default="",
+                    help="comma list of load-generator IPs that netem must NOT delay on "
+                         "any shaped cluster (exit 3 otherwise)")
+    ap.add_argument("--expect-reset", action="store_true",
+                    help="exit 3 unless every Deployment (but the loadgenerator) has exactly "
+                         "1 replica, 1 pod and 1 ready pod on every cluster")
     ap.add_argument("--skip-ssh", action="store_true", help="do not inspect netem")
     ap.add_argument("--skip-prometheus", action="store_true", help="do not query ping RTT")
     ap.add_argument("--quiet", action="store_true")
@@ -450,7 +573,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         # default: every Service that is global somewhere
         checked = [svc for svc, g in verdicts["global_by_cluster"].items() if any(g.values())]
     violations = check_expectations(verdicts, args.require_netem, args.expect_affinity,
-                                    args.expect_no_hpa, checked, args.expect_no_loadgenerator)
+                                    args.expect_no_hpa, checked, args.expect_no_loadgenerator,
+                                    args.expect_no_karmada,
+                                    [x for x in args.expect_client_local.split(",") if x] or None,
+                                    clusters if args.expect_reset else None)
     snapshot = {
         "schema_version": SCHEMA_VERSION,
         "phase": args.phase,
@@ -467,6 +593,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "affinity_services": checked,
             "expect_no_hpa": args.expect_no_hpa,
             "expect_no_loadgenerator": args.expect_no_loadgenerator,
+            "expect_no_karmada": args.expect_no_karmada,
+            "expect_client_local": [x for x in args.expect_client_local.split(",") if x],
+            "expect_reset": args.expect_reset,
             "violations": violations,
             "met": not violations,
         },
@@ -485,6 +614,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[env {args.phase}] endpoint-sync: {sorted(set(map(str, v['endpoint_sync'].values())))}"
               f" | HPA: {'yes' if v['any_hpa'] else 'none'}"
               f" | loadgenerator: {'RUNNING' if v['loadgenerator_running'] else 'off'}"
+              f" | Karmada: {'MANAGES ' + str(sum(map(len, v['karmada_managed'].values()))) if v['any_karmada_managed'] else 'none'}"
               f" | errors: {sum(len(e) for e in v['collection_errors'].values())}")
         for x in violations:
             print(f"[env {args.phase}] VIOLATION: {x}")

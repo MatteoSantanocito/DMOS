@@ -218,6 +218,12 @@ score_weights:
 #               G(d) = (ε + (1−ε)·d)^g                (g = 0 → G ≡ 1: somma pura)
 #     additive  S = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_net·Φ_net + ω_car·Φ_car + ω_dem·d
 #     locality  S = ω_lat·Φ_lat + ω_cap·Φ_cap + ω_net·(d·Φ_net) + ω_car·Φ_car
+#   demand_signal  cosa è d nelle formule sopra (default share):
+#     share     d_i = quota della domanda che ENTRA nel cluster i (NCA 2026)
+#     reach     d_i = ψ_i = Σ_j share_j · exp(−RTT(j,i)/τ), τ = reach_tau_ms
+#               (default 50): la domanda che il cluster i serve con poco RTT
+#               quando il servizio d'ingresso è un pool unico (Cilium global
+#               service, affinity none). ψ_i >= share_i; per RTT grandi ψ → share.
 #   weights     latency, capacity, net, carbon (+ demand solo in additive); Σ = 1
 #   gate        eps (ε), gamma (g)                    (solo gate)
 #   demand_floor  garantisce ⌈domanda/capacità⌉ repliche per cluster
@@ -281,6 +287,23 @@ score_models:
     demand_floor: false
     cold_start: structural
 
+  # ── Rivista — piano dati a pool (affinity none) ──────────────────────────
+  # Con il frontend servito dal pool di tutti i cluster il traffico segue le
+  # repliche, non la domanda (verificato il 29/10/2026: CPU per replica uguale
+  # in tutti i cluster). Il gate usa allora la domanda raggiungibile ψ: un
+  # cluster vicino al punto caldo (FR, NO rispetto a DE) attira repliche, uno
+  # lontano (SG, US) no. Pesi e gate di nca. Da usare con il budget 'pooled'
+  # (arm 'reach-pool', 'reach-pool-ps').
+  reach:
+    description: "Rivista: gate g=2 sulla domanda raggiungibile ψ (τ=50 ms), pesi di nca"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    demand_signal: reach
+    reach_tau_ms: 50
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+
   # ── E3 — profili di pesi a gate g=2 ──────────────────────────────────────
   # PROPOSTA (da confermare prima di F2): obiettivo dominante 0.55, altri 0.15.
   latency_first:
@@ -304,6 +327,55 @@ score_models:
     weights: {latency: 0.15, capacity: 0.15, net: 0.15, carbon: 0.55}
     demand_floor: false
     cold_start: structural
+
+  # ── Rivista — profili di sostenibilità (proposta) ────────────────────────
+  # Stesso gate di nca; ν = 2 (default 0.5) perché Φ_car distingua i cluster:
+  # con ν = 0.5 va da 0.52 (650 g) a 0.98 (25 g), con ν = 2 da 0.07 a 0.90.
+  # Usati con il minimo 0 del servizio d'ingresso (arm '<nome>-min0'), con
+  # cui la simulazione (experiments/sim_profiles.py) mostra che i pesi
+  # spostano repliche: es. balanced_nu2-min0, green_nu2-min0.
+  balanced_nu2:
+    description: "Rivista: pesi di nca, nu=2 (riferimento dei profili di sostenibilità)"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.25, capacity: 0.35, net: 0.30, carbon: 0.10}
+    demand_floor: false
+    cold_start: structural
+    parameters: {nu: 2.0}
+  green_nu2:
+    description: "Rivista: carbonio prima di tutto, nu=2"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    weights: {latency: 0.05, capacity: 0.20, net: 0.10, carbon: 0.65}
+    demand_floor: false
+    cold_start: structural
+    parameters: {nu: 2.0}
+  # Blocco R5 (compromesso latenza–carbonio): stessi pesi di green_nu2 con il
+  # gate più debole (g = 1). Il gate protegge la capacità dove c'è domanda;
+  # abbassandolo i pesi del carbonio possono spostare repliche lontano dagli
+  # utenti. Con la domanda a Singapore (bal-sg) la simulazione prevede −25 %
+  # di carbonio servito e +5 punti di richieste oltre 500 ms rispetto a g = 2.
+  green_nu2_g1:
+    description: "Rivista R5: carbonio prima di tutto, nu=2, gate debole g=1"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 1}
+    weights: {latency: 0.05, capacity: 0.20, net: 0.10, carbon: 0.65}
+    demand_floor: false
+    cold_start: structural
+    parameters: {nu: 2.0}
+  # Blocco R3 (sostenibilità): i pesi di green_nu2 sul meccanismo della rivista
+  # (gate su ψ, τ = 50 ms) invece che sulla quota di nca, così rispetto a
+  # reach-pool-ps-min0 cambia solo cosa si premia, non come si misura la domanda.
+  reach_green:
+    description: "Rivista R3: gate g=2 su ψ (τ=50 ms), carbonio prima di tutto, nu=2"
+    demand_mode: gate
+    gate: {eps: 0.05, gamma: 2}
+    demand_signal: reach
+    reach_tau_ms: 50
+    weights: {latency: 0.05, capacity: 0.20, net: 0.10, carbon: 0.65}
+    demand_floor: false
+    cold_start: structural
+    parameters: {nu: 2.0}
 
 # ── Objective weights (Level 2 - Autoscaling decisions) ───────────────────
 

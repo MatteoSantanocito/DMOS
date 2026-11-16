@@ -6,9 +6,9 @@ code** ran. None of them can be inferred from a run label: environment
 variables (`DMOS_SCORE_GATE`, `DMOS_SCORE_GATE_GAMMA`, `DMOS_WEIGHTS_COHERENT`,
 `DMOS_LOCALITY_PURE_NET`, `DMOS_DEMAND_FLOOR`, `DMOS_SCORE_PROFILE`, …) change
 the algorithm without touching a file, netem disappears at every VM reboot,
-and Service annotations can be edited live. The NCA 2026 campaign is the
-example: its runs are labelled `dmos-l1l2__*`, but the configuration they ran
-(gate g = 2, weights 0.25/0.20/0.25/0.30) could only be recovered from the
+and Service annotations can be edited live. The legacy arm `l1l2` is the
+example: its early runs are labelled `dmos-l1l2__*`, but the configuration they
+ran (gate g = 2, weights 0.25/0.20/0.25/0.30) could only be recovered from the
 DMOS log printed at each start. Every run directory therefore records all
 three, and the analysis refuses runs whose provenance is broken.
 
@@ -20,8 +20,8 @@ experiments/run_one.sh <name> <regime>`): the model defines in one named,
 versioned place the role of demand, the weights, the gate, the demand floor
 and the cold start
 ([architecture §7.4](dmos-architecture.md#74-score-models-the-role-of-demand)),
-and under a model the legacy switches are ignored. The arm `l1l2` (the NCA
-campaign) and the `legacy-*` arms set the switches themselves. Either way,
+and under a model the legacy switches are ignored. The arm `l1l2` and the
+`legacy-*` arms (legacy configurations kept for comparison) set the switches themselves. Either way,
 the effective configuration below is what identifies a run; do not export
 scoring variables in the shell that launches a session.
 
@@ -88,7 +88,7 @@ DMOS started by hand is captured too.
 Check an arm's configuration **before** a run, offline, without contacting any cluster:
 
 ```bash
-DMOS_SCORE_MODEL=nca python -m src.dmos_main --dump-config-only /tmp/cfg.json
+DMOS_SCORE_MODEL=reach DMOS_ENTRY_BUDGET=pooled DMOS_SCALER=predictive python -m src.dmos_main --dump-config-only /tmp/cfg.json   # arm reach-pool-ps
 DMOS_SCORE_GATE=1 DMOS_SCORE_GATE_GAMMA=2 python -m src.dmos_main --dump-config-only /tmp/cfg.json   # legacy switches
 ```
 
@@ -121,6 +121,7 @@ start, and its directory moves to `experiments/results/_aborted/`, when:
 | netem missing (or not verifiable) on a cluster that should shape traffic | on | `DMOS_REQUIRE_NETEM=0` |
 | frontend affinity differs from the expected one on some cluster | expected `none` (paper data plane) | `DMOS_EXPECT_FRONTEND_AFFINITY=local` (or empty: no check) |
 | Online Boutique `loadgenerator` with replicas > 0 | on | `DMOS_ALLOW_LOADGENERATOR=1` |
+| an HPA in the namespace before the run (the HPA baseline creates its own afterwards) | on | `DMOS_EXPECT_NO_HPA=0` |
 
 Names are validated earlier still: an unknown arm or regime, a renamed one
 (e.g. `l1l2coh`, `con400`) or an invalid DMOS configuration stops the cell —
@@ -140,13 +141,33 @@ or the whole session — before the testbed is reset.
 | `netem_lost_during_run` | error | netem gone after the run (VM rebooted mid-run) |
 | `env_expectation_violated` | error | a requested gate (affinity, HPA, loadgenerator) failed |
 | `loadgenerator_running` | error | the Online Boutique `loadgenerator` had replicas before or after the run: internal traffic that k6 does not count |
+| `hpa_present` | error | an HPA was in the namespace (before or after) during a non-HPA arm: it fights the arm for the replicas |
+| `hpa_baseline_missing` | error | HPA arm without `hpa_baseline.json` |
+| `hpa_not_applied` | error | HPA arm: the baseline HPAs were not all created |
+| `hpa_not_active` | error | HPA arm: a baseline HPA did not read its CPU metric during the run (`ScalingActive` not true) |
+| `hpa_not_removed` | warn | HPA arm: the HPAs were not all removed after the run (the next cell removes them) |
+| `hpa_not_seen_post` | warn | HPA arm: no HPA in the post-run snapshot |
+| `karmada_present` | error | a Deployment was managed by Karmada (label `karmada.io/managed`) during a non-Karmada arm: Karmada reverts the replicas the arm sets |
+| `karmada_baseline_missing` | error | Karmada arm without `karmada_baseline.json` |
+| `karmada_not_adopted` | error | Karmada arm: the adoption did not complete cleanly (`karmada_baseline.json → apply.errors`) |
+| `karmada_pod_restarted` | error | Karmada arm: adopting changed a Deployment's revision or uid (pods rolled out or recreated) |
+| `karmada_not_verified` | error | Karmada arm: no verification after the load |
+| `karmada_cluster_dropped` | error | Karmada arm: a cluster left a binding during the run (its Deployment deleted or left unmanaged: scheduler without `--enable-empty-workload-propagation`) |
+| `fhpa_not_active` | error | Karmada arm: a FederatedHPA did not read its CPU metric (`ScalingActive` not true) |
+| `karmada_lost_management` | error | Karmada arm: Deployments no longer managed by Karmada at the end of the load |
+| `karmada_cluster_not_ready`, `fhpa_never_scaled`, `karmada_host_unchecked`, `karmada_version_unexpected`, `karmada_not_released` | warn | a member cluster not Ready in Karmada during the run; no FederatedHPA changed its replicas; scheduler flags / estimators / versions not verified; images not at v1.19.0; the release after the run did not complete (the next prep retries) |
 | `k6_summary_missing` / `k6_vu_starved` | error | client results missing / offered load not delivered |
+| `shift_not_applied` | error | the regime moves the hot spot (`-to<cluster>`) but k6 reports no move, or a move at another time (old k6 script on the VM) |
+| `shift_unexpected` | error | k6 moved the hot spot in a regime without a move (stray `DMOS_SHIFT_*` variables in the shell) |
 | `carbon_trace_fallback` | warn | some cluster had no carbon trace and used a synthetic source (listed) |
 | `config_id_not_observed`, `dmos_log_missing`, `env_pre_missing`, `affinity_changed_during_run`, `repo_dirty` | warn | noted, run kept |
 
 `paper_lib.discover_runs()` **skips** runs with provenance errors (like the
 k6 VU-starvation filter) and **warns** when one label mixes different
-`config_id`s — those runs are not repetitions of the same algorithm. Legacy
+`config_id`s — those runs are not repetitions of the same algorithm. The
+journal analysis (`experiments/journal_*.py`) uses only the runs with status
+`OK` in the campaign TSV written by `run_campaign.sh` (a run that fails
+`campaign_ctl.py check` is retried). Legacy
 runs (before this harness) carry no provenance and are kept as they are.
 
 ## Inspecting runs
@@ -165,8 +186,8 @@ mixes configurations.
 
 ## Using the harness
 
-`run_one.sh`, `run_matrix_session.sh` and `run_skew_sweep.sh` all resolve
-the names with `run_naming.py` and go through `run_cell` in
+`run_one.sh` (and `run_campaign.sh`, which runs `run_one.sh` for every cell
+of a plan) resolves the names with `run_naming.py` and goes through `run_cell` in
 `experiments/lib/run_common.sh`, so every run is traceable with no extra
 flag. DMOS is stopped between cells by `kill_dmos`, which stops only the
 processes started as `python -m src.dmos_main`. `run_flash_crowd.sh` used on its own (DMOS started by hand)

@@ -12,7 +12,7 @@
 #           additive_dem50, locality, latency_first, capacity_first,
 #           carbon_first, ...) | profile-<profilo> | legacy-default |
 #           legacy-gate1 | legacy-nofloor
-#           l1l2 = la configurazione della campagna NCA 2026 (gate g=2, pesi
+#           l1l2 = configurazione legacy di una campagna precedente (gate g=2, pesi
 #           0.25/0.20/0.25/0.30, floor off), letta dai log DMOS di giugno
 #   REGIME  <domanda>[-<cluster caldo>][-p<picco>]
 #           domanda uni|bal|s50|s65|s75|con; cluster caldo de (default) fr pl

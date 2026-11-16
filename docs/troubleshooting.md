@@ -5,7 +5,7 @@ multi-cluster Kubernetes scheduler. Each `### Symptom` block names the exact
 error string the user is likely to see, identifies the root cause, and lists
 the commands to fix it.
 
-DMOS runs locally on the operator's laptop and reaches a fleet of N K3s
+DMOS runs locally on the operator machine and reaches a fleet of N K3s
 clusters — 6 in the reference testbed (`ms-cluster-01` … `ms-cluster-06`,
 Proxmox VMs across 3 hardware tiers) — each with Cilium + Hubble L7 +
 Prometheus + ping_exporter + Online Boutique. The canonical smoke test is
@@ -116,7 +116,7 @@ Full message from `validate-setup.sh`:
 1. Host firewall on the node blocks TCP 6443.
 2. The kubeconfig still points at `127.0.0.1` (the K3s default) instead of
    the node's routable IP.
-3. The serving certificate's SAN list does not include the IP your laptop is
+3. The serving certificate's SAN list does not include the IP the operator machine is
    using to reach the API. K3s must be installed with `--tls-san=<NODE_IP>`.
 
 **Fix.**
@@ -186,7 +186,7 @@ declaring failure.
    (kube-prometheus-stack defaults).
 2. The kube-prometheus-stack pods (`prometheus-prometheus-0`,
    `prometheus-operator-*`) are not Running.
-3. NodePort 32090 is blocked between your laptop and the node.
+3. NodePort 32090 is blocked between the operator machine and the node.
 
 **Fix.**
 
@@ -199,7 +199,7 @@ KUBECONFIG=.kube/cluster1.yaml kubectl -n observability get svc \
 # 2. Pod status
 KUBECONFIG=.kube/cluster1.yaml kubectl -n observability get pods
 
-# 3. Direct probe from the laptop
+# 3. Direct probe from the operator machine
 curl -fsS --max-time 5 http://<NODE_IP>:32090/-/ready
 
 # 4. If the Service type is wrong, re-apply Helm values
@@ -332,9 +332,6 @@ curl -sS "http://<NODE_IP>:32090/api/v1/query?query=sum(rate(hubble_http_request
 > If you see this symptom together with anything NGINX-shaped, you've
 > reverted to the legacy NGINX Ingress setup. Switch back to Cilium Ingress
 > per `docs/ingress-architecture.md` — DMOS' L7 path is designed for it.
-> The historical NGINX guidance is preserved in
-> `docs/_archive/nginx-ingress-hubble-l7.md` for reference only and should
-> not be promoted into the live setup.
 
 ### Symptom: Counter is flat for some internal hops only
 
@@ -499,7 +496,7 @@ source venv/bin/activate
 python -c "from src.utils.config_loader import ConfigLoader; ConfigLoader('config')"
 
 # 2. Build the whole effective configuration offline (validates models and weights)
-DMOS_SCORE_MODEL=nca python -m src.dmos_main --dump-config-only /tmp/cfg.json
+DMOS_SCORE_MODEL=reach python -m src.dmos_main --dump-config-only /tmp/cfg.json
 
 # 3. YAML lint
 python -c "import yaml; yaml.safe_load(open('config/local.yaml'))"
@@ -551,8 +548,8 @@ favouring one cluster.
 
 **Root causes (any of):**
 
-1. **Expected behaviour.** With the demand gate (score model `nca`) replicas
-   follow the demand share: under a concentrated regime most of the budget
+1. **Expected behaviour.** With the demand gate (score models `reach` and
+   `nca`) replicas follow the (reachable) demand share: under a concentrated regime most of the budget
    goes to the hot cluster, up to its cap. Check the `Ingress rates:` line.
 2. **Demand not measured on some clusters** (Hubble ingress metric
    missing): their share is 0 and the gate suppresses them. Look for

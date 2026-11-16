@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# clean_reset.sh — reset PULITO e profondo del fleet a 6 cluster prima dei run.
+# clean_reset.sh — reset PULITO e profondo del fleet (tutti i cluster di .cache/test-env.json) prima dei run.
 # Obiettivo: partire sempre da uno stato non degradato (niente Envoy listener
 # hang, niente repliche residue), così i risultati non sono contaminati.
 #
 # USO:
-#   bash experiments/clean_reset.sh --check    # SOLO verifica i 6 ingress :30080 e
+#   bash experiments/clean_reset.sh --check    # SOLO verifica gli ingress e
 #                                              # recupera SOLO i cluster non-200 (envoy
 #                                              # hang/500). Veloce, NON tocca i sani,
 #                                              # NON resetta i deployment. ← TRA un run
@@ -19,11 +19,11 @@
 #
 # Cosa fa:
 #   1) uccide eventuale DMOS zombie su :9090
-#   2) [--deep] rollout restart cilium-envoy + frontend su tutti i 6 cluster
+#   2) [--deep] rollout restart cilium-envoy + frontend su tutti i cluster
 #   3) scala tutti i deployment di online-boutique a 1 replica su tutti i cluster
 #   4) attende lo scale-down (pod extra terminati)
 #   5) health-gate :30080 con recovery automatica dei cluster non-200
-#   6) settle + verifica finale (6/6 a 200 + pod tutti Running)
+#   6) settle + verifica finale (tutti a 200 + pod tutti Running)
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
@@ -44,19 +44,25 @@ SETTLE="${SETTLE:-60}"
 #   DMOS_IAC=<dir>                               da cui KCBASE=$DMOS_IAC/kubeconfig-ms-cluster
 ENV_JSON=".cache/test-env.json"
 CLUSTERS=()
+declare -A KC_OF=() INGRESS_OF=()   # kubeconfig per chiave, URL ingresso per IP
 if [ -n "${CLUSTERS_SPEC:-}" ]; then
   read -r -a CLUSTERS <<< "$CLUSTERS_SPEC"
 elif [ -f "$ENV_JSON" ] && command -v jq >/dev/null 2>&1; then
-  while IFS= read -r entry; do [ -n "$entry" ] && CLUSTERS+=("$entry"); done \
-    < <(jq -r '.clusters[] | (.name | sub("^ms-cluster-"; "")) + ":" + .ip' "$ENV_JSON" | tr -d '\r')
+  # chiave = nome senza il prefisso ms-cluster- (01..06 per il fleet storico,
+  # il nome intero per gli altri, es. test-cluster-1) + kubeconfig per cluster
+  # + URL dell'ingresso per IP (ingress_url: porta 30080 o quella del Gateway)
+  while IFS=$'\t' read -r key kcp ip url; do
+    [ -n "$key" ] || continue
+    CLUSTERS+=("$key:$ip"); KC_OF["$key"]="${kcp/#\~/$HOME}"; INGRESS_OF["$ip"]="$url"
+  done < <(jq -r '.clusters[] | [(.name | sub("^ms-cluster-"; "")), .kubeconfig_path, .ip, .ingress_url] | @tsv' "$ENV_JSON" | tr -d '\r')
 fi
 [ ${#CLUSTERS[@]} -gt 0 ] || { echo "[ERR] fleet sconosciuto: manca $ENV_JSON (genera con scripts/render-runtime-files.sh) e CLUSTERS_SPEC non e' impostata"; exit 2; }
 KCBASE="${KCBASE:-${DMOS_IAC:+$DMOS_IAC/kubeconfig-ms-cluster}}"
-if [ -z "$KCBASE" ] && [ -f "$ENV_JSON" ] && command -v jq >/dev/null 2>&1; then
-  KCBASE="$(jq -r '.clusters[0].kubeconfig_path' "$ENV_JSON" | tr -d '\r' | sed -E 's/-[0-9]+$//')"
+if [ -z "$KCBASE" ] && [ -z "${KC_OF[*]:-}" ]; then
+  echo "[ERR] KCBASE non determinabile: esporta KCBASE o DMOS_IAC, oppure genera $ENV_JSON"; exit 2
 fi
-[ -n "$KCBASE" ] || { echo "[ERR] KCBASE non determinabile: esporta KCBASE o DMOS_IAC, oppure genera $ENV_JSON"; exit 2; }
-kc() { echo "$KCBASE-$1"; }
+# KCBASE esplicita (o DMOS_IAC) vince; altrimenti il kubeconfig_path di test-env.json
+kc() { if [ -n "$KCBASE" ]; then echo "$KCBASE-$1"; else echo "${KC_OF[$1]}"; fi; }
 
 kill_dmos() {
   echo "==> [1] stop DMOS (solo i processi python -m src.dmos_main)"
@@ -127,8 +133,9 @@ reset_deployments() {
   echo "    [warn] alcuni deployment ancora >1 (procedo comunque)"
 }
 
-ingress_code() {  # $1 = ip
-  curl -s -o /dev/null -m6 -w '%{http_code}' "http://$1:30080/" 2>/dev/null
+ingress_code() {  # $1 = ip — URL da test-env.json, altrimenti la porta storica 30080
+  local url="${INGRESS_OF[$1]:-}"
+  curl -s -o /dev/null -m6 -w '%{http_code}' "${url:-http://$1:30080}/" 2>/dev/null
 }
 wait_for_stable() {  # $1 = ip, $2 = timeout_s — polla finché STABILE (stable_200) o timeout
   local ip="$1" tmo="${2:-180}" t=0
@@ -155,7 +162,7 @@ health_gate() {
   # cade DOPO essere sembrato sano (flap/timing), il round successivo lo coglie
   # e lo recupera (prima censimento e verify usavano sonde diverse e non si
   # parlavano → blocco senza azione di recovery).
-  echo "==> [5] health-gate ingress :30080 (rilevatore stabile + recovery in loop)"
+  echo "==> [5] health-gate ingress (rilevatore stabile + recovery in loop)"
   local attempt entry n ip bad
   for attempt in 1 2 3; do
     bad=()
@@ -164,7 +171,7 @@ health_gate() {
       stable_200 "$ip" || bad+=("$n")
     done
     if [ ${#bad[@]} -eq 0 ]; then
-      echo "    6/6 cluster 200 stabile OK (round $attempt)"; return 0
+      echo "    ${#CLUSTERS[@]}/${#CLUSTERS[@]} cluster 200 stabile OK (round $attempt)"; return 0
     fi
     echo "    round $attempt — instabili/giù: ${bad[*]} → recovery"
     for n in "${bad[@]}"; do
@@ -199,14 +206,14 @@ verify_final() {
                | grep -vcE "Running|Completed")
     printf "    cluster-%s: ingress(3 probe)=%s  pod-non-Running=%s\n" "$n" "$RESULT_TRIPLE" "${bad_pods:-?}"
   done
-  echo "    → $ok/6 ingress STABILE a 200"
-  [ "$ok" -eq 6 ] && return 0 || return 1
+  echo "    → $ok/${#CLUSTERS[@]} ingress STABILE a 200"
+  [ "$ok" -eq "${#CLUSTERS[@]}" ] && return 0 || return 1
 }
 
 echo "############ clean_reset.sh ($MODE) ############"
 
 # --check: solo health-gate + verifica, niente kill/reset/settle. Per uso TRA i run.
-# Esce 0 SOLO se 6/6 sano → con `&& run_one.sh` il run parte solo a fleet OK.
+# Esce 0 SOLO se tutti i cluster sono sani → con `&& run_one.sh` il run parte solo a fleet OK.
 if [ "$MODE" = "check" ]; then
   health_gate || true
   if verify_final; then

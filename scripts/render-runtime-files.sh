@@ -245,7 +245,10 @@ json_payload = {
             "ip": c["ip"],
             "region": c["region"],
             "display_name": c.get("display_name", c["name"]),
-            "ingress_url": f"http://{c['ip']}:30080",
+            # Porta dell'ingresso: ingress_port da local.yaml (per cluster);
+            # default 30080 (Cilium Ingress). Con la Gateway API e' la NodePort
+            # del Service del Gateway (deployments/gateway-frontend.yaml).
+            "ingress_url": f"http://{c['ip']}:{c.get('ingress_port', 30080)}",
             # Porta Prometheus: legge prometheus_port da local.yaml (per cluster);
             # default 32090 (kube-prometheus-stack via proxmox-k3s).
             "prometheus_url": f"http://{c['ip']}:{c.get('prometheus_port', 32090)}",

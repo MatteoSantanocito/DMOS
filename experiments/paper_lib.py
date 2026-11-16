@@ -88,11 +88,12 @@ SCENARIO_HATCHES: Dict[str, str] = {
 # orchestratori:  python experiments/run_naming.py list
 #   arm     off | l2 | l1l2 | <modello di score> (nca, gate_g0, ...) |
 #           profile-<profilo> | legacy-default | legacy-gate1 | legacy-nofloor
-#   regime  <domanda>[-<cluster caldo>][-p<picco>]   es. con, bal-sg, con-p400
+#   regime  <domanda>[-<cluster caldo>][-to<cluster>][-p<picco>]   es. con, bal-sg,
+#           con-p400, con-tosg (punto caldo che si sposta)
 # I run "legacy" senza '__' restano validi: arm=label intera, regime=None.
 # Le label delle campagne passate restano leggibili: dmos-latonly/netonly/
-# carbon (oggi profile-*), dmos-l1l2coh (oggi l1l2: e' la configurazione della
-# campagna NCA 2026), regime con400 (oggi con-p400).
+# carbon (oggi profile-*), dmos-l1l2coh (oggi l1l2: configurazione legacy di
+# una campagna precedente), regime con400 (oggi con-p400).
 
 import sys as _sys_path_fix  # noqa: E402
 _EXPERIMENTS_DIR = str(Path(__file__).resolve().parent)
@@ -101,12 +102,12 @@ if _EXPERIMENTS_DIR not in _sys_path_fix.path:
 import run_naming as _naming  # noqa: E402
 
 ARM_LABELS: Dict[str, str] = {
-    # core (paper NCA 2026)
+    # core (legacy campaigns)
     'dmos-off':     'DMOS off (static)',
     'dmos-l2':      'DMOS L2 (scaling only)',
     'dmos-l1l2':    'DMOS L1+L2 (full)',
     # modelli di score (config/weights.yaml → score_models)
-    'dmos-nca':             'DMOS (NCA model, g=2)',
+    'dmos-nca':             'DMOS (nca model, g=2)',
     'dmos-gate_g0':         'Gate g=0 (weighted sum)',
     'dmos-gate_g1':         'Gate g=1',
     'dmos-gate_g3':         'Gate g=3',
@@ -115,6 +116,12 @@ ARM_LABELS: Dict[str, str] = {
     'dmos-latency_first':   'Latency-first',
     'dmos-capacity_first':  'Capacity-first',
     'dmos-carbon_first':    'Carbon-first',
+    'dmos-balanced_nu2':    'Balanced (nu=2)',
+    'dmos-green_nu2':       'Green (nu=2)',
+    'dmos-green_nu2_g1':    'Green (nu=2, gate g=1)',
+    'dmos-hpa-none':        'Kubernetes HPA (per cluster)',
+    'dmos-karmada-fhpa':    'Karmada (FederatedHPA, dynamic weights)',
+    'dmos-karmada-agg':     'Karmada (FederatedHPA, aggregated)',
     # profili legacy (DMOS_SCORE_PROFILE) e arm legacy a switch d'ambiente
     'dmos-profile-latonly': 'Latency-only (LAIS-like)',
     'dmos-profile-netonly': 'Locality-only (NetMARKS-like)',
@@ -142,6 +149,12 @@ ARM_COLORS: Dict[str, str] = {
     'dmos-latency_first':   '#2E7D32',   # green
     'dmos-capacity_first':  '#EF6C00',   # dark orange
     'dmos-carbon_first':    '#00838F',   # teal
+    'dmos-balanced_nu2':    '#0D47A1',
+    'dmos-green_nu2':       '#2E7D32',
+    'dmos-green_nu2_g1':    '#81C784',
+    'dmos-hpa-none':        '#6D4C41',   # brown (external baseline)
+    'dmos-karmada-fhpa':    '#7B1FA2',   # purple (external baseline, multi-cluster)
+    'dmos-karmada-agg':     '#BA68C8',   # light purple
     'dmos-profile-latonly': '#2E7D32',
     'dmos-profile-netonly': '#6A1B9A',
     'dmos-profile-carbon':  '#00838F',
@@ -164,6 +177,11 @@ ARM_HATCHES: Dict[str, str] = {
     'dmos-latency_first':  'xx',
     'dmos-capacity_first': '||',
     'dmos-carbon_first':   'oo',
+    'dmos-green_nu2':      'oo',
+    'dmos-green_nu2_g1':   '..',
+    'dmos-hpa-none':       'xx',
+    'dmos-karmada-fhpa':   '**',
+    'dmos-karmada-agg':    '..',
     'dmos-profile-latonly': 'xx',
     'dmos-profile-netonly': '..',
     'dmos-profile-carbon':  'oo',
@@ -234,12 +252,31 @@ def regime_label(regime: Optional[str]) -> str:
     return _naming.regime_label(regime)
 
 
+_MIN_SUFFIX = re.compile(r'^(?P<base>.+)-min(?P<k>\d)$')
+
+
+def _arm_lookup(table: Dict[str, str], arm: str, default: str) -> str:
+    """table[arm], also for '<arm>-min<k>' arms (looked up by their base arm)."""
+    if arm in table:
+        return table[arm]
+    m = _MIN_SUFFIX.match(arm)
+    if m and m.group('base') in table:
+        return table[m.group('base')]
+    return default
+
+
+def _min_note(arm: str) -> str:
+    m = _MIN_SUFFIX.match(arm)
+    return f" [min {m.group('k')}]" if m else ""
+
+
 def scenario_label(scenario: str) -> str:
     """Label leggibile per uno scenario, composito o no."""
     if scenario in SCENARIO_LABELS:
         return SCENARIO_LABELS[scenario]
     arm, regime = parse_arm_regime(scenario)
-    base = ARM_LABELS.get(arm, SCENARIO_LABELS.get(arm, arm))
+    base = ARM_LABELS.get(arm) or (_arm_lookup(ARM_LABELS, arm, SCENARIO_LABELS.get(arm, arm))
+                                   + _min_note(arm))
     if regime:
         return f"{base} — {regime_label(regime)}"
     return base
@@ -250,7 +287,7 @@ def scenario_color(scenario: str) -> str:
     if scenario in SCENARIO_COLORS:
         return SCENARIO_COLORS[scenario]
     arm, _ = parse_arm_regime(scenario)
-    return ARM_COLORS.get(arm, SCENARIO_COLORS.get(arm, '#888888'))
+    return _arm_lookup(ARM_COLORS, arm, SCENARIO_COLORS.get(arm, '#888888'))
 
 
 def scenario_hatch(scenario: str) -> str:
@@ -258,7 +295,7 @@ def scenario_hatch(scenario: str) -> str:
     if scenario in SCENARIO_HATCHES:
         return SCENARIO_HATCHES[scenario]
     arm, _ = parse_arm_regime(scenario)
-    return ARM_HATCHES.get(arm, SCENARIO_HATCHES.get(arm, ''))
+    return _arm_lookup(ARM_HATCHES, arm, SCENARIO_HATCHES.get(arm, ''))
 
 # Palette per i 6 cluster, ispirata alla bandiera/regione di appartenenza
 CLUSTER_COLORS: Dict[str, str] = {

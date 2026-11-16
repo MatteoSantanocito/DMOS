@@ -33,6 +33,8 @@ clusters:
                                             # Ingress 30080), ping target, netem via SSH
     kubeconfig_path: "~/dmos-iac/kubeconfig-ms-cluster-01"   # its server = control plane
     # prometheus_port: 32090                # default (kube-prometheus-stack NodePort)
+    # ingress_port: 30080                   # default (Cilium Ingress); Gateway API:
+                                            # NodePort of the Gateway Service
     resources:                              # totals DMOS assumes (Phi_cap, L0)
       cpu_cores: 8                          # tier HIGH
       memory_gb: 12

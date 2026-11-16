@@ -11,6 +11,16 @@ section `score_models`), everything Level 1 needs to rank clusters:
       locality   S = ω_lat Φ_lat + ω_cap Φ_cap + ω_net·(d·Φ_net) + ω_car Φ_car
     weights      latency, capacity, net, carbon (+ demand, additive mode only); Σ = 1
     gate         eps (ε), gamma (g)              — gate mode only
+    demand_signal  what "d" is in the modes above:
+      share      d_i = λ_i / Σ_j λ_j, the share of the demand ENTERING cluster i
+                 (NCA 2026: right when each cluster serves its own entry traffic)
+      reach      d_i = ψ_i = Σ_j share_j · exp(−RTT(j,i) / τ), the demand that can
+                 reach cluster i within a few τ (reach_tau_ms, default 50 ms).
+                 With a pooled entry service (Cilium global service, affinity
+                 'none') a request entering j is served by any replica, so a
+                 replica on i serves j's users at the cost RTT(j,i): ψ_i is the
+                 demand cluster i serves cheaply. RTT(i,i) = 0, so ψ_i >= share_i,
+                 and ψ → share as the RTTs grow (the NCA gate is the limit case).
     demand_floor guarantee ⌈demand/capacity⌉ replicas per cluster (orchestrator)
     cold_start   'structural': during the first COLD_START_SECONDS the
                  latency and capacity weights are 0 (their metrics are not
@@ -27,11 +37,14 @@ legacy behaviour is unchanged.
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 DEMAND_MODES = ("gate", "additive", "locality")
+DEMAND_SIGNALS = ("share", "reach")
+DEFAULT_REACH_TAU_MS = 50.0
 COLD_START_POLICIES = ("structural", "same")
 WEIGHT_KEYS = ("latency", "capacity", "net", "carbon", "demand")
 STRUCTURAL_ZEROED = ("latency", "capacity")
@@ -60,6 +73,8 @@ class ScoreModel:
     cold_start: str = "structural"
     parameters: Dict[str, float] = field(default_factory=dict)
     description: str = ""
+    demand_signal: str = "share"     # 'share' | 'reach' (see module docstring)
+    reach_tau_ms: float = DEFAULT_REACH_TAU_MS
     phase: str = "warm"              # 'warm' | 'cold' (set by cold_variant)
     cold_start_note: str = ""        # how the cold weights were obtained
 
@@ -99,9 +114,17 @@ class ScoreModel:
         if bad:
             raise ScoreModelError(f"score model '{name}': unknown parameters {sorted(bad)} "
                                   f"(allowed: {PARAMETER_KEYS})")
+        signal = raw.get("demand_signal", "share")
+        if signal not in DEMAND_SIGNALS:
+            raise ScoreModelError(f"score model '{name}': demand_signal must be one of "
+                                  f"{DEMAND_SIGNALS}, got {signal!r}")
+        tau = float(raw.get("reach_tau_ms", DEFAULT_REACH_TAU_MS))
+        if tau <= 0:
+            raise ScoreModelError(f"score model '{name}': reach_tau_ms must be > 0")
         return cls(name=name, demand_mode=mode, weights=weights, gate_eps=eps,
                    gate_gamma=gamma, demand_floor=bool(raw.get("demand_floor", False)),
                    cold_start=cold, parameters=params,
+                   demand_signal=signal, reach_tau_ms=tau,
                    description=str(raw.get("description", "")).strip())
 
     # ── derived views ───────────────────────────────────────────────────
@@ -126,10 +149,47 @@ class ScoreModel:
             "weights": dict(self.weights),
             "gate": {"eps": self.gate_eps, "gamma": self.gate_gamma}
             if self.demand_mode == "gate" else None,
+            "demand_signal": self.demand_signal,
+            "reach_tau_ms": self.reach_tau_ms if self.demand_signal == "reach" else None,
             "demand_floor": self.demand_floor, "cold_start": self.cold_start,
             "cold_start_note": self.cold_start_note or None,
             "parameters": dict(self.parameters), "description": self.description,
         }
+
+
+# ── reach-weighted demand ───────────────────────────────────────────────────
+
+def reach_shares(shares: Dict[str, float], rtt_ms: Dict[str, Dict[str, float]],
+                 tau_ms: float = DEFAULT_REACH_TAU_MS) -> Dict[str, float]:
+    """ψ_i = Σ_j share_j · exp(−RTT(j,i)/τ), with RTT(i,i) = 0.
+
+    shares   demand share entering each cluster (sums to 1, or all 0)
+    rtt_ms   rtt_ms[a][b] = RTT measured from cluster a to cluster b (ms).
+             A missing pair uses the other direction; a pair missing in both
+             directions counts as unreachable (no contribution).
+    Each ψ_i is in [share_i, 1]."""
+    if tau_ms <= 0:
+        raise ValueError("tau_ms must be > 0")
+    names = list(shares)
+
+    def rtt(a: str, b: str) -> Optional[float]:
+        if a == b:
+            return 0.0
+        for x, y in ((a, b), (b, a)):
+            v = (rtt_ms.get(x) or {}).get(y)
+            if v is not None and v >= 0 and math.isfinite(v):
+                return float(v)
+        return None
+
+    out: Dict[str, float] = {}
+    for i in names:
+        psi = 0.0
+        for j in names:
+            r = rtt(j, i)
+            if r is not None:
+                psi += max(0.0, shares[j]) * math.exp(-r / tau_ms)
+        out[i] = min(1.0, psi)
+    return out
 
 
 # ── registry helpers ────────────────────────────────────────────────────────

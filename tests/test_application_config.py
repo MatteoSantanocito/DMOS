@@ -43,9 +43,9 @@ def config_dir(tmp_path):
     cfg.mkdir()
     for name in ("weights.yaml", "services.yaml", "carbon.yaml"):
         shutil.copy(REPO / "config" / name, cfg / name)
-    local = REPO / "config" / "local.yaml"
-    shutil.copy(local if local.is_file() else REPO / "config" / "local.yaml.example",
-                cfg / "local.yaml")
+    # The template, not the operator's local.yaml: the tests must not depend on
+    # the testbed configured on this machine (e.g. ingress_demand_match).
+    shutil.copy(REPO / "config" / "local.yaml.example", cfg / "local.yaml")
     return cfg
 
 
@@ -171,6 +171,55 @@ def test_get_ingress_rate_order_and_fallback():
     prom = _FakeProm([0])
     assert prom.get_ingress_rate(server_side_fallback=False) == 0.0 and len(prom.sent) == 1
 
+
+
+def test_ingress_queries_namespace_match():
+    # Proxy on a node without the entry pods: Hubble cannot name the destination
+    # workload, so the client-side count matches the namespace only.
+    client, server = PrometheusClient.ingress_queries(match="namespace")
+    assert client == ('sum(rate(hubble_http_requests_total{destination_namespace="online-boutique",'
+                      'reporter="client",traffic_direction="egress"}[1m]))')
+    assert server == HISTORICAL_INGRESS_QUERIES[1]          # server side unchanged
+    assert PrometheusClient.ingress_queries(match="workload") == HISTORICAL_INGRESS_QUERIES
+    with pytest.raises(ValueError):
+        PrometheusClient.ingress_queries(match="pod")
+
+
+def test_get_ingress_rate_uses_the_cluster_match():
+    prom = _FakeProm([3.0])
+    prom.ingress_demand_match = "namespace"
+    assert prom.get_ingress_rate() == 3.0
+    assert 'destination_workload' not in prom.sent[0] and 'reporter="client"' in prom.sent[0]
+
+
+def _set_cluster_key(config_dir, key, value):
+    path = config_dir / "local.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["clusters"][0][key] = value
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return data["clusters"][0]["name"]
+
+
+def test_ingress_demand_match_config(config_dir):
+    cfg = ConfigLoader(str(config_dir))
+    assert all(c.ingress_demand_match == "workload" for c in cfg.clusters.values())
+    name = _set_cluster_key(config_dir, "ingress_demand_match", "namespace")
+    assert ConfigLoader(str(config_dir)).clusters[name].ingress_demand_match == "namespace"
+    _set_cluster_key(config_dir, "ingress_demand_match", "pod")
+    with pytest.raises(ValueError, match="ingress_demand_match"):
+        ConfigLoader(str(config_dir))
+
+
+def test_cluster_snapshot_keeps_default_config_id():
+    from types import SimpleNamespace
+    from src.utils.provenance import cluster_snapshot
+    c = SimpleNamespace(region="DE", cpu_cores=8, memory_gb=16, prometheus_port=32090,
+                        carbon={"region_code": "DE", "baseline_gco2_kwh": 350})
+    assert "ingress_demand_match" not in cluster_snapshot(c)
+    c.ingress_demand_match = "workload"
+    assert "ingress_demand_match" not in cluster_snapshot(c)
+    c.ingress_demand_match = "namespace"
+    assert cluster_snapshot(c)["ingress_demand_match"] == "namespace"
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 

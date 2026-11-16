@@ -21,6 +21,9 @@ K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 # Entry service assumed when services.yaml has no `application` section.
 DEFAULT_ENTRY_SERVICE = "frontend"
 
+# Values of ClusterConfig.ingress_demand_match (the first is the default).
+INGRESS_DEMAND_MATCHES = ("workload", "namespace")
+
 
 @dataclass
 class ClusterConfig:
@@ -49,6 +52,49 @@ class ClusterConfig:
     # (sia testbed originale sia setup proxmox-k3s). Override solo se gira
     # K8s vanilla con configurazione non-default.
     k8s_api_port: int = 6443
+
+    # NodePort dell'ingresso HTTP del cluster (k6, health gate). 30080 = Cilium
+    # Ingress del testbed di riferimento; con la Gateway API (es. Kubephos) e' la
+    # NodePort assegnata al Service del Gateway. Non usata dallo scheduler.
+    ingress_port: int = 30080
+
+    # Come si riconosce, lato client, la domanda che entra nel cluster
+    # (PrometheusClient.ingress_queries):
+    #   "workload"  (default) richieste verso il workload d'ingresso
+    #               (destination_workload="frontend"). Hubble conosce il workload
+    #               di destinazione solo per i pod del proprio nodo: corretto se
+    #               il proxy d'ingresso gira sullo stesso nodo dei frontend
+    #               (testbed di riferimento, un worker per cluster).
+    #   "namespace" tutte le richieste client-side verso il namespace
+    #               dell'applicazione: quando il proxy (Ingress o Gateway) gira
+    #               su un nodo senza frontend (es. Kubephos, NodePort sul control
+    #               plane). Richiede che l'unico client L7 lato client sia il
+    #               proxy d'ingresso (nessuna policy L7 in uscita sui pod).
+    ingress_demand_match: str = "workload"
+
+    # Tetto di repliche per servizio su QUESTO cluster ({servizio: n}). Se c'e',
+    # vince su services.yaml → max_replicas_per_cluster (stesso significato).
+    # Lo scrive scripts/kubephos_fleet.py write-local dalla capacita' del pool app
+    # (docs/KUBEPHOS.md, "Replica cap"). Vuoto = services.yaml come sempre.
+    max_replicas: Dict[str, int] = field(default_factory=dict)
+
+    # req/s che una replica regge su QUESTO cluster ({servizio: req/s}). Se c'e',
+    # vince su services.yaml → capacity_per_cluster / capacity_req_per_sec.
+    # Lo scrive kubephos_fleet.py write-local dalla calibrazione (CPU per
+    # richiesta misurata del pod e suo limite di CPU).
+    capacity_req_per_sec: Dict[str, float] = field(default_factory=dict)
+
+    # Nodi che ospitano il workload, dove DMOS misura CPU e memoria libere
+    # (DMOS_FREE_RESOURCES=worker): somma di node_exporter su questi IP.
+    # Vuoto = solo `ip` (testbed di riferimento: un worker per cluster). Va
+    # impostato quando `ip` non e' il nodo del workload, es. Kubephos (ip =
+    # control plane, workload sul pool app): lo scrive kubephos_fleet.py.
+    worker_ips: List[str] = field(default_factory=list)
+
+    @property
+    def workload_node_ips(self) -> List[str]:
+        """IP dei nodi del workload: worker_ips, oppure `ip`."""
+        return list(self.worker_ips) if self.worker_ips else [self.ip]
 
     # Optional netem configuration (consumed by scripts/setup-netem-and-ping.sh
     # and experiments/capture_env_state.py, not by the runtime scheduler).
@@ -319,6 +365,16 @@ class ConfigLoader:
             for cluster_data in clusters_data:
                 cluster = ClusterConfig(**cluster_data)
                 self.clusters[cluster.name] = cluster
+
+        for cluster in self.clusters.values():
+            if not isinstance(cluster.worker_ips, list) or not all(
+                    isinstance(x, str) and x.strip() for x in cluster.worker_ips):
+                raise ValueError(f"local.yaml: cluster '{cluster.name}': worker_ips must be a "
+                                 f"list of node IP addresses")
+            if cluster.ingress_demand_match not in INGRESS_DEMAND_MATCHES:
+                raise ValueError(
+                    f"local.yaml: cluster '{cluster.name}': ingress_demand_match must be one of "
+                    f"{list(INGRESS_DEMAND_MATCHES)}, not {cluster.ingress_demand_match!r}")
         
         # Parse weights (get default scenario: balanced)
         weights_scenario = self.weights_raw.get('objectives', {}).get('balanced', {})
@@ -437,6 +493,7 @@ class ConfigLoader:
             self.services[service.name] = service
 
         self.application = self._parse_application(app_raw, default_namespace)
+        self._apply_cluster_replica_caps()
         
         # Parse autoscaling global params
         self.autoscaling_params = self.services_raw.get('global_autoscaling', {})
@@ -549,6 +606,40 @@ class ConfigLoader:
     def entry_service_config(self) -> ServiceConfig:
         """ServiceConfig of the entry service (application.entry_service)."""
         return self.services[self.application.entry_service]
+
+    def _apply_cluster_replica_caps(self):
+        """local.yaml → clusters[].max_replicas overrides services.yaml
+        max_replicas_per_cluster for that cluster (every reader goes through
+        ServiceConfig.get_max_replicas_for_cluster)."""
+        for cluster in self.clusters.values():
+            caps = cluster.max_replicas or {}
+            if not isinstance(caps, dict):
+                raise ValueError(f"local.yaml: cluster '{cluster.name}': max_replicas must be a "
+                                 f"mapping service -> replicas")
+            for svc_name, cap in caps.items():
+                svc = self.services.get(svc_name)
+                if svc is None:
+                    raise ValueError(f"local.yaml: cluster '{cluster.name}': max_replicas names "
+                                     f"'{svc_name}', not a service of services.yaml")
+                if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+                    raise ValueError(f"local.yaml: cluster '{cluster.name}': max_replicas."
+                                     f"{svc_name} must be an integer >= 1, not {cap!r}")
+                svc.max_replicas_per_cluster = {**(svc.max_replicas_per_cluster or {}),
+                                                cluster.name: cap}
+            capacities = cluster.capacity_req_per_sec or {}
+            if not isinstance(capacities, dict):
+                raise ValueError(f"local.yaml: cluster '{cluster.name}': capacity_req_per_sec must "
+                                 f"be a mapping service -> req/s")
+            for svc_name, cap in capacities.items():
+                svc = self.services.get(svc_name)
+                if svc is None:
+                    raise ValueError(f"local.yaml: cluster '{cluster.name}': capacity_req_per_sec "
+                                     f"names '{svc_name}', not a service of services.yaml")
+                if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0:
+                    raise ValueError(f"local.yaml: cluster '{cluster.name}': capacity_req_per_sec."
+                                     f"{svc_name} must be a number > 0, not {cap!r}")
+                svc.capacity_per_cluster = {**(svc.capacity_per_cluster or {}),
+                                            cluster.name: float(cap)}
 
     def ingress_query_kwargs(self) -> Dict[str, Any]:
         """Arguments of PrometheusClient.get_ingress_rate for this application."""

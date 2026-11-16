@@ -1,7 +1,7 @@
 # Start-up behaviour: observation window and two-phase score
 
 DMOS treats the first two minutes after start differently from steady
-operation. As in the NCA 2026 paper (§IV-E, "two-phase startup"), the first
+operation ("two-phase startup"): the first
 120 s are a **cold start**: the live metrics (latency, load) are not yet
 reliable, so DMOS **only listens to the system** — it reads the traffic and
 fills the predictors' history, but performs no scaling operation. The first
@@ -36,12 +36,14 @@ The cold score function is:
 
 | Configuration | Cold weights |
 |---|---|
-| score model with `cold_start: structural` (all current models) | ω_lat = ω_cap = 0, the other weights renormalised; the demand keeps its role (e.g. `nca`: gate g = 2 on net 0.75 / carbon 0.25) — the paper's description |
+| score model with `cold_start: structural` (all current models) | ω_lat = ω_cap = 0, the other weights renormalised; the demand keeps its role (e.g. `reach` and `nca`: gate g = 2 on net 0.75 / carbon 0.25) |
 | score model with `cold_start: same` | the warm weights |
 | legacy path (e.g. arm `l1l2`) | the `cold_start` profile of `weights.yaml` (0 / 0 / 0.35 / 0.30 / 0.35), modified by the same environment switches as the warm phase (with `DMOS_WEIGHTS_COHERENT` the cold weights equal the warm ones) |
 
 The Level-2 loop is the same in both phases: the predictor and the PD
-correction always work on the per-cluster ingress demand λᵢⁱⁿ.
+correction (reactive Level 2) and the forecasters of the predictive scaler
+(`DMOS_SCALER=predictive`, which also issues no scaling during the grace)
+always work on the per-cluster ingress demand λᵢⁱⁿ.
 
 ## How the two windows line up
 
@@ -75,7 +77,7 @@ The grace was introduced because aggressive early scale-ups on a short
 predictor history disrupted connections on the NodePorts while the load
 generator was opening sessions. Making the cold score drive allocations
 would require a shorter grace (cycles between its end and 120 s would use
-the cold score); it is not done, so the code matches the paper.
+the cold score); it is not done.
 
 ## Logs
 

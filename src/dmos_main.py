@@ -35,10 +35,15 @@ from src.utils.provenance import build_effective_config, write_json_atomic
 from src.level1.dmos_scheduler import DMOSScheduler
 from src.level1.winner_determination import Allocation
 from src.level2.scaler import ReplicaScaler
+from src.level2.predictive_scaler import (PredictiveScaler, PredictiveScalerParams,
+                                          scaler_mode)
 from src.k8s.client import KubernetesClient
 from src.metrics.prometheus_client import PrometheusClient
 
 logger = setup_logging("DMOSMain", log_dir="logs", level="INFO")
+
+# DMOS_ENTRY_BUDGET values (DMOSOrchestrator.entry_budget)
+ENTRY_BUDGET_MODES = ("total", "per_cluster", "pooled")
 
 
 @dataclass(order=True)
@@ -96,6 +101,18 @@ class DMOSOrchestrator:
         ['service']
     )
 
+    # Predictive scaler (DMOS_SCALER=predictive, docs/PREDICTIVE-SCALER.md)
+    ps_fast_rps = Gauge('dmos_ps_fast_rps', 'Entering demand, fast window', ['cluster'])
+    ps_forecast_rps = Gauge('dmos_ps_forecast_rps',
+                            'Holt forecast of the entering demand at the horizon', ['cluster'])
+    ps_demand_rps = Gauge('dmos_ps_demand_rps',
+                          'Demand the entry service is sized on (forecast + headroom)', ['cluster'])
+    ps_need = Gauge('dmos_ps_need_replicas', 'Replicas needed for the sized demand', ['cluster'])
+    ps_horizon_s = Gauge('dmos_ps_horizon_seconds', 'Forecast horizon of the predictive scaler')
+    ps_t_ready_s = Gauge('dmos_ps_actuation_lag_seconds',
+                         'Learned actuation lag (scale command -> replicas ready)')
+    ps_burst = Gauge('dmos_ps_burst', '1 while the predictive scaler holds a burst')
+
     # Provenance: one series per process, value always 1. The collector reads
     # config_id from here, proving which configuration served every snapshot.
     config_info = Gauge(
@@ -134,6 +151,33 @@ class DMOSOrchestrator:
         self.config = ConfigLoader(config_path)
         self.scheduler = DMOSScheduler(config_path, probe_prometheus=not dry_run)
 
+        # Minimum replicas of the entry service per cluster, overriding
+        # services.yaml (DMOS_ENTRY_MIN_REPLICAS, set by the '-min<k>' arms).
+        # 0 lets a cluster without demand hold no entry replica: with the
+        # frontend exposed as a Cilium global service its users are served by
+        # the replicas of the other clusters. Applied before the scalers are
+        # built, so the budget, the targets and the scale-down all use it; the
+        # backends keep their own minimum. Recorded in the run provenance.
+        self.entry_min_replicas = self._entry_min_replicas_override()
+
+        # How the entry service's budget N is bounded (DMOS_ENTRY_BUDGET):
+        #   total        each cluster needs ceil(demand_i / capacity); only the
+        #                SUM is capped (Σ max): a full cluster's excess stays in
+        #                the budget and the allocation places it on the others
+        #                (right with the frontend served by the global pool).
+        #                Default from the journal campaign on.
+        #   per_cluster  each cluster's need is capped at its own maximum before
+        #                summing: the excess of a full hot cluster is lost (NCA
+        #                2026 campaign, local serving). Kept to reproduce it.
+        self.entry_budget_mode = self._entry_budget_mode()
+        if self.entry_min_replicas is not None:
+            entry_cfg = self.config.entry_service_config()
+            entry_cfg.min_replicas_per_cluster = {
+                c: self.entry_min_replicas for c in self.config.clusters}
+            logger.info(f"Entry service '{self.config.application.entry_service}': "
+                        f"minimum {self.entry_min_replicas} replica(s) per cluster "
+                        f"(DMOS_ENTRY_MIN_REPLICAS)")
+
         # ── PROM_MAP: un client Prometheus per cluster (approccio Romano) ──
         # Le porte sono lette per cluster da local.yaml (default 32090 per
         # kube-prometheus-stack via proxmox-k3s; 30090 per testbed legacy).
@@ -144,6 +188,7 @@ class DMOSOrchestrator:
                 url=prom_url,
                 cluster_name=name,
                 test_connection=not dry_run,
+                ingress_demand_match=cluster.ingress_demand_match,
             )
 
         # ── Locust config (traffico globale, non per-cluster) ──
@@ -304,6 +349,33 @@ class DMOSOrchestrator:
         # dalla co-location, invocata al termine di schedule_service(<entry>).
         self.monitored_services = [self.application.entry_service]
 
+        # ── Level-2 scaler of the entry service (DMOS_SCALER) ────────────
+        # 'reactive' (default): ReplicaScaler + PD per cluster, the NCA 2026
+        # Level 2. 'predictive': PredictiveScaler (two demand windows, Holt
+        # forecast at the learned actuation lag, uncertainty headroom,
+        # capacity-model sizing, event-driven decisions, stabilized
+        # scale-down); docs/PREDICTIVE-SCALER.md. Level 1 is the same in both.
+        self.scaler_mode = scaler_mode()
+        self.ps: Optional[PredictiveScaler] = None
+        if self.scaler_mode == "predictive":
+            entry_cfg = self.config.entry_service_config()
+            ps_params = PredictiveScalerParams.from_env()
+            self.ps = PredictiveScaler(
+                ps_params, self.all_cluster_names,
+                capacity={c: entry_cfg.get_capacity_for_cluster(c) for c in self.all_cluster_names},
+                min_replicas={c: entry_cfg.get_min_replicas_for_cluster(c)
+                              for c in self.all_cluster_names},
+                max_replicas={c: entry_cfg.get_max_replicas_for_cluster(c)
+                              for c in self.all_cluster_names},
+                budget_mode=self.entry_budget_mode,
+            )
+            # decisions may follow each other every min_decision_spacing_s
+            self.debounce_seconds = ps_params.min_decision_spacing_s
+            logger.info(f"Level 2: PREDICTIVE scaler (tick {ps_params.tick_s:.0f}s, "
+                        f"windows {ps_params.fast_window}/{ps_params.stable_window}, "
+                        f"horizon {'learned' if ps_params.horizon_s <= 0 else ps_params.horizon_s}, "
+                        f"down window {ps_params.down_window_s:.0f}s)")
+
         # Startup grace period: DMOS monitors but does NOT issue any k8s scale
         # calls for the first N seconds after start. This prevents Cilium BPF
         # map updates (triggered by pod additions) from disrupting incoming TCP
@@ -404,6 +476,95 @@ class DMOSOrchestrator:
                     f"(no k8s ops until {self.startup_grace_seconds}s after boot)")
     
     # ── Startup Initialization ──────────────────────────────────────────────
+
+    @staticmethod
+    def _entry_budget_mode() -> str:
+        mode = os.environ.get("DMOS_ENTRY_BUDGET", "total").strip().lower() or "total"
+        if mode not in ENTRY_BUDGET_MODES:
+            raise ValueError(f"DMOS_ENTRY_BUDGET must be one of {ENTRY_BUDGET_MODES}, got {mode!r}")
+        return mode
+
+    @staticmethod
+    def entry_budget(per_cluster_traffic: Dict[str, float], clusters, svc_cfg,
+                     mode: str = "total"):
+        """Budget N of the entry service and the per-cluster floors.
+
+        need_i = max(min_i, ceil(traffic_i / capacity_i)). 'per_cluster':
+        N = Σ min(max_i, need_i) (NCA 2026). 'total': N = min(Σ max_i, Σ need_i).
+        'pooled': the replicas form one pool (Cilium global service, affinity
+        'none': every replica serves every cluster's users), so the need is
+        sized on the total demand, N = ceil(Σ traffic_i / r̄) within
+        [Σ min_i, Σ max_i], r̄ = capacity per replica averaged with the
+        per-cluster caps as weights. 'total' rounds up every cluster and counts
+        the minimum of a cluster with little demand as if it served only that
+        demand: on 29/10/2026 it asked 17-18 replicas for ~13 of need.
+        Floors (used by the demand floor only) are always min(max_i, need_i).
+        At least 1 replica in the federation."""
+        if mode == "pooled":
+            return DMOSOrchestrator._pooled_budget(per_cluster_traffic, clusters, svc_cfg)
+        total, floors, cap_sum = 0, {}, 0
+        for c in clusters:
+            traffic = per_cluster_traffic.get(c, 0.0)
+            capacity = svc_cfg.get_capacity_for_cluster(c)
+            c_min = svc_cfg.get_min_replicas_for_cluster(c)
+            c_max = svc_cfg.get_max_replicas_for_cluster(c)
+            need = max(c_min, math.ceil(traffic / capacity) if capacity > 0 else c_min)
+            floors[c] = min(c_max, need)
+            total += floors[c] if mode == "per_cluster" else need
+            cap_sum += c_max
+        if mode != "per_cluster":
+            total = min(total, cap_sum)
+        # Only possible with a 0 minimum and no measured demand anywhere:
+        # keep one entry replica in the federation.
+        return max(1, total), floors
+
+    @staticmethod
+    def _pooled_budget(per_cluster_traffic: Dict[str, float], clusters, svc_cfg):
+        floors, min_sum, cap_sum, weighted_cap, demand = {}, 0, 0, 0.0, 0.0
+        for c in clusters:
+            traffic = max(0.0, float(per_cluster_traffic.get(c, 0.0) or 0.0))
+            capacity = svc_cfg.get_capacity_for_cluster(c)
+            c_min = svc_cfg.get_min_replicas_for_cluster(c)
+            c_max = svc_cfg.get_max_replicas_for_cluster(c)
+            need = max(c_min, math.ceil(traffic / capacity) if capacity > 0 else c_min)
+            floors[c] = min(c_max, need)
+            min_sum += c_min
+            cap_sum += c_max
+            weighted_cap += c_max * capacity
+            demand += traffic
+        r_mean = weighted_cap / cap_sum if cap_sum > 0 else 0.0
+        need = math.ceil(demand / r_mean) if r_mean > 0 else min_sum
+        total = min(cap_sum, max(min_sum, need))
+        return max(1, total), floors
+
+    @staticmethod
+    def uniform_split(total: int, clusters, svc_cfg) -> Dict[str, int]:
+        """N/K per cluster within [min_i, max_i]: one replica at a time to the
+        cluster with the fewest, ties in name order. Without binding caps this is
+        base + remainder in name order (the NCA 2026 l2 arm); with them, a
+        replica a full cluster cannot take goes to the others instead of being
+        cut by the cap."""
+        names = sorted(clusters)
+        caps = {c: svc_cfg.get_max_replicas_for_cluster(c) for c in names}
+        out = {c: min(caps[c], svc_cfg.get_min_replicas_for_cluster(c)) for c in names}
+        for _ in range(max(0, min(total, sum(caps.values())) - sum(out.values()))):
+            c = min((c for c in names if out[c] < caps[c]), key=out.get)
+            out[c] += 1
+        return out
+
+    @staticmethod
+    def _entry_min_replicas_override() -> Optional[int]:
+        """DMOS_ENTRY_MIN_REPLICAS as a non-negative int, or None when unset."""
+        raw = os.environ.get("DMOS_ENTRY_MIN_REPLICAS", "").strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            raise ValueError(f"DMOS_ENTRY_MIN_REPLICAS must be a non-negative integer, got {raw!r}")
+        if value < 0:
+            raise ValueError(f"DMOS_ENTRY_MIN_REPLICAS must be >= 0, got {value}")
+        return value
 
     def _initialize_replica_gauges(self):
         """
@@ -802,26 +963,29 @@ class DMOSOrchestrator:
         # Ora: somma ceil(cluster_traffic / cluster_capacity) per ogni cluster,
         # usando la capacità per-cluster (netem-aware). Questo dà al winner
         # determination un budget realistico da distribuire secondo i punteggi
-        # multi-obiettivo (latenza, carbon, network, demand).
-        total_replicas = 0
-        cluster_floors: Dict[str, int] = {}
-        for cluster_name in self.all_cluster_names:
-            cluster_traffic = per_cluster_traffic.get(cluster_name, 0.0)
-            cluster_capacity = svc_cfg.get_capacity_for_cluster(cluster_name)
-            c_min = svc_cfg.get_min_replicas_for_cluster(cluster_name)
-            c_max = svc_cfg.get_max_replicas_for_cluster(cluster_name)
-            cluster_need = min(c_max, max(
-                c_min,
-                math.ceil(cluster_traffic / cluster_capacity) if cluster_capacity > 0 else c_min
-            ))
-            total_replicas += cluster_need
-            # [DEMAND-FLOOR] il fabbisogno per-cluster diventa un floor garantito
-            # nel winner determination: senza overflow, ogni cluster serve la
-            # propria domanda localmente. Lo score distribuisce solo il residuo.
-            cluster_floors[cluster_name] = cluster_need
-
-        logger.info(f"Total replicas needed: {total_replicas} "
-                    f"(sum of per-cluster needs from {per_cluster_traffic}); "
+        # multi-obiettivo (latenza, carbon, network, demand). Il tetto per
+        # cluster si applica al totale ('total', default) o a ogni cluster
+        # ('per_cluster', NCA 2026): vedi entry_budget / DMOS_ENTRY_BUDGET.
+        # Predictive scaler: the budget is sized on the demand expected when the
+        # replicas requested now are ready (forecast + headroom, >= measured).
+        predictive = self.ps is not None and service_name == self.application.entry_service
+        budget_traffic = self.ps.demand_for_budget() if predictive else per_cluster_traffic
+        if predictive:
+            # churn budgets are per decision (the reactive loop resets them per cycle)
+            self._cycle_backend_pods_added = 0
+            self._cycle_backend_pods_terminated = 0
+        total_replicas, cluster_floors = self.entry_budget(
+            budget_traffic, self.all_cluster_names, svc_cfg, self.entry_budget_mode)
+        if predictive:
+            # Level-2 hysteresis on HOW MANY; Level 1 places all of them
+            held = self.ps.hold_budget(time.time(), total_replicas)
+            if held != total_replicas:
+                logger.info(f"PS budget held at {held} (sized {total_replicas}): "
+                            f"the demand is not falling")
+            total_replicas = held
+        logger.info(f"Total replicas needed: {total_replicas} [budget {self.entry_budget_mode}"
+                    f"{', predictive' if predictive else ''}] "
+                    f"(sum of per-cluster needs from {budget_traffic}); "
                     f"floors={cluster_floors}")
 
         if self.no_scheduling:
@@ -830,17 +994,10 @@ class DMOSOrchestrator:
             # Le repliche vengono distribuite equamente tra i K cluster.
             # Level 2 (PD controller) rimane attivo per il dimensionamento.
             K = len(self.all_cluster_names)
-            base = total_replicas // K
-            remainder = total_replicas % K
-            allocations = []
-            for i, cname in enumerate(sorted(self.all_cluster_names)):
-                reps = base + (1 if i < remainder else 0)
-                allocations.append(Allocation(
-                    cluster_name=cname,
-                    replicas=reps,
-                    quota=1.0 / K,
-                    score=1.0 / K,  # score fittizio uniforme
-                ))
+            split = self.uniform_split(total_replicas, self.all_cluster_names, svc_cfg)
+            allocations = [Allocation(cluster_name=c, replicas=r, quota=1.0 / K,
+                                      score=1.0 / K)  # score fittizio uniforme
+                           for c, r in split.items()]
             success = True
             logger.info(f"[NO-SCHEDULING] Distribuzione uniforme: "
                         f"{', '.join(f'{a.cluster_name}={a.replicas}' for a in allocations)}")
@@ -848,7 +1005,7 @@ class DMOSOrchestrator:
             allocations, success = self.scheduler.schedule_service(
                 service_name=service_name,
                 total_replicas=total_replicas,
-                predicted_load=current_traffic,
+                predicted_load=sum(budget_traffic.values()) if predictive else current_traffic,
                 floors=cluster_floors if self.demand_floor_enabled else None
             )
 
@@ -880,6 +1037,14 @@ class DMOSOrchestrator:
                 rep_futures[f]: (f.result() or 0)
                 for f in as_completed(rep_futures)
             }
+
+        if predictive:
+            self._apply_predictive_targets(service_name, svc_cfg, allocations, current_reps_map)
+            self._enforce_colocation(service_name)
+            duration = time.time() - start_time
+            self.scheduling_duration.labels(service=service_name).observe(duration)
+            logger.info(f"Scheduling completato in {duration:.2f}s")
+            return
 
         # ── Step 2: decisioni e scale-ops sequenziali (SCALE-UP prima) ───────
         for allocation in allocations:
@@ -1113,6 +1278,115 @@ class DMOSOrchestrator:
         self.scheduling_duration.labels(service=service_name).observe(duration)
         logger.info(f"Scheduling completato in {duration:.2f}s")
     
+    # ── Predictive scaler (DMOS_SCALER=predictive) ────────────────────────
+
+    def _apply_predictive_targets(self, service_name: str, svc_cfg, allocations,
+                                  current_reps_map: Dict[str, int]) -> None:
+        """Turn the Level-1 allocation into replica counts with the predictive
+        policy (immediate scale-up, stabilized and bounded scale-down) and
+        apply them. Clusters without an allocation are recommended their
+        minimum, through the same stabilization."""
+        recommended = {c: svc_cfg.get_min_replicas_for_cluster(c) for c in self.all_cluster_names}
+        scores = {}
+        for a in allocations:
+            recommended[a.cluster_name] = a.replicas
+            scores[a.cluster_name] = a.score
+            self.cluster_score.labels(cluster=a.cluster_name, service=service_name).set(a.score)
+        current = {c: int(current_reps_map.get(c, 0) or 0) for c in self.all_cluster_names}
+        now = time.time()
+        hold = self.ps.in_burst(now)
+        targets = self.ps.targets(now, recommended, current)
+        for c in self.all_cluster_names:
+            cur, tgt, rec = current[c], targets[c], recommended[c]
+            self.current_replicas.labels(cluster=c, service=service_name).set(cur)
+            self.target_replicas.labels(cluster=c, service=service_name).set(tgt)
+            logger.info(f"  PS {c}: L1={rec} (score={scores.get(c, 0):.3f}) current={cur} "
+                        f"-> {tgt}{' [burst hold]' if hold and tgt >= cur and rec < cur else ''}")
+            if tgt == cur:
+                continue
+            action = 'scale_up' if tgt > cur else 'scale_down'
+            self.scaling_events.labels(cluster=c, service=service_name, action=action).inc()
+            if self.k8s.scale_deployment(cluster=c, deployment=svc_cfg.deployment_name,
+                                         replicas=tgt, namespace=svc_cfg.namespace):
+                if tgt > cur:
+                    self.ps.record_scale_up(c, tgt, now)
+                    self.last_scale_up[service_name] = datetime.now()
+                else:
+                    self.last_scale_down[service_name] = datetime.now()
+
+    def _predictive_tick(self) -> None:
+        """One measurement of the predictive scaler: fast and stable demand
+        per cluster, current and (for pending scale-ups) ready replicas;
+        updates the forecasters and enqueues a decision when one is due."""
+        service = self.application.entry_service
+        svc_cfg = self.config.get_service(service)
+        p = self.ps.p
+        kwargs = self.config.ingress_query_kwargs()
+        pending = self.ps.pending_clusters()
+        fast: Dict[str, float] = {}
+        stable: Dict[str, float] = {}
+        current: Dict[str, int] = {}
+        ready: Dict[str, int] = {}
+        n_workers = 3 * len(self.all_cluster_names) + len(pending)
+        with ThreadPoolExecutor(max_workers=max(1, n_workers)) as pool:
+            futs = {}
+            for c, prom in self.prom_map.items():
+                futs[pool.submit(prom.get_ingress_rate, window=p.fast_window, **kwargs)] = ("f", c)
+                futs[pool.submit(prom.get_ingress_rate, window=p.stable_window, **kwargs)] = ("s", c)
+            for c in self.all_cluster_names:
+                futs[pool.submit(self.k8s.get_deployment_replicas, c,
+                                 svc_cfg.deployment_name, svc_cfg.namespace)] = ("r", c)
+            for c in pending:
+                futs[pool.submit(self.k8s.get_deployment_ready_replicas, c,
+                                 svc_cfg.deployment_name, svc_cfg.namespace)] = ("ready", c)
+            for fut in as_completed(futs):
+                kind, c = futs[fut]
+                try:
+                    value = fut.result()
+                except Exception as e:
+                    logger.warning(f"PS tick: {kind} read failed on {c}: {e}")
+                    value = None
+                if kind == "f":
+                    fast[c] = max(0.0, value or 0.0)
+                elif kind == "s":
+                    stable[c] = max(0.0, value or 0.0)
+                elif kind == "r":
+                    current[c] = int(value or 0)
+                elif value is not None:
+                    ready[c] = int(value)
+        now = time.time()
+        for c, r in ready.items():
+            lag = self.ps.observe_ready(c, r, now)
+            if lag is not None:
+                logger.info(f"PS actuation lag {c}: {lag:.0f}s -> learned {self.ps.t_ready_s:.0f}s")
+        res = self.ps.tick(now, fast, stable, current)
+        for c, z in res.clusters.items():
+            self.ps_fast_rps.labels(cluster=c).set(z.fast_rps)
+            self.ps_forecast_rps.labels(cluster=c).set(z.forecast_rps)
+            self.ps_demand_rps.labels(cluster=c).set(z.demand_rps)
+            self.ps_need.labels(cluster=c).set(z.need)
+            self.prediction_traffic.labels(cluster=c, service=service).set(z.demand_rps)
+        self.ps_horizon_s.set(res.horizon_s)
+        self.ps_t_ready_s.set(self.ps.t_ready_s)
+        self.ps_burst.set(1 if self.ps.in_burst(now) else 0)
+        detail = ", ".join(f"{c.rsplit('-', 1)[-1]}={z.fast_rps:.0f}/{z.stable_rps:.0f}"
+                           f"->{z.demand_rps:.0f}:{z.raw_need}" for c, z in res.clusters.items())
+        if self.ps.budget_mode == "pooled":
+            z = self.ps.total_sizing
+            detail += (f" | total {z.fast_rps:.0f}/{z.stable_rps:.0f} -> forecast "
+                       f"{z.forecast_rps:.0f} + {z.headroom_rps:.0f} = {z.demand_rps:.0f}")
+        logger.info(f"PS tick: need {res.need_total} vs current {res.current_total} | "
+                    f"H={res.horizon_s:.0f}s (lag {self.ps.t_ready_s:.0f}s) | "
+                    f"fast/stable->demand:need {detail}"
+                    f"{' | BURST' if res.burst else ''}{' | decide: ' + res.reason if res.decide else ''}")
+        in_grace = (datetime.now() - self.startup_time).total_seconds() < self.startup_grace_seconds
+        if res.decide and not in_grace:
+            self.event_queue.put(SchedulingEvent(
+                priority=0 if res.reason in ("burst", "need_up") else 1,
+                timestamp=datetime.now(), service=service,
+                action='scale_up' if res.reason in ("burst", "need_up") else 'schedule',
+                reason=f'ps_{res.reason}'))
+
     # ── Event Processing ──────────────────────────────────────────────────
     
     def process_event(self, event: SchedulingEvent):
@@ -1150,6 +1424,15 @@ class DMOSOrchestrator:
         logger.info(f"   Scaling proattivo: abilitato (usa predittore per attivazione anticipata)")
         
         while self.running:
+            if self.ps is not None:
+                try:
+                    self._predictive_tick()
+                except Exception as e:
+                    import traceback
+                    logger.error(f"Errore nel tick del predictive scaler: {e}")
+                    logger.error(traceback.format_exc())
+                time.sleep(self.ps.p.tick_s)
+                continue
             try:
                 # [FIX S/A2] Reset budget scale-down/up ad ogni ciclo di polling
                 self._cycle_pods_terminated = 0

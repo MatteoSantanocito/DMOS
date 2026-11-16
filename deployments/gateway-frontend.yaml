@@ -1,0 +1,53 @@
+# =========================================================================
+# Gateway API entry for the Online Boutique frontend (alternative to
+# ingress-frontend-cilium.yaml)
+# =========================================================================
+# For clusters where Cilium has the Gateway API enabled but not the Ingress
+# controller (e.g. Kubephos: GatewayClass `kubephos-cilium`, Service type
+# NodePort). The data path is the same as the Cilium Ingress: the per-node
+# Cilium Envoy, with the `reserved:ingress` identity, so cnp-frontend-l7.yaml
+# and the DMOS demand queries apply unchanged.
+#
+# The NodePort of the Service Cilium creates for the Gateway
+# (cilium-gateway-frontend-gateway) is assigned by Kubernetes and cannot be
+# fixed from the GatewayClass: put it in config/local.yaml as `ingress_port`
+# of each cluster, then re-run scripts/render-runtime-files.sh.
+#
+#   pwsh scripts/setup-dmos-on-clusters.ps1 -IngressMode gateway ...
+#
+# applies this file with the class given by -GatewayClass and prints the
+# NodePort of every cluster. By hand:
+#   kubectl -n online-boutique get svc cilium-gateway-frontend-gateway \
+#     -o jsonpath='{.spec.ports[0].nodePort}'
+# =========================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: frontend-gateway
+  namespace: online-boutique
+spec:
+  gatewayClassName: kubephos-cilium
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend
+  namespace: online-boutique
+spec:
+  parentRefs:
+  - name: frontend-gateway
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: frontend
+      port: 80

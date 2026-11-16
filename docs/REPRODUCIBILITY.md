@@ -1,164 +1,156 @@
-# Reproducing the DMOS evaluation from a fresh `git clone`
+# Reproducing the results of the paper
 
-The end-to-end path from an empty machine to the figures and tables of the
-papers. Each step links to the detailed guide; this page fixes the order,
-the inputs and the expected outputs.
+This guide regenerates every figure, table and statistical test of the
+evaluation of the article (release `DMOS-2026.2`) from the raw data of its campaign. Two paths
+are possible:
 
-**What "reproduce" means.** The NCA 2026 evaluation is a skew-robustness
-study: 3 configurations (OFF static, L2 uniform scaling, L1L2 full DMOS) × 6
-demand regimes (hottest-cluster share `uni 0.167 / bal 0.40 / s50 / s65 / s75
-/ con 0.85`), at a constant 350 req/s peak (the paper says three
-repetitions; the repetitions actually behind each cell are listed in
-[publications/2026-nca-dmos.md](publications/2026-nca-dmos.md)). Absolute
-latencies depend on the hardware; the reproducible objects are the **trends**
-(SLO violations vs. skew, the crossover between a 0.5 and a 0.65
-hottest-cluster share, the equal-budget ablation OFF → L2 → L1L2). The exact
-configuration of the paper and its known differences from the code are in
-[publications/2026-nca-dmos.md](publications/2026-nca-dmos.md).
+- **A. From the archived dataset**, on any machine with Python 3.12: the 90 runs
+  are already recorded, and the analysis is deterministic.
+- **B. From a testbed**, re-running the campaign: this requires a federation
+  equivalent to the one described in [KUBEPHOS.md](KUBEPHOS.md) and about 35
+  hours ([experiments/RUNBOOK.md](../experiments/RUNBOOK.md)).
 
----
+## What was run
 
-## 0. What ships in the repo vs. what you provide
+The campaign is fixed by the plan
+[experiments/plans/2026-11-02-definitive.plan](../experiments/plans/2026-11-02-definitive.plan),
+written and committed before the first run: 8 arms, 3 demand regimes, 18 cells,
+5 repetitions (blocks D1 to D5), 90 runs. Within each block the regimes, and
+within each regime the arms, run in a random order fixed by a seed. The plan
+header also lists the primary metrics and the 18 tests:
 
-| In the repository | You provide |
-|---|---|
-| scheduler (`src/`), configuration (`config/*.yaml`, `local.yaml.example`) | K ≥ 2 Kubernetes clusters (reference: 6 K3s clusters on Proxmox) |
-| the proxmox-k3s file of the reference fleet (`config/proxmox-k3s-fleet.yaml.example`) | 3 Proxmox VE hosts (32 GB each in the reference), a VM template, IP addresses, an API token |
-| manifests (`deployments/`), setup and validation scripts (`scripts/`) | `config/local.yaml` (gitignored) |
-| load generator and run harness (`experiments/`) | a VM for k6 |
-| analysis pipeline (`experiments/paper_*.py`, `paper_lib.py`) | — |
-| the script that downloads the carbon traces (`scripts/fetch_carbon_traces.py`) | *(optional)* Electricity Maps access with historical data (academic access) to download the traces into `data/carbon_traces/` |
+| Family | Tests | Question |
+|---|---|---|
+| F1 | 9 | DMOS (`reach-pool-ps`) against the per-cluster HPA (p95 and frontend replica-minutes) and against the even split (p95), in each regime |
+| F2 | 6 | sustainability levers, in the balanced and concentrated regimes: carbon-first weights (served carbon intensity, CO2 per request) and minimum 0 (replica-minutes) |
+| F3 | 3 | demand signal of the placement score, concentrated regime (one test two-sided) |
 
-The carbon traces are Electricity Maps data and are **not distributed** with
-the repository: download them with your own access (researchers: the
-Electricity Maps academic access) as described in
-[data/carbon_traces/README.md](../data/carbon_traces/README.md). The
-reference clusters map to the zones `DE`, `FR`, `PL`, `NO-NO1` (alias of
-`NO`), `US-MIDA-PJM` (alias of `US-VA`) and `SG`
-(`config/carbon.yaml → trace.zone_aliases`); a cluster without its file
-falls back to built-in hourly profiles
-([dmos-architecture.md §5.3](dmos-architecture.md#53-carbon-intensity)):
+Each test is an exact permutation test on the difference of the means of the
+five runs of two arms (252 relabellings), one-sided in the stated direction
+unless marked otherwise, with Holm's correction within each family at
+α = 0.05.
 
-```bash
-export ELECTRICITYMAPS_TOKEN=<your key>
-python scripts/fetch_carbon_traces.py --zones DE FR PL US-MIDA-PJM SG NO-NO1 --year 2025
-```
+**Deviations from the plan**, recorded at the end of the plan file: the
+shutdown of two virtual machines interrupted one run (D5, `nca-pool-ps`,
+concentrated); it was cancelled and the remaining cells were run with
+[plans/resume/2026-11-02-definitive.plan](../experiments/plans/resume/2026-11-02-definitive.plan),
+without changing the cells or their order. Two runs of `hpa-none` in the
+balanced regime failed the post-run data-plane check (`INVALID_DATAPLANE`) and
+were repeated, as the harness does automatically; the campaign index keeps
+them as `BAD` rows, and the analysis reads only the `OK` rows.
 
-Each run records which source every cluster used (`dmos_config.json →
-carbon.sources`) and warns (`carbon_trace_fallback`) when one is not a
-trace.
+**Code.** The campaign ran on commit 41aa0252 (`git.commit` in every
+`manifest.json`). `src/` and `config/` of this release are identical to that
+commit; the release adds the analysis scripts `experiments/journal_*.py`, the
+plans, `experiments/build_dataset.py`, tests and documentation.
 
-## 1. Operator machine and testbed
+## A. From the archived dataset
 
-```bash
-git clone https://github.com/MatteoSantanocito/dmos.git && cd dmos
-python -m venv venv && source venv/Scripts/activate   # Linux/macOS: venv/bin/activate
-pip install -r requirements.txt
-```
+1. **Code and environment.**
 
-Build the clusters and the DMOS add-ons, write `config/local.yaml`, render
-`.cache/`, apply netem and ping_exporter, harden the workload:
-[setup-guide.md](setup-guide.md). Every experiment script reads the topology
-from `.cache/test-env.json` — no IP is hard-coded in the repository.
+   ```bash
+   git clone https://github.com/MatteoSantanocito/DMOS.git dmos && cd dmos
+   git checkout DMOS-2026.2
+   python -m venv venv && source venv/bin/activate
+   pip install -r requirements-lock.txt
+   ```
 
-## 2. Validate
+2. **Dataset.** Download the archive from Zenodo (DOI in the
+   [README](../README.md#data-availability)) and unpack it, for example next to
+   the repository as `../dmos-2026-2-dataset`. Its layout:
 
-```bash
-bash scripts/validate-setup.sh          # kubeconfigs, ClusterMesh, Prometheus, Hubble, app Ready
-python scripts/dmos-ready-check.py      # end-to-end readiness (exit 0 = GO)
-bash experiments/preflight_runs.sh      # per-session GO/NO-GO (netem, pods, ClusterMesh, DMOS layers)
-```
+   ```
+   dmos-2026-2-dataset/
+     README.md  LICENSE  CHECKSUMS.sha256
+     campaign/  _campaign_2026-11-02-definitive.tsv   index: one row per attempt, status OK/BAD
+                _campaign_2026-11-02-definitive.log   campaign driver log
+                driver_logs/                          one log per attempt
+                plans/                                the plan and the resume plan
+     runs/<timestamp>_dmos-<arm>__<regime>/           the 90 runs (files below)
+   ```
 
-The Online Boutique `loadgenerator` must stay at 0 replicas: the harness's
-reset scales it to 0 and every cell refuses to start otherwise (see
-[setup-guide.md §6](setup-guide.md#6-before-the-first-run)). The frontend
-Service must be global with `affinity: none` (`kubectl apply -f
-deployments/global-service-frontend.yaml` on each cluster); every cell
-checks it too.
+   `sha256sum -c CHECKSUMS.sha256` (inside the folder) verifies the files.
 
-## 3. (Optional) Re-calibrate capacities
+3. **Carbon intensity traces.** Download the Electricity Maps hourly traces of
+   2025 for the six zones into `data/carbon_traces/`, as described in
+   [its README](../data/carbon_traces/README.md). The analysis stops with an
+   error if a trace is missing, instead of falling back to built-in profiles.
 
-`config/services.yaml` ships the per-replica capacities used in the paper. On
-different hardware re-measure them:
+4. **Analysis.**
 
-```bash
-bash experiments/run_capacity.sh --cluster ms-cluster-01   # frontend, HTTP
-bash experiments/run_capacity_grpc.sh --all                # backends, k6 Job in-cluster
-```
+   ```bash
+   D=../dmos-2026-2-dataset
+   T=$D/campaign/_campaign_2026-11-02-definitive.tsv
+   python experiments/journal_figures.py --results $D/runs --tsv $T --out out --no-cache
+   python experiments/journal_tests.py   --results $D/runs --tsv $T --out out
+   python experiments/journal_control.py --results $D/runs --tsv $T --out out
+   ```
 
-Method: [capacity-testing.md](capacity-testing.md), [../experiments/CAPACITY-GRPC.md](../experiments/CAPACITY-GRPC.md).
+   `journal_control.py` reads `out/runs.csv`, so it runs after
+   `journal_figures.py`. The per-run metrics are cached in `out/_cache/`
+   (one cache per version of the metric code); `--no-cache` recomputes them.
+   On a laptop the three steps take a few minutes.
 
-## 4. Run the evaluation
+### Outputs and the paper
 
-Test names are `dmos-<arm>__<regime>`, defined once in
-`experiments/run_naming.py` (`python experiments/run_naming.py list`). The
-L1L2 configuration that produced the NCA 2026 results is the arm **`l1l2`**
-(gate g = 2, weights lat/cap/net/car 0.25/0.20/0.25/0.30, Φ_loc = Φ_net,
-floor off — read back from the campaign's DMOS logs); the score model `nca`
-is the configuration as *described* in the paper (weights
-0.25/0.35/0.30/0.10). One repetition of the whole core (18 cells, the three
-arms of a regime consecutive so that they share the testbed state):
+| In the paper | Output in `out/` | Script |
+|---|---|---|
+| Testbed and workload figure | `fig01_testbed_workload.pdf` | `journal_figures.py` |
+| Latency against resources | `fig02_latency_resource_tradeoff.pdf` | `journal_figures.py` |
+| Ready frontend replicas per region (concentrated) | `fig04_replica_placement_con.pdf` | `journal_figures.py` |
+| Latency per load phase (concentrated) | `fig07_phase_latency_con.pdf` | `journal_figures.py` |
+| Level 2 in the concentrated regime | `fig08_predictive_scaler_con.pdf` | `journal_figures.py` |
+| Ablation | `fig10_ablation_con.pdf` | `journal_figures.py` |
+| Shift regime | `fig14_shift_con-tosg.pdf` | `journal_figures.py` |
+| Expected latency cost against the model | `fig15_placement_model.pdf` | `journal_figures.py` |
+| Carbon intensity against its bounds | `fig16_carbon_bound.pdf` | `journal_figures.py` |
+| Table of the pre-specified tests | `table_tests.tex`, `tests.md`, `tests.csv` | `journal_tests.py` |
+| Table of the control-plane cost | `table_control.tex`, `control_timing.csv` | `journal_control.py` |
+| Numbers quoted in the text | `runs.csv` (one row per run), `summary.csv` (per cell), `overhead.csv` | `journal_figures.py` |
 
-```bash
-export DMOS_K6_REMOTE=ubuntu@<K6_VM_IP>
-bash experiments/run_matrix_session.sh                       # off l2 l1l2 × uni bal s50 s65 s75 con
-bash experiments/run_matrix_session.sh --arms "off l2 nca"   # the same with the paper's stated weights
-```
+`journal_figures.py` also writes figures not used in the article (the other
+`figNN_*` files) and `index.md`, which describes every output. The tables of
+the clusters, the arms and the control constants, the architecture figure and
+the run life-cycle figure are written by hand in the article.
 
-Run it once per session, as many sessions as repetitions. One cell:
-`bash experiments/run_one.sh l1l2 con`. `--dry-run` on either script prints
-what would run without touching the testbed; the `config_id` of each run
-tells which configuration ran.
+## B. From a testbed
 
-**Every run is self-describing**: its directory stores the effective DMOS
-configuration (`dmos_config.json`, `config_id`, carbon source per cluster),
-the DMOS log, the testbed state before and after (netem measured on the
-workers, Service annotations, `cilium-config`, Deployments, loadgenerator)
-and a manifest with provenance checks; a cell does not start if netem is
-missing, if the frontend's affinity is not `none` or if the loadgenerator
-runs.
+1. Build the federation and install the add-ons: [setup-guide.md](setup-guide.md)
+   and [KUBEPHOS.md](KUBEPHOS.md). The paper's parameters (netem delays
+   0/30/50/100/200/40 ms, frontend caps 4/3/2/4/2/3, 33 req/s per frontend
+   replica) are in `config/local.yaml`, written from `config/local.yaml.example`;
+   the values actually used are in `config_snapshot/local.sanitized.yaml` of
+   every run of the dataset.
+2. Run the campaign with the plan:
 
-```bash
-python experiments/run_provenance.py show  experiments/results/<run_dir>
-python experiments/run_provenance.py audit
-bash experiments/validate_run.sh <run_dir>     # heuristic CLEAN/SUSPECT/DEGRADED verdict (see RUNBOOK)
-```
+   ```bash
+   bash experiments/run_campaign.sh experiments/plans/2026-11-02-definitive.plan
+   ```
 
-See [RUN-PROVENANCE.md](RUN-PROVENANCE.md) and [../experiments/RUNBOOK.md](../experiments/RUNBOOK.md).
+   See [experiments/RUNBOOK.md](../experiments/RUNBOOK.md) for the
+   environment variables, the per-run checks and how to resume an interrupted
+   campaign.
+3. Analyse as in A.4, with `--results experiments/results` and
+   `--tsv experiments/results/_campaign_2026-11-02-definitive.tsv`.
 
-**Footprint**: a cell takes about 15 min of load plus reset and settling
-(~18–20 min); the raw k6 events are the bulk of the disk use under
-`experiments/results/` (gitignored). `bash experiments/archive_run.sh` prunes
-them after a run; compute `slo_compliance.json` first if you prune
-([METRICS-AND-OUTPUTS.md §8](METRICS-AND-OUTPUTS.md#8-caveats)).
+Absolute latencies depend on the hardware and on the network of the testbed;
+the comparisons between arms are what the campaign is designed to measure.
 
-## 5. Figures and tables
+## Files of a run
 
-```bash
-python experiments/paper_generate_all.py
-python experiments/paper_plot_skew_robustness.py                    # Fig. 2 (off / l2 / l1l2)
-python experiments/paper_plot_hotshare.py                           # Fig. 3
-python experiments/paper_plot_skew_robustness.py --arms dmos-off dmos-l2 dmos-nca   # another DMOS arm
-python experiments/paper_plot_hotshare.py --dmos-arm dmos-nca --hot sg
-```
+| File | Content | Used by the analysis |
+|---|---|---|
+| `flash_crowd_summary.json` | k6 results: latency percentiles per phase, region and shift window; errors; load configuration | yes |
+| `dmos_live.jsonl` | one snapshot every 5 s: per cluster, replicas (target and ready), demand, forecast, CPU, served requests, RTTs | yes |
+| `dmos_config.json` | effective DMOS configuration and `config_id` (DMOS arms only) | yes (carbon replay settings) |
+| `carbon_t0` | anchor of the carbon replay (epoch seconds) | yes |
+| `dmos.log` | DMOS log (DMOS arms only) | yes (actuation delays, decision timing) |
+| `manifest.json` | provenance: commit, configuration hashes, checks before and after the run | yes (`config_id`) |
+| `config_snapshot/` | copies of `weights.yaml`, `services.yaml`, `carbon.yaml` and the sanitised `local.yaml` | yes (cluster model) |
+| `env_state_pre.json`, `env_state_post.json` | testbed state before and after the run (netem, affinity, Cilium, HPA) | no (audit) |
+| `collector_stdout.txt`, `k6_stdout.txt` | console output of the collector and of k6 | no |
+| `dmos_config_expected.json`, `hpa_baseline.json`, `untracked_snapshot/`, `git_diff.patch` | configuration check, HPA objects, files outside git at run time | no (audit) |
 
-What each script produces and how every metric is defined:
-[METRICS-AND-OUTPUTS.md](METRICS-AND-OUTPUTS.md). `results/` and
-`paper_artifacts/` stay local by design.
-
-## Known limits
-
-- Absolute p95/goodput values shift with host hardware and VM contention;
-  compare arms within one testbed, not against the paper's absolute numbers.
-- The data plane is the paper's: frontend global with `affinity: none`, so
-  requests are served by the frontend pods of all clusters in proportion to
-  their replicas; the backends stay `affinity: local`
-  ([CILIUM-CLUSTERMESH-NOTES.md](CILIUM-CLUSTERMESH-NOTES.md)).
-- Carbon intensity is replayed from 2025 traces for the zones that have a
-  file, and from built-in hourly profiles (wall-clock dependent) for the
-  others; in the NCA campaign NO, US-VA and SG used the profiles.
-- The paper's stated parameters differ from the campaign's in two places:
-  the weights (§V-B) and ρ = 2.0 (Tab. I; the code and the campaign use
-  3.0). See [publications/2026-nca-dmos.md](publications/2026-nca-dmos.md).
-- The Online Boutique manifests are taken from the upstream `main` branch at
-  install time; the image versions of a run are in its `env_state_pre.json`.
+Every `collector_stdout.txt` ends with a `UnicodeEncodeError` printed after
+the data were written (a console-encoding issue, fixed in this release); it
+does not affect the data.

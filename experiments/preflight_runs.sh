@@ -339,7 +339,7 @@ if [[ -n "$fip" ]]; then
                 /^[0-9]+[[:space:]]/ { inblk = ($0 ~ ip) ? 1 : 0 }
                 inblk && /=>/ { c++ }
                 END { print c+0 }')
-    # Paper NCA: affinity none -> il pool del frontend contiene i pod pronti di
+    # affinity none -> il pool del frontend contiene i pod pronti di
     # TUTTI i cluster (>= 6 con 1 replica per cluster).
     if [[ "${nbk:-0}" -gt 1 ]]; then
         okk "frontend: ${nbk} backend nel pool cross-cluster (affinity=${faff:-none})"

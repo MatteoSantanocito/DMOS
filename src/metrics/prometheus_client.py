@@ -26,6 +26,8 @@ logger = get_logger("PrometheusClient")
 
 # Names interpolated into PromQL label matchers (DNS-1123 labels only).
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+# A PromQL range-vector window such as 30s, 1m, 90s, 2m
+_PROM_WINDOW_RE = re.compile(r"^[1-9][0-9]*(ms|s|m|h)$")
 
 
 class PrometheusClient:
@@ -39,7 +41,7 @@ class PrometheusClient:
     """
     
     def __init__(self, url: str, timeout: int = 5, cluster_name: str = None,
-                 test_connection: bool = True):
+                 test_connection: bool = True, ingress_demand_match: str = "workload"):
         """
         Initialize Prometheus client
 
@@ -49,10 +51,13 @@ class PrometheusClient:
             cluster_name: Nome del cluster associato (per logging)
             test_connection: probe the server at construction (default). False
                 is used by the offline config dump (--dump-config-only).
+            ingress_demand_match: "workload" or "namespace", how the
+                client-side demand is matched (ClusterConfig.ingress_demand_match).
         """
         self.url = url.rstrip('/')
         self.timeout = timeout
         self.cluster_name = cluster_name or "unknown"
+        self.ingress_demand_match = ingress_demand_match
 
         # Locust URL per traffico reale (durante i test)
         self.locust_url = os.environ.get("DMOS_LOCUST_URL", "http://localhost:8089")
@@ -195,7 +200,54 @@ class PrometheusClient:
         
         available_bytes = mem_capacity - mem_usage
         return max(0.0, available_bytes / (1024**3))
-    
+
+    # ── Free resources of ONE node (the worker), from node_exporter ─────────
+    # get_cpu_available / get_memory_available_gb above sum the capacity of
+    # every node of the cluster (control plane included) and the usage of
+    # every container: divided by the worker's cores (local.yaml) the free
+    # share exceeds 1 and hardly moves with the load. The two methods below
+    # read the worker node alone; they return None when node_exporter has no
+    # series for that IP (the caller then falls back to the cluster-wide value).
+
+    @staticmethod
+    def node_instance_selector(node_ip) -> str:
+        """PromQL matcher of the node_exporter targets of one node IP, or of a
+        list of node IPs (any port)."""
+        ips = [node_ip] if isinstance(node_ip, str) else list(node_ip)
+        alt = "|".join(str(ip).strip().replace(".", "\\\\.") for ip in ips)
+        if len(ips) > 1:
+            alt = f"({alt})"
+        return f'instance=~"{alt}(:[0-9]+)?"'
+
+    def _scalar(self, query_str: str) -> Optional[float]:
+        result = self.query(query_str)
+        if result and result.get('result'):
+            try:
+                return float(result['result'][0]['value'][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                return None
+        return None
+
+    def get_node_cpu_available(self, node_ip) -> Optional[float]:
+        """Free CPU cores of the node with this IP (or of the nodes of a list
+        of IPs, summed): cores minus the non-idle CPU time rate
+        (node_exporter). None if no series."""
+        sel = self.node_instance_selector(node_ip)
+        cores = self._scalar(f'count(node_cpu_seconds_total{{mode="idle",{sel}}})')
+        busy = self._scalar(f'sum(rate(node_cpu_seconds_total{{mode!="idle",{sel}}}[2m]))')
+        if not cores or busy is None:
+            return None
+        return max(0.0, cores - busy)
+
+    def get_node_memory_available_gb(self, node_ip) -> Optional[float]:
+        """MemAvailable of the node with this IP (or of the nodes of a list of
+        IPs, summed), in GB (node_exporter). None if no series."""
+        sel = self.node_instance_selector(node_ip)
+        avail = self._scalar(f'sum(node_memory_MemAvailable_bytes{{{sel}}})')
+        if avail is None:
+            return None
+        return max(0.0, avail / (1024**3))
+
     def get_request_rate(self, service: str, namespace: str = "default") -> float:
         """
         Get request rate for service using multi-source fallback chain.
@@ -411,33 +463,75 @@ class PrometheusClient:
         )
         return 5.0  # fallback: latenza LAN senza delay simulato
 
+    def get_peer_rtts_ms(self, peer_ips: List[str]) -> Dict[str, float]:
+        """RTT (ms) from THIS cluster to each peer IP (ping_exporter), by IP.
+
+        Used by the 'reach' demand signal (score_model.reach_shares), which
+        needs the RTT between every pair of clusters, not the mean of
+        get_network_rtt_ms. Targets without a positive value are left out;
+        an unreachable Prometheus gives {}."""
+        if not peer_ips:
+            return {}
+        # dots escaped for the regex, and the backslash doubled for the PromQL
+        # string ("10\\.0" — a single "\." is an invalid escape and Prometheus
+        # rejects the query with HTTP 400, as on 30/10/2026)
+        targets_regex = "|".join(str(ip).strip().replace(".", "\\\\.") for ip in peer_ips)
+        query = f'avg by (target) (ping_rtt_mean_seconds{{target=~"{targets_regex}"}}) * 1000'
+        try:
+            result = self.query(query)
+        except Exception as e:
+            logger.debug(f"ping_exporter per-peer query exception ({self.cluster_name}): {e}")
+            return {}
+        out: Dict[str, float] = {}
+        for s in (result or {}).get("result") or []:
+            target = (s.get("metric") or {}).get("target")
+            try:
+                val = float(s["value"][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            if target and val > 0 and math.isfinite(val):
+                out[target] = val
+        return out
+
     @staticmethod
     def ingress_queries(namespace: str = "online-boutique",
                         entry_workload: str = "frontend",
                         source_workloads: Optional[List[str]] = None,
-                        server_side_fallback: bool = True) -> List[str]:
+                        server_side_fallback: bool = True,
+                        match: str = "workload",
+                        window: str = "1m") -> List[str]:
         """PromQL of the demand entering a cluster, in the order they are tried.
 
         1. client side: requests to `entry_workload` sent by clients of THIS
-           cluster (only by `source_workloads` when given);
+           cluster (only by `source_workloads` when given); with
+           match="namespace", requests to any workload of `namespace` (the
+           destination workload is unknown to Hubble when the ingress proxy
+           runs on a node without the entry pods);
         2. server side (if `server_side_fallback`): requests received by the
            entry workload from outside (`source_workload=""`), or from
            `source_workloads` when given.
+        `window` is the rate() window ("1m" historically; the predictive
+        scaler also reads a fast "30s" one, docs/PREDICTIVE-SCALER.md).
         With the defaults the queries are exactly the historical ones.
         """
         sources = list(source_workloads or [])
         for name in [namespace, entry_workload, *sources]:
             if not isinstance(name, str) or not _K8S_NAME_RE.match(name):
                 raise ValueError(f"invalid Kubernetes name in ingress query: {name!r}")
+        if match not in ("workload", "namespace"):
+            raise ValueError(f"invalid ingress demand match: {match!r}")
+        if not isinstance(window, str) or not _PROM_WINDOW_RE.match(window):
+            raise ValueError(f"invalid PromQL window: {window!r}")
         source_matcher = f',source_workload=~"{"|".join(sources)}"' if sources else ''
+        client_workload = f'destination_workload="{entry_workload}",' if match == "workload" else ''
         queries = [
             f'sum(rate(hubble_http_requests_total{{'
-            f'destination_workload="{entry_workload}",'
+            f'{client_workload}'
             f'destination_namespace="{namespace}",'
             f'reporter="client",'
             f'traffic_direction="egress"'
             f'{source_matcher}'
-            f'}}[1m]))'
+            f'}}[{window}]))'
         ]
         if server_side_fallback:
             server_source = source_matcher if sources else ',source_workload=""'
@@ -448,14 +542,15 @@ class PrometheusClient:
                 f'reporter="server",'
                 f'traffic_direction="ingress"'
                 f'{server_source}'
-                f'}}[1m]))'
+                f'}}[{window}]))'
             )
         return queries
 
     def get_ingress_rate(self, namespace: str = "online-boutique",
                          entry_workload: str = "frontend",
                          source_workloads: Optional[List[str]] = None,
-                         server_side_fallback: bool = True) -> float:
+                         server_side_fallback: bool = True,
+                         window: str = "1m") -> float:
         # DOMANDA DI ORIGINE (loop-free con io.cilium/shared-service).
         # Con shared-service il LB eBPF di Cilium puo' servire una richiesta
         # ENTRATA sull'Ingress del cluster i da un pod frontend di un ALTRO
@@ -468,8 +563,11 @@ class PrometheusClient:
         # che inviano verso il servizio d'ingresso, ovunque risieda il pod.
         # reporter="client" => il flow e' registrato sul nodo di ORIGINE.
         sources = list(source_workloads or [])
-        queries = self.ingress_queries(namespace, entry_workload, sources, server_side_fallback)
+        queries = self.ingress_queries(namespace, entry_workload, sources, server_side_fallback,
+                                       match=self.ingress_demand_match, window=window)
         source_note = f", sources={'|'.join(sources)}" if sources else ""
+        if self.ingress_demand_match != "workload":
+            source_note += f", by {self.ingress_demand_match}"
         try:
             result = self.query(queries[0])
             if result and result.get('result') and len(result['result']) > 0:

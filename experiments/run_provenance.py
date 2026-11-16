@@ -81,6 +81,7 @@ def _env_lines(snap: Optional[Dict[str, Any]], title: str) -> List[str]:
     imgs = sorted(set(str(i) for i in (v.get("cilium_images") or {}).values()))
     lines.append(f"    cilium      : {imgs}")
     lines.append(f"    HPA         : {({n: h for n, h in (v.get('hpa') or {}).items() if h}) or 'none'}")
+    lines.append(f"    Karmada     : {v.get('karmada_managed') or 'nothing managed'}")
     if v.get("deployments_not_ready"):
         lines.append(f"    not ready   : {v['deployments_not_ready']}")
     if v.get("collection_errors"):

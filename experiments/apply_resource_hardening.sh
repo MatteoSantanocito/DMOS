@@ -28,15 +28,23 @@
 #                                 → 3 fail → kill → cascata → ingress Envoy
 #                                 incastrato. Rilassate per non uccidere un pod
 #                                 throttlato-ma-vivo. (2026-06-06)
+#   - readiness period 15s → 5s, fail 6 → 18 (stessa tolleranza: 90 s di probe
+#                                 fallite prima di togliere il pod dagli endpoint):
+#                                 con period 15s un pod NUOVO diventava Ready fino a
+#                                 15 s dopo essere pronto, e lo scaling (di tutti gli
+#                                 arm che scalano) serviva lo spike in ritardo. La
+#                                 liveness resta a 15s/6 (e' quella che evita il
+#                                 kill dei pod throttlati). (2026-10-28,
+#                                 docs/PREDICTIVE-SCALER.md)
 #
 # Uso:
 #   bash experiments/apply_resource_hardening.sh           # applica
 #   bash experiments/apply_resource_hardening.sh --verify  # solo verifica
 # =============================================================================
 set -uo pipefail
-KUBECONFIG_DIR="${DMOS_KUBECONFIG_DIR:-$HOME/Desktop/dmos-iac}"
+# Cluster: experiments/lib/fleet.sh (.cache/test-env.json, o DMOS_KUBECONFIG_DIR)
+source "$(dirname "${BASH_SOURCE[0]}")/lib/fleet.sh"; fleet_load
 NS="online-boutique"
-CLUSTERS=(01 02 03 04 05 06)
 
 # MEMORIA (anti-OOM): "svc:container:mem_limit"
 MEM_TARGETS=(
@@ -49,10 +57,18 @@ MEM_TARGETS=(
 #   sostenuto a con → /healthz oltre il timeout → liveness kill → restart →
 #   picco bimodale (diag 2026-06-08: reco_restart=1 ⇒ peak 24-41%, =0 ⇒ ~5%).
 #   Node HIGH (8 vCPU) ha headroom (5×500m=2.5 core). (2026-06-08)
+#   currencyservice 200m→500m: chiamato 3.4 volte per richiesta; le connessioni
+#   gRPC dei frontend restano agganciate a un pod (il Service bilancia
+#   connessioni, non richieste), quindi le repliche nuove ricevono poco traffico
+#   e un pod resta al 50-94% di throttling sotto picco mentre gli altri stanno
+#   all'11-24% (Kubephos, 450 req/s, 28/10/2026). Il limit piu' alto da' a quel
+#   pod la CPU per servirle; vale per tutti gli arm. (2026-10-28)
 CPU_TARGETS=(
   "recommendationservice:server:500m"
+  "currencyservice:server:500m"
 )
-# LIVENESS/READINESS rilassate (container "server"): timeout 5s, period 15s, fail 6
+# LIVENESS rilassata (container "server"): timeout 5s, period 15s, fail 6
+# READINESS: timeout 4s, period 5s, fail 18 (stessa tolleranza di 90 s, Ready prima)
 PROBE_SVCS=(frontend cartservice productcatalogservice checkoutservice \
             recommendationservice currencyservice adservice shippingservice)
 
@@ -61,14 +77,14 @@ cpu_patch() { printf '{"spec":{"template":{"spec":{"containers":[{"name":"%s","r
 probe_patch() { cat <<'EOF'
 {"spec":{"template":{"spec":{"containers":[{"name":"server",
  "livenessProbe":{"timeoutSeconds":5,"periodSeconds":15,"failureThreshold":6},
- "readinessProbe":{"timeoutSeconds":5,"periodSeconds":15,"failureThreshold":6}}]}}}}
+ "readinessProbe":{"timeoutSeconds":4,"periodSeconds":5,"failureThreshold":18}}]}}}}
 EOF
 }
 
 if [[ "${1:-}" == "--verify" ]]; then
   echo "=== Verifica memoria + liveness ==="
-  for n in "${CLUSTERS[@]}"; do
-    kc="${KUBECONFIG_DIR}/kubeconfig-ms-cluster-${n}"; echo "ms-cluster-${n}:"
+  for i in "${!FLEET_NAMES[@]}"; do
+    kc="${FLEET_KCS[$i]}"; echo "${FLEET_NAMES[$i]}:"
     for t in "${MEM_TARGETS[@]}"; do IFS=: read -r svc c m <<<"$t"
       cur=$(kubectl --kubeconfig "$kc" -n "$NS" get deploy "$svc" -o jsonpath="{.spec.template.spec.containers[?(@.name=='$c')].resources.limits.memory}" 2>/dev/null)
       printf "  %-24s mem=%s (atteso %s)\n" "$svc" "${cur:-?}" "$m"
@@ -78,10 +94,10 @@ if [[ "${1:-}" == "--verify" ]]; then
 fi
 
 ok=0; fail=0
-for n in "${CLUSTERS[@]}"; do
-  kc="${KUBECONFIG_DIR}/kubeconfig-ms-cluster-${n}"
-  [[ -f "$kc" ]] || { echo "=== ms-cluster-${n} === [x] kubeconfig assente"; fail=$((fail+1)); continue; }
-  echo "=== ms-cluster-${n} ==="
+for i in "${!FLEET_NAMES[@]}"; do
+  kc="${FLEET_KCS[$i]}"
+  [[ -f "$kc" ]] || { echo "=== ${FLEET_NAMES[$i]} === [x] kubeconfig assente: $kc"; fail=$((fail+1)); continue; }
+  echo "=== ${FLEET_NAMES[$i]} ==="
   for t in "${MEM_TARGETS[@]}"; do IFS=: read -r svc c m <<<"$t"
     if kubectl --kubeconfig "$kc" -n "$NS" patch deploy "$svc" --type strategic -p "$(mem_patch "$c" "$m")" >/dev/null 2>&1
     then echo "  [ok] mem $svc=$m"; ok=$((ok+1)); else echo "  [x] mem $svc"; fail=$((fail+1)); fi

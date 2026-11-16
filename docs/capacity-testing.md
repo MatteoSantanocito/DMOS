@@ -4,9 +4,17 @@ How to empirically measure the per-replica saturation request rate
 (`lambda_max`) for each Online Boutique microservice, and how that value
 feeds into the DMOS load-pressure signal.
 
-> Status: this document consolidates `capacity-test.md` (frontend, HTTP)
-> and `backend-capacity-test.md` (gRPC backends) into a single English
-> reference. See "Migration / history" at the end of this file.
+> Status: this document consolidates two earlier documents (frontend, HTTP;
+> gRPC backends) into a single English reference. See "Migration / history"
+> at the end of this file.
+
+> **Frontend capacity used in the paper: 33 req/s per replica.** The
+> procedure below gives the 60 req/s of `config/services.yaml` (knee 75 ×
+> 0.80, §5.5–5.6). The paper's campaign ran on a Kubephos fleet whose
+> calibration (marginal CPU per request of the whole request path, see
+> [KUBEPHOS.md](KUBEPHOS.md#replica-cap)) gave **33 req/s** per frontend
+> replica; that value is written in the fleet's `local.yaml`
+> (`capacity_req_per_sec: {frontend: 33}`) and overrides `services.yaml`.
 
 ---
 
@@ -49,12 +57,12 @@ Getting it wrong distorts every sizing decision:
 
 | Use | Formula | Code |
 |---|---|---|
-| Frontend replica budget N (paper Eq. 7) and per-cluster need | `needᵢ = clip(⌈λᵢⁱⁿ / c_frontend⌉, c_min, c_max)`, `N = Σ needᵢ` | `DMOSOrchestrator.schedule_service` |
-| Backend co-scaling ratio (Eq. 11) | `max((c_frontend / c_backend) · fanout, 0.3)` | `_enforce_colocation` |
+| Frontend replica budget N and per-cluster need | `needᵢ = clip(⌈λᵢⁱⁿ / c_frontend⌉, c_min, c_max)`, `N = Σ needᵢ` (budget `total`; with `pooled`, the paper's configuration, `N = ⌈Σ λᵢⁱⁿ / c̄⌉` within the caps) | `DMOSOrchestrator.entry_budget` |
+| Backend co-scaling ratio | `max((c_frontend / c_backend) · fanout, 0.3)` | `_enforce_colocation` |
 | `request_rate_max` of a cluster | `cpu_cores × c_frontend` (e.g. 8 × 60 = 480 req/s) | `_collect_cluster_metrics` |
 | Utilization pressure Φ_pressure (legacy score path only) | `1 / (1 + exp(−10 · (λᵢ / request_rate_max − 0.7)))` | `ScoreFunctions.compute_load_score` |
 
-With the score models (e.g. `nca`) Φ_pressure is not part of the score: the
+With the score models (e.g. `reach`) Φ_pressure is not part of the score: the
 capacity matters through the budget and the co-scaling. Since
 `needᵢ = ⌈λᵢⁱⁿ / c⌉`, each frontend replica is planned to receive at most
 `c` = 80 % of its knee, the margin that absorbs measurement noise and the
@@ -386,7 +394,7 @@ The script auto-emits the YAML snippet to paste into `services.yaml`.
 
 ### 5.6 Per-cluster differences (frontend)
 
-In the original 3-cluster DMOS thesis the frontend capacity was split
+In an earlier 3-cluster setup the frontend capacity was split
 per cluster, because the test was run with `tc netem` active and each
 cluster's netem delay lowered the measurable rps. With the current
 methodology (netem off during the test, backends isolated with
@@ -406,7 +414,9 @@ frontend:
 `config_loader.get_capacity_for_cluster(name)` returns the per-cluster
 value when present and falls back to `capacity_req_per_sec` otherwise —
 the hook exists for future per-cluster splits (e.g. per-tier CPU
-limits), but none is currently configured.
+limits), but none is configured in `services.yaml`. A per-cluster
+`capacity_req_per_sec` in `local.yaml` (written by the Kubephos
+calibration: 33 req/s on the paper's fleet) takes precedence over both.
 
 Backends do **not** need a per-cluster split either: their gRPC traffic
 is intra-cluster and is not affected by inter-cluster netem.
@@ -672,8 +682,8 @@ same load. Keep the factor to stay comparable with the published runs.
 
 ### 8.4 Burst vs gradual: known sensitivity
 
-Capacity depends on the load *pattern*. Empirically (sessions of
-27/02/2026):
+Capacity depends on the load *pattern*. Empirically (earlier
+measurement sessions):
 
 | Scenario | Pattern | Knee point | Why |
 |---|---|---|---|
@@ -918,7 +928,7 @@ burst-CPU profiles suffered most:
   execution; on top of that, throttling dropped useful CPU time on
   the only thread.
 
-Final per-service settings (as tuned on the original 3-cluster thesis
+Final per-service settings (as tuned on the original 3-cluster
 testbed; the values the current fleet assumes are tracked per-service
 in the `resources_per_replica` blocks of `config/services.yaml`):
 
@@ -960,14 +970,10 @@ overwrite the patched defaults.
 
 ## 12. Migration / history <a name="12-history"></a>
 
-This document consolidates two prior Italian-language documents:
-
-* `docs/_archive/capacity-test.md` — covered the **frontend** capacity
-  test (HTTP). Source of Sections 5, 8, and 11. Last revised March 13,
-  2026.
-* `docs/_archive/backend-capacity-test.md` — covered the **backend**
-  capacity test (gRPC via ghz) and the system-level observer. Source of
-  Sections 6 and 7. Last revised April 16, 2026.
+This document consolidates two earlier Italian-language documents, not
+included in this release: the **frontend** capacity test (HTTP; source of
+Sections 5, 8 and 11) and the **backend** capacity test (gRPC via ghz) with
+the system-level observer (source of Sections 6 and 7).
 
 Where the two source documents covered the same step (knee-point
 definition, stepped-load rationale, p95 motivation), the more detailed
@@ -981,9 +987,7 @@ this consolidation, **k6 is the active tool** (`experiments/k6_capacity_test.js`
 chosen for its arrival-rate executors — one `constant-arrival-rate`
 scenario per step (Section 5.3), which controls target rps directly
 instead of through virtual-user math — and for its single
-JS file with no Python runtime dependency. Locust is still present in
-the repo as `experiments/locustfile_multiingress.py` but only for the
-multi-ingress experiment, not for capacity calibration.
+JS file with no Python runtime dependency. Locust is not used.
 
 **Terminology.** Throughout this document `λ_max` is the formula
 symbol; the on-disk field in `services.yaml` is `capacity_req_per_sec`
@@ -991,6 +995,3 @@ symbol; the on-disk field in `services.yaml` is `capacity_req_per_sec`
 refer to the same quantity. Both k6 capacity scripts apply a 0.80
 factor on top of the raw knee in their auto-emitted YAML snippet; see
 Section 8.3.
-
-The two source files are retained under `docs/_archive/` for
-traceability and are not deleted by this consolidation.

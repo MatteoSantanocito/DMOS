@@ -237,3 +237,45 @@ def test_show_and_diff_run(tmp_path, capsys):
     assert rp.main(["diff", str(dirs[0]), str(dirs[1])]) == 0
     out = capsys.readouterr().out
     assert "level1.warm.gate.gamma" in out
+
+
+def _start_shift(run_dir, label):
+    assert wm.main(["start", "--run-dir", str(run_dir), "--label", label, "--no-dmos",
+                    "--peak-rps", "350", "--spike-weights", "W1=85,W2=3",
+                    "--shift-weights", "W1=3,W5=85", "--shift-at", "450", "--shift-ramp", "30",
+                    "--shift-region", "ms-cluster-05", "--phase-times", "180,300,600,720,900"]) == 0
+
+
+def _summary_shift(run_dir, shift):
+    _write(run_dir / "flash_crowd_summary.json",
+           {"validity": {"run_valid": True, "dropped_pct": 0.0}, "config": {"shift": shift}})
+
+
+@pytest.mark.parametrize("want,got,code", [
+    (True, {"enabled": True, "at_s": 450}, None),
+    (True, {"enabled": False}, "shift_not_applied"),
+    (True, None, "shift_not_applied"),                       # old k6 script: no field
+    (True, {"enabled": True, "at_s": 420}, "shift_not_applied"),
+    (False, {"enabled": True, "at_s": 450}, "shift_unexpected"),
+    (False, {"enabled": False}, None),
+])
+def test_moving_hot_spot_is_checked(tmp_path, want, got, code):
+    d = tmp_path / "results" / "20261101_120000_dmos-off__con-tosg"
+    d.mkdir(parents=True)
+    if want:
+        _start_shift(d, "dmos-off__con-tosg")
+    else:
+        _start(d, "dmos-off__con-tosg", no_dmos=True)
+    _env(d, "pre"); _env(d, "post"); _summary_shift(d, got)
+    m = _finish(d)
+    codes = _codes(m)
+    assert ({"shift_not_applied", "shift_unexpected"} & codes) == ({code} if code else set())
+    if want:
+        assert m["config"]["shift"] == {"weights": "W1=3,W5=85", "at_s": 450, "ramp_s": 30,
+                                        "region": "ms-cluster-05"}
+
+
+def test_static_run_records_no_shift(run_dir):
+    _start(run_dir, "dmos-l1l2__con")
+    m = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert m["config"]["shift"] is None

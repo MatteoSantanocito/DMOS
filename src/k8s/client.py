@@ -196,7 +196,27 @@ class KubernetesClient:
                 namespace=namespace
             )
             return dep.spec.replicas
-            
+
         except Exception as e:
             logger.error(f"Error reading replicas: {e}")
+            return None
+
+    def get_deployment_ready_replicas(
+        self,
+        cluster: str,
+        deployment: str,
+        namespace: str = "online-boutique"
+    ) -> Optional[int]:
+        """Ready replicas (status.readyReplicas) of a deployment, or None.
+
+        The predictive scaler uses it to measure how long the replicas it
+        requests take to serve (actuation lag, docs/PREDICTIVE-SCALER.md)."""
+        if cluster not in self.api_clients:
+            return None
+        try:
+            dep = self.api_clients[cluster].read_namespaced_deployment(
+                name=deployment, namespace=namespace)
+            return int(dep.status.ready_replicas or 0)
+        except Exception as e:
+            logger.error(f"Error reading ready replicas: {e}")
             return None

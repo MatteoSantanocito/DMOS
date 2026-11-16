@@ -48,6 +48,28 @@
     proxmox-k3s). Se hai installato kube-prometheus-stack con un nome
     diverso, sovrascrivi qui.
 
+.PARAMETER PrometheusNamespace
+    Namespace di kube-prometheus-stack, dove va il ServiceMonitor di Hubble.
+    Default: observability (proxmox-k3s). Kubephos: kubephos-observability.
+.PARAMETER KubeconfigFilter
+    Pattern dei file kubeconfig in KubeconfigDir. Default:
+    kubeconfig-ms-cluster-*. Il nome del cluster e' il nome del file senza
+    il prefisso `kubeconfig-`.
+.PARAMETER WorkloadNodeSelector
+    `chiave=valore`: se impostato, tutte le Deployment di online-boutique
+    ricevono questo nodeSelector (per tenere il workload sui nodi app quando il
+    cluster ha nodi di servizio senza taint, es. Kubephos:
+    kubephos.dev/pool=app). Default: vuoto (nessun nodeSelector).
+.PARAMETER IngressMode
+    `ingress` (default): Cilium Ingress controller su NodePort IngressNodePort
+    (deployments/ingress-frontend-cilium.yaml), come il testbed di riferimento.
+    `gateway`: Gateway API gia' attiva nel Cilium del cluster
+    (deployments/gateway-frontend.yaml); l'upgrade di Cilium non accende il
+    controller Ingress e lo script stampa la NodePort del Gateway di ogni
+    cluster, da mettere in config/local.yaml come `ingress_port`.
+.PARAMETER GatewayClass
+    GatewayClass del Gateway con -IngressMode gateway. Default:
+    kubephos-cilium (Kubephos: Service di tipo NodePort).
 .PARAMETER SkipCiliumUpgrade
     Salta la Fase 3 (helm upgrade Cilium). Utile se hai già fatto
     l'upgrade manualmente o vuoi solo applicare i manifest.
@@ -61,8 +83,9 @@
 
 .PARAMETER CiliumChartVersion
     Versione del chart Helm di Cilium da usare per l'upgrade.
-    Lasciare vuoto = usa la versione già installata (`--reuse-values`
-    fa quello). Default: vuoto.
+    Lasciare vuoto = la versione gia' installata su ciascun cluster, letta da
+    `helm list` e passata a `--version` (senza `--version` helm prenderebbe
+    l'ultimo chart del repo, cioe' un upgrade di Cilium). Default: vuoto.
 
 .EXAMPLE
     .\setup-dmos-on-clusters.ps1
@@ -87,6 +110,12 @@ param(
     [string] $DeploymentsDir         = (Join-Path $PSScriptRoot "..\deployments"),
     [int]    $IngressNodePort        = 30080,
     [string] $PrometheusReleaseLabel = "prometheus-stack",
+    [string] $PrometheusNamespace    = "observability",
+    [string] $KubeconfigFilter       = "kubeconfig-ms-cluster-*",
+    [string] $WorkloadNodeSelector   = "",
+    [ValidateSet('ingress', 'gateway')]
+    [string] $IngressMode            = "ingress",
+    [string] $GatewayClass           = "kubephos-cilium",
     [string] $CiliumChartVersion     = "",
     [switch] $SkipCiliumUpgrade,
     [switch] $SkipOnlineBoutique,
@@ -142,7 +171,7 @@ Write-Ok "DeploymentsDir trovata: $DeploymentsDir"
 # `-Force` include anche i file con attributo Hidden (su Windows il tool
 # proxmox-k3s a volte salva i file con flag Hidden — quirk noto di Go su NTFS
 # che capita quando si sovrascrivono file appena cancellati).
-$clusters = Get-ChildItem -Path $KubeconfigDir -Filter "kubeconfig-ms-cluster-*" -File -Force |
+$clusters = Get-ChildItem -Path $KubeconfigDir -Filter $KubeconfigFilter -File -Force |
     Where-Object { $_.Name -notmatch '\.(OLD|bak|backup)$' } |
     Sort-Object Name |
     ForEach-Object {
@@ -154,7 +183,7 @@ $clusters = Get-ChildItem -Path $KubeconfigDir -Filter "kubeconfig-ms-cluster-*"
     }
 
 if ($clusters.Count -eq 0) {
-    Write-Fail "Nessun file 'kubeconfig-ms-cluster-*' trovato in $KubeconfigDir"
+    Write-Fail "Nessun file '$KubeconfigFilter' trovato in $KubeconfigDir"
     exit 1
 }
 
@@ -218,6 +247,12 @@ hubble:
       enabled: true
       labels:
         release: $PrometheusReleaseLabel
+"@
+    if ($IngressMode -eq 'ingress') {
+        # Con -IngressMode gateway l'ingresso e' un Gateway (Gateway API gia'
+        # attiva nel Cilium del cluster): il controller Ingress resta spento.
+        $valuesYaml += @"
+
 ingressController:
   enabled: true
   loadbalancerMode: shared
@@ -225,6 +260,7 @@ ingressController:
     type: NodePort
     insecureNodePort: $IngressNodePort
 "@
+    }
 
     # Scrivi in un file temporaneo (cleanup automatico in finally)
     $tmpValues = [System.IO.Path]::GetTempFileName()
@@ -245,9 +281,19 @@ ingressController:
                 '--kubeconfig', $c.Kubeconfig,
                 '-f', $tmpValuesYaml
             )
-            if ($CiliumChartVersion) {
-                $args += @('--version', $CiliumChartVersion)
+            $chartVersion = $CiliumChartVersion
+            if (-not $chartVersion) {
+                # Versione installata: senza --version helm userebbe l'ultimo
+                # chart del repo e aggiornerebbe Cilium.
+                $rel = helm list -n kube-system --kubeconfig $c.Kubeconfig -f '^cilium$' -o json | ConvertFrom-Json
+                if ($LASTEXITCODE -ne 0 -or -not $rel -or $rel[0].chart -notmatch '^cilium-(.+)$') {
+                    Write-Fail "Non trovo la release Helm 'cilium' in kube-system su $($c.Name): passa -CiliumChartVersion"
+                    exit 1
+                }
+                $chartVersion = $Matches[1]
             }
+            Write-Step "Chart cilium $chartVersion (versione mantenuta)"
+            $args += @('--version', $chartVersion)
 
             Write-Step "helm upgrade (values from $($tmpValuesYaml | Split-Path -Leaf))..."
             & helm @args
@@ -323,6 +369,27 @@ if (-not $SkipOnlineBoutique) {
         kubectl --kubeconfig $c.Kubeconfig -n online-boutique apply -f $obUrl
         if ($LASTEXITCODE -ne 0) { Write-Fail "Apply Online Boutique fallito"; exit 1 }
 
+        if ($WorkloadNodeSelector) {
+            if ($WorkloadNodeSelector -notmatch '^([^=\s]+)=([^=\s]*)$') {
+                Write-Fail "-WorkloadNodeSelector deve essere chiave=valore, non '$WorkloadNodeSelector'"
+                exit 1
+            }
+            $patch = @{ spec = @{ template = @{ spec = @{ nodeSelector = @{ $Matches[1] = $Matches[2] } } } } } |
+                ConvertTo-Json -Depth 6 -Compress
+            $patchFile = [System.IO.Path]::GetTempFileName()
+            try {
+                Set-Content -Path $patchFile -Value $patch -Encoding ASCII
+                $deps = kubectl --kubeconfig $c.Kubeconfig -n online-boutique get deployments -o name
+                foreach ($d in $deps) {
+                    kubectl --kubeconfig $c.Kubeconfig -n online-boutique patch $d --type merge --patch-file $patchFile | Out-Null
+                    if ($LASTEXITCODE -ne 0) { Write-Fail "nodeSelector su $d fallito"; exit 1 }
+                }
+            } finally {
+                Remove-Item $patchFile -Force -ErrorAction SilentlyContinue
+            }
+            Write-Ok "nodeSelector $WorkloadNodeSelector su $(@($deps).Count) Deployment"
+        }
+
         Write-Ok "Online Boutique applicato su $($c.Name)"
     }
 } else {
@@ -338,7 +405,7 @@ if (-not $SkipDmosManifests) {
         '00-namespace.yaml',
         'cnp-frontend-l7.yaml',
         'cnp-backends-l7.yaml',
-        'ingress-frontend-cilium.yaml',
+        $(if ($IngressMode -eq 'gateway') { 'gateway-frontend.yaml' } else { 'ingress-frontend-cilium.yaml' }),
         'global-service-frontend.yaml',
         'global-service-backends.yaml',
         'hubble-servicemonitor-monitoring.yaml'
@@ -358,13 +425,49 @@ if (-not $SkipDmosManifests) {
         Write-Step "[$($c.Name)] Apply dei manifest..."
         foreach ($m in $manifests) {
             $p = Join-Path $DeploymentsDir $m
-            kubectl --kubeconfig $c.Kubeconfig apply -f $p
+            if ($m -eq 'hubble-servicemonitor-monitoring.yaml') {
+                # Namespace e label del Prometheus di questo setup
+                $sm = (Get-Content -Raw $p) `
+                    -replace '(?m)^(\s*namespace:\s*)observability\s*$', "`${1}$PrometheusNamespace" `
+                    -replace '(?m)^(\s*release:\s*)prometheus-stack\s*$', "`${1}$PrometheusReleaseLabel"
+                $sm | kubectl --kubeconfig $c.Kubeconfig apply -f -
+            } elseif ($m -eq 'gateway-frontend.yaml') {
+                # GatewayClass di questo setup
+                (Get-Content -Raw $p) `
+                    -replace '(?m)^(\s*gatewayClassName:\s*)\S+\s*$', "`${1}$GatewayClass" |
+                    kubectl --kubeconfig $c.Kubeconfig apply -f -
+            } else {
+                kubectl --kubeconfig $c.Kubeconfig apply -f $p
+            }
             if ($LASTEXITCODE -ne 0) {
                 Write-Fail "Apply $m fallito su $($c.Name)"
                 exit 1
             }
         }
         Write-Ok "Tutti i manifest applicati su $($c.Name)"
+    }
+
+    if ($IngressMode -eq 'gateway') {
+        # La NodePort del Service del Gateway la assegna Kubernetes: va scritta
+        # in config/local.yaml (ingress_port) prima di render-runtime-files.sh.
+        Write-Section "Gateway: NodePort da mettere in config/local.yaml"
+        foreach ($c in $clusters) {
+            kubectl --kubeconfig $c.Kubeconfig -n online-boutique wait --for=condition=Programmed `
+                gateway/frontend-gateway --timeout=180s | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "[$($c.Name)] Gateway frontend-gateway non Programmed entro 180 s"
+                kubectl --kubeconfig $c.Kubeconfig -n online-boutique describe gateway frontend-gateway
+                exit 1
+            }
+            $np = kubectl --kubeconfig $c.Kubeconfig -n online-boutique get svc cilium-gateway-frontend-gateway `
+                -o jsonpath='{.spec.ports[0].nodePort}'
+            if ($LASTEXITCODE -ne 0 -or -not $np) {
+                Write-Fail "[$($c.Name)] Service cilium-gateway-frontend-gateway senza NodePort"
+                exit 1
+            }
+            Write-Host ("    {0,-24} ingress_port: {1}" -f $c.Name, $np) -ForegroundColor Green
+        }
+        Write-Warn "Copia ogni ingress_port nel cluster corrispondente di config/local.yaml, poi: bash scripts/render-runtime-files.sh"
     }
 } else {
     Write-Section "Fase 4b — Skipped (flag -SkipDmosManifests)"
@@ -387,19 +490,30 @@ foreach ($c in $clusters) {
     }
 
     # ServiceMonitor Hubble
-    $sm = kubectl --kubeconfig $c.Kubeconfig -n observability get servicemonitor hubble-metrics -o name 2>$null
+    $sm = kubectl --kubeconfig $c.Kubeconfig -n $PrometheusNamespace get servicemonitor hubble-metrics -o name 2>$null
     if ($sm) {
-        Write-Host "    ✓ ServiceMonitor hubble-metrics in observability" -ForegroundColor Green
+        Write-Host "    ✓ ServiceMonitor hubble-metrics in $PrometheusNamespace" -ForegroundColor Green
     } else {
-        Write-Host "    ⚠ ServiceMonitor mancante in observability"    -ForegroundColor Yellow
+        Write-Host "    ⚠ ServiceMonitor mancante in $PrometheusNamespace"    -ForegroundColor Yellow
     }
 
-    # Cilium Ingress class
-    $ingClass = kubectl --kubeconfig $c.Kubeconfig get ingressclass cilium -o name 2>$null
-    if ($ingClass) {
-        Write-Host "    ✓ IngressClass cilium presente"                -ForegroundColor Green
+    if ($IngressMode -eq 'gateway') {
+        # Gateway API
+        $gwOk = kubectl --kubeconfig $c.Kubeconfig -n online-boutique get gateway frontend-gateway `
+            -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>$null
+        if ($gwOk -eq 'True') {
+            Write-Host "    ✓ Gateway frontend-gateway Programmed"       -ForegroundColor Green
+        } else {
+            Write-Host "    ⚠ Gateway frontend-gateway non Programmed"   -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "    ⚠ IngressClass cilium mancante"                -ForegroundColor Yellow
+        # Cilium Ingress class
+        $ingClass = kubectl --kubeconfig $c.Kubeconfig get ingressclass cilium -o name 2>$null
+        if ($ingClass) {
+            Write-Host "    ✓ IngressClass cilium presente"                -ForegroundColor Green
+        } else {
+            Write-Host "    ⚠ IngressClass cilium mancante"                -ForegroundColor Yellow
+        }
     }
 
     # Online Boutique pods

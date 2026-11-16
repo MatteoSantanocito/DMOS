@@ -43,14 +43,13 @@ KNOWN_SERVICES = [
 # Cluster topology read from .cache/test-env.json (rendered from config/local.yaml).
 import json as _json
 _env_path = Path(__file__).resolve().parent.parent / ".cache" / "test-env.json"
+# A missing file stops main(), not the import: the helpers below stay
+# importable (and testable) on a clone without the runtime files.
 try:
     with open(_env_path, "r", encoding="utf-8") as _f:
         _env = _json.load(_f)
 except FileNotFoundError:
-    raise SystemExit(
-        f"{_env_path} not found. Run 'bash scripts/render-runtime-files.sh' "
-        "first (it generates this file from config/local.yaml)."
-    )
+    _env = {"clusters": [], "_missing": True}
 KNOWN_CLUSTERS = [c["name"] for c in _env["clusters"]]
 CLUSTER_PROMETHEUS = {c["name"]: c["prometheus_url"] for c in _env["clusters"]}
 NAMESPACE = "online-boutique"
@@ -116,13 +115,23 @@ def scrape_dmos() -> dict:
         "sched_duration_sum": {},   # {service: float}
         "sched_duration_count": {}, # {service: int}
         "config_id": None,          # provenance: dmos_config_info{config_id=...}
+        # predictive scaler (DMOS_SCALER=predictive): per-cluster signals + scalars
+        "ps": {"fast_rps": {}, "forecast_rps": {}, "demand_rps": {}, "need_replicas": {}},
     }
+    ps_cluster = {"dmos_ps_fast_rps{": "fast_rps", "dmos_ps_forecast_rps{": "forecast_rps",
+                  "dmos_ps_demand_rps{": "demand_rps", "dmos_ps_need_replicas{": "need_replicas"}
+    ps_scalar = {"dmos_ps_horizon_seconds ": "horizon_s",
+                 "dmos_ps_actuation_lag_seconds ": "actuation_lag_s", "dmos_ps_burst ": "burst"}
 
     for line in raw.split('\n'):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
         try:
+            hit = next((k for k in ps_scalar if line.startswith(k)), None)
+            if hit:
+                data["ps"][ps_scalar[hit]] = float(line.split()[-1])
+                continue
             val_m = re.search(r'}\s+([\d\.eE\+\-]+)$', line)
             if not val_m:
                 continue
@@ -174,6 +183,12 @@ def scrape_dmos() -> dict:
                 if s:
                     data["sched_duration_count"][s.group(1)] = int(val)
 
+            elif any(line.startswith(k) for k in ps_cluster):
+                c = re.search(r'cluster="([^"]+)"', line)
+                if c:
+                    key = ps_cluster[next(k for k in ps_cluster if line.startswith(k))]
+                    data["ps"][key][c.group(1)] = round(val, 2)
+
             elif 'dmos_config_info{' in line:
                 cid = re.search(r'config_id="([^"]+)"', line)
                 if cid and val == 1.0:
@@ -183,6 +198,90 @@ def scrape_dmos() -> dict:
             continue
 
     return data
+
+
+# ─── Whole-application accounting helpers ───────────────────────────────────
+
+# Pods of a Deployment are named <deployment>-<replicaset hash>-<pod suffix>.
+_POD_RE = re.compile(r'^(?P<svc>.+)-[a-z0-9]{6,10}-[a-z0-9]{5}$')
+
+
+def pod_service(pod: str) -> str:
+    """Service (Deployment) a pod belongs to: 'frontend-7d9c8b6f4-x2k9p' ->
+    'frontend'. Names that do not follow the Deployment pattern are kept."""
+    m = _POD_RE.match(pod or '')
+    return m.group('svc') if m else (pod or '')
+
+
+def services_all_from_series(cpu_series: list, ready_series: list) -> dict:
+    """{service: {'cpu_cores', 'ready_pods'}} from per-pod series
+    [(labels, value), ...] of CPU rate and readiness."""
+    out: dict = {}
+    for labels, v in cpu_series:
+        svc = pod_service(labels.get('pod', ''))
+        if not svc:
+            continue
+        d = out.setdefault(svc, {'cpu_cores': 0.0, 'ready_pods': 0})
+        d['cpu_cores'] = round(d['cpu_cores'] + float(v), 4)
+    for labels, v in ready_series:
+        svc = pod_service(labels.get('pod', ''))
+        if not svc:
+            continue
+        d = out.setdefault(svc, {'cpu_cores': 0.0, 'ready_pods': 0})
+        d['ready_pods'] += int(round(float(v)))
+    return out
+
+
+class DmosProcessSampler:
+    """CPU (cores, averaged between two samples) and memory of the local DMOS
+    process(es): every process whose command line runs `src.dmos_main` (on
+    Windows a venv launcher and its child both match: they are summed).
+    Needs psutil; without it, or without a DMOS process, sample() is None."""
+
+    def __init__(self):
+        try:
+            import psutil  # noqa: F401
+            self._psutil = psutil
+        except ImportError:
+            self._psutil = None
+        self._last = None   # (wall time, total cpu seconds)
+
+    def _procs(self):
+        ps = self._psutil
+        found = []
+        for p in ps.process_iter(['cmdline']):
+            try:
+                cmd = ' '.join(p.info.get('cmdline') or [])
+            except (ps.NoSuchProcess, ps.AccessDenied):
+                continue
+            if 'src.dmos_main' in cmd and '--dump-config-only' not in cmd:
+                found.append(p)
+        return found
+
+    def sample(self):
+        if self._psutil is None:
+            return None
+        ps = self._psutil
+        cpu_s, rss, threads, n = 0.0, 0, 0, 0
+        for p in self._procs():
+            try:
+                t = p.cpu_times()
+                cpu_s += t.user + t.system
+                rss += p.memory_info().rss
+                threads += p.num_threads()
+                n += 1
+            except (ps.NoSuchProcess, ps.AccessDenied):
+                continue
+        if n == 0:
+            self._last = None
+            return None
+        now = time.time()
+        cores = None
+        if self._last is not None and now > self._last[0] and cpu_s >= self._last[1]:
+            cores = round((cpu_s - self._last[1]) / (now - self._last[0]), 4)
+        self._last = (now, cpu_s)
+        return {"cpu_cores": cores, "cpu_seconds_total": round(cpu_s, 2),
+                "rss_mb": round(rss / 1024**2, 1), "threads": threads, "processes": n}
 
 
 # ─── Per-Cluster Resource Scraper ───────────────────────────────────────────
@@ -227,6 +326,17 @@ def scrape_cluster(cluster: str, prom_url: str) -> dict:
         f'}}[1m]))')
     # Node-level CPU
     tasks[('cl', 'node_cpu')] = '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m]))'
+    # Sustainability / efficiency accounting (all the application, not only
+    # KNOWN_SERVICES): CPU and memory of every container of the namespace,
+    # ready pods of every service, busy and total cores of the nodes.
+    tasks[('cl', 'app_cpu')] = (
+        f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",container!="",container!="POD"}}[1m]))')
+    tasks[('cl', 'app_mem')] = (
+        f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}})')
+    tasks[('cl', 'app_pods')] = (
+        f'sum(kube_pod_status_ready{{namespace="{ns}",condition="true"}})')
+    tasks[('cl', 'node_busy')] = 'sum(rate(node_cpu_seconds_total{mode!="idle"}[1m]))'
+    tasks[('cl', 'node_cores')] = 'count(node_cpu_seconds_total{mode="idle"})'
 
     # Esegui tutte le query in parallelo
     vals: dict = {}
@@ -258,6 +368,23 @@ def scrape_cluster(cluster: str, prom_url: str) -> dict:
     result["frontend_net_bytes_s"] = round(fe_ingress, 1) if fe_ingress is not None else None
     node_cpu = vals.get(('cl', 'node_cpu'))
     result["node_cpu_pct"] = round(node_cpu * 100, 1) if node_cpu is not None else None
+
+    def _r(key, scale=1.0, digits=4):
+        v = vals.get(('cl', key))
+        return round(v * scale, digits) if v is not None else None
+    result["app_cpu_cores"] = _r('app_cpu')
+    result["app_memory_mb"] = _r('app_mem', 1 / 1024**2, 1)
+    result["app_ready_pods"] = _r('app_pods', digits=0)
+    result["node_cpu_busy_cores"] = _r('node_busy')
+    result["node_cpu_cores"] = _r('node_cores', digits=0)
+
+    # Per-service CPU and ready pods for EVERY service of the namespace
+    # (KNOWN_SERVICES above covers only five): one query each, grouped by pod.
+    result["services_all"] = services_all_from_series(
+        _prom_query_series(prom_url,
+            f'sum by (pod) (rate(container_cpu_usage_seconds_total{{namespace="{ns}",container!="",container!="POD"}}[1m]))'),
+        _prom_query_series(prom_url,
+            f'sum by (pod) (kube_pod_status_ready{{namespace="{ns}",condition="true"}})'))
 
     # ── L7 latency decomposition data (per la figura "latency budget") ──────
     # (a) processing: p95 L7 per coppia source→destination workload interna
@@ -325,6 +452,9 @@ def build_snapshot(ts_iso: str, elapsed_s: float, dmos: dict, clusters: dict, no
         # for --no-dmos arms or a DMOS build predating provenance)
         "dmos_config_id": dmos.get("config_id"),
     }
+    ps = dmos.get("ps") or {}
+    if ps.get("demand_rps") or "horizon_s" in ps:
+        snap["predictive_scaler"] = ps
 
     # DMOS internals (per-service, per-cluster)
     services = {}
@@ -392,6 +522,13 @@ def build_snapshot(ts_iso: str, elapsed_s: float, dmos: dict, clusters: dict, no
             # Dati per la figura latency-budget (rete vs processing):
             "l7_edge_p95_ms": cd.get("l7_edge_p95_ms", {}),
             "ping_rtt_ms": cd.get("ping_rtt_ms", {}),
+            # Whole-application accounting (sustainability / efficiency)
+            "app_cpu_cores": cd.get("app_cpu_cores"),
+            "app_memory_mb": cd.get("app_memory_mb"),
+            "app_ready_pods": cd.get("app_ready_pods"),
+            "node_cpu_busy_cores": cd.get("node_cpu_busy_cores"),
+            "node_cpu_cores": cd.get("node_cpu_cores"),
+            "services_all": cd.get("services_all", {}),
         }
         if cd.get("frontend_net_bytes_s") is not None:
             fe_bytes[cl] = cd["frontend_net_bytes_s"]
@@ -486,6 +623,11 @@ def main():
                         help="Percorso esatto del file JSONL di output "
                              "(default: results/<ts>_<scenario>_dmos_live.jsonl)")
     args = parser.parse_args()
+    if _env.get("_missing"):
+        raise SystemExit(
+            f"{_env_path} not found. Run 'bash scripts/render-runtime-files.sh' "
+            "first (it generates this file from config/local.yaml)."
+        )
 
     now = datetime.now()
     prefix = now.strftime("%H%M%S_%Y%m%d")
@@ -511,6 +653,7 @@ def main():
 
     t0 = time.time()
     i = 0
+    dmos_proc = DmosProcessSampler() if not args.no_dmos else None
 
     # Loop guidato dal WALL-CLOCK, non da un conteggio fisso di iterazioni.
     # Cosi' il collector termina sempre a ~args.duration secondi anche se i
@@ -535,6 +678,11 @@ def main():
             clusters_data = scrape_all_clusters()
 
             snap = build_snapshot(ts, elapsed, dmos_data, clusters_data, args.no_dmos)
+            # Unambiguous wall clock (the ISO timestamp above is local time)
+            # for aligning the snapshot with the carbon replay anchor.
+            snap["epoch_s"] = round(t0 + elapsed, 3)
+            if dmos_proc is not None:
+                snap["dmos_process"] = dmos_proc.sample()
 
             f.write(json.dumps(snap) + '\n')
             f.flush()
@@ -550,7 +698,7 @@ def main():
                 time.sleep(wait)
 
     print(f"\n{'='*60}")
-    print(f"  Done! {i} snapshot in {time.time()-t0:.0f}s → {out_file}")
+    print(f"  Done! {i} snapshot in {time.time()-t0:.0f}s -> {out_file}")
     print(f"{'='*60}")
 
 

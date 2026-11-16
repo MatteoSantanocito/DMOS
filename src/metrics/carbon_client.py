@@ -12,6 +12,7 @@ import csv
 import glob
 import math
 import os
+import time
 import requests
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
@@ -168,6 +169,7 @@ class CarbonClient:
         self._trace_data: Dict[str, List[Tuple[float, float]]] = {}  # zone -> [(epoch_s, ci)]
         self._trace_missing: set = set()   # zone codes con file mancante (warn una volta)
         self._trace_t0: Optional[datetime] = None  # ancora real-time del replay (primo accesso)
+        self._trace_t0_shared: Optional[float] = None  # ancora condivisa (DMOS_CARBON_T0_FILE), epoch s
 
         logger.info(f"Carbon client initialized with provider: {self.provider}")
         
@@ -396,28 +398,80 @@ class CarbonClient:
         Oltre la fine della traccia si avvolge (modulo) sulla finestra disponibile.
         Interpolazione lineare fra i due campioni orari adiacenti.
         Fallback al provider 'realistic' se la traccia manca.
+
+        Ancora condivisa (DMOS_CARBON_T0_FILE): se la variabile punta a un file
+        che contiene un epoch (s), t0 è quell'istante. L'harness lo scrive
+        all'avvio del carico, così DMOS e l'analisi offline usano la stessa
+        timeline di CI in ogni run, qualunque sia il ritardo tra l'avvio di
+        DMOS e quello del carico. Finché il file non esiste vale l'ancora
+        provvisoria (primo accesso), come senza variabile.
         """
-        if region_code not in self._trace_data:
-            self._trace_data[region_code] = self._load_trace_csv(region_code)
-        series = self._trace_data[region_code]
-        if not series:
+        if self.trace_series(region_code) is None:
             if region_code not in self._trace_missing:
                 self._trace_missing.add(region_code)
                 logger.warning(f"Trace {region_code}: assente → fallback 'realistic'")
             return self._get_realistic_value(region_code)
 
-        if self._trace_t0 is None:
-            self._trace_t0 = datetime.now()
-            # Provenance: the anchor fixes the whole replay of this run
-            # (trace_time = window_start + speedup·(now − t0)); logging it
-            # lets the run's carbon timeline be reconstructed offline.
-            logger.info(
-                "Trace replay anchored: t0=%s (local), window_start=%s, "
-                "speedup=%s" % (self._trace_t0.isoformat(timespec='seconds'),
-                                self._trace_cfg.get('window_start'),
-                                self._trace_cfg.get('speedup', 1.0)))
-        elapsed = (datetime.now() - self._trace_t0).total_seconds()
+        shared = self._shared_anchor_epoch()
+        if shared is not None:
+            elapsed = time.time() - shared
+        else:
+            if self._trace_t0 is None:
+                self._trace_t0 = datetime.now()
+                # Provenance: the anchor fixes the whole replay of this run
+                # (trace_time = window_start + speedup·(now − t0)); logging it
+                # lets the run's carbon timeline be reconstructed offline.
+                logger.info(
+                    "Trace replay anchored: t0=%s (local), window_start=%s, "
+                    "speedup=%s" % (self._trace_t0.isoformat(timespec='seconds'),
+                                    self._trace_cfg.get('window_start'),
+                                    self._trace_cfg.get('speedup', 1.0)))
+            elapsed = (datetime.now() - self._trace_t0).total_seconds()
 
+        value = self.trace_value_at(region_code, elapsed)
+        speedup = float(self._trace_cfg.get('speedup', 1.0))
+        logger.info(f"Trace CI {region_code}: {value} gCO2/kWh "
+                    f"(elapsed={elapsed:.0f}s, speedup={speedup:g})")
+        return value
+
+    def _shared_anchor_epoch(self) -> Optional[float]:
+        """Epoch (s) of the shared replay anchor, read from the file named by
+        DMOS_CARBON_T0_FILE; None while the variable is unset or the file is
+        missing/unreadable. Once read, the value is kept for the whole run."""
+        if self._trace_t0_shared is not None:
+            return self._trace_t0_shared
+        path = os.environ.get('DMOS_CARBON_T0_FILE')
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding='utf-8') as f:
+                epoch = float(f.read().strip().split()[0])
+        except (OSError, ValueError, IndexError):
+            return None
+        self._trace_t0_shared = epoch
+        logger.info("Trace replay anchored to the shared t0 %s (epoch %.3f, from %s), "
+                    "window_start=%s, speedup=%s" % (
+                        datetime.fromtimestamp(epoch).isoformat(timespec='seconds'),
+                        epoch, path, self._trace_cfg.get('window_start'),
+                        self._trace_cfg.get('speedup', 1.0)))
+        return epoch
+
+    def trace_series(self, region_code: str) -> Optional[List[Tuple[float, float]]]:
+        """Hourly (epoch_s, CI) series of a region's trace (loaded once), or
+        None when there is no trace for it."""
+        if region_code not in self._trace_data:
+            self._trace_data[region_code] = self._load_trace_csv(region_code)
+        return self._trace_data[region_code] or None
+
+    def trace_value_at(self, region_code: str, elapsed_s: float) -> Optional[float]:
+        """CI (gCO2eq/kWh) of the trace replay `elapsed_s` seconds after the
+        anchor (negative values are allowed: before the anchor). Pure function
+        of the configuration and the trace file: the offline analysis uses it
+        to rebuild the CI timeline DMOS saw. None when there is no trace."""
+        series = self.trace_series(region_code)
+        if series is None:
+            return None
+        elapsed = float(elapsed_s)
         speedup = float(self._trace_cfg.get('speedup', 1.0))
         ws_raw = self._trace_cfg.get('window_start')
         ws_dt = self._parse_dt(ws_raw) if ws_raw else None
@@ -442,10 +496,7 @@ class CarbonClient:
             frac = 0.0 if t1_ == t0_ else (trace_t - t0_) / (t1_ - t0_)
             value = c0_ + frac * (c1_ - c0_)
 
-        value = round(value, 1)
-        logger.info(f"Trace CI {region_code}: {value} gCO2/kWh "
-                    f"(elapsed={elapsed:.0f}s, speedup={speedup:g})")
-        return value
+        return round(value, 1)
 
     def _get_mock_value(self, region_code: str) -> Optional[float]:
         """

@@ -45,7 +45,7 @@ SCHEMA_VERSION = 2
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILES = ("weights.yaml", "services.yaml", "carbon.yaml")
 # local.yaml keys never copied into the run directory (addresses, credentials)
-SENSITIVE_CLUSTER_KEYS = ("ip", "kubeconfig_path", "server", "estimator_url")
+SENSITIVE_CLUSTER_KEYS = ("ip", "worker_ips", "kubeconfig_path", "server", "estimator_url")
 SENSITIVE_TOP_KEYS = ("ssh", "alertmanager")
 
 
@@ -91,7 +91,10 @@ def git(*args: str) -> Optional[str]:
 
 
 def num(text: str):
-    """argparse type: keep ints as ints (schema-1 wrote 350, not 350.0)."""
+    """argparse type: keep ints as ints (schema-1 wrote 350, not 350.0);
+    an empty value (variable not set by the caller) is None."""
+    if text == "":
+        return None
     try:
         return int(text)
     except ValueError:
@@ -228,6 +231,10 @@ def cmd_start(a: argparse.Namespace) -> int:
             "phase_times_s": a.phase_times,
             "test_duration_s": a.test_duration,
             "vu_factor": a.vu_factor,
+            # hot spot that moves during the peak (regimes <demand>-to<cluster>);
+            # None = the hot spot stays where it is
+            "shift": ({"weights": a.shift_weights, "at_s": a.shift_at, "ramp_s": a.shift_ramp,
+                       "region": a.shift_region} if a.shift_weights else None),
         },
         "git": git_block(run_dir),
         # ── schema-2 additions ───────────────────────────────────────────
@@ -294,6 +301,8 @@ def env_summary(snap: Optional[Dict[str, Any]], fname: str) -> Optional[Dict[str
         "deployments_not_ready": v.get("deployments_not_ready"),
         "loadgenerator_replicas": v.get("loadgenerator_replicas"),
         "loadgenerator_running": v.get("loadgenerator_running"),
+        "karmada_managed": v.get("karmada_managed"),
+        "any_karmada_managed": v.get("any_karmada_managed"),
         "collection_errors": v.get("collection_errors"),
         "expectations": snap.get("expectations"),
     }
@@ -328,6 +337,19 @@ def compute_checks(m: Dict[str, Any], run_dir: Path) -> List[Dict[str, str]]:
                 f"pre-run check built {exp}, the DMOS process ran {dmos['config_id']}")
         if not dmos.get("log_file"):
             add("warn", "dmos_log_missing", "DMOS log not stored in the run directory")
+        else:
+            # score model 'reach' without the RTT matrix falls back to the raw
+            # demand shares: the run is then the nca gate, not the arm it names
+            # (30/10/2026: PromQL rejected, every reach-pool-ps run fell back)
+            try:
+                log_text = (run_dir / "dmos.log").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                log_text = ""
+            if "reach demand signal: no ping_exporter RTT" in log_text or \
+                    "reach demand signal: NO RTT" in log_text:
+                add("error", "reach_fallback_raw_share",
+                    "the 'reach' demand signal had no RTT between the clusters and used the "
+                    "raw demand shares (see dmos.log)")
         fb = {c: s for c, s in (dmos.get("carbon_sources") or {}).items()
               if s and not str(s).startswith("trace:")}
         if fb:
@@ -354,6 +376,83 @@ def compute_checks(m: Dict[str, Any], run_dir: Path) -> List[Dict[str, str]]:
         add("error", "loadgenerator_running",
             "Online Boutique loadgenerator active (" + "/".join(p for p, _ in lg) + "): internal "
             f"traffic not from k6 — replicas {lg[0][1].get('loadgenerator_replicas')}")
+    # Kubernetes HPA: only the baseline arm may have HPAs, and it must have them
+    # Karmada: only the Karmada arms may have Deployments managed by Karmada,
+    # and they must have adopted them without restarts, kept every cluster in
+    # the bindings and read their metric
+    is_karmada_arm = str(m.get("run_label", "")).startswith("dmos-karmada-")
+    kb = m.get("karmada_baseline")
+    if is_karmada_arm:
+        if not kb:
+            add("error", "karmada_baseline_missing",
+                "Karmada arm without karmada_baseline.json: what Karmada did is not recorded")
+        else:
+            ap, ve, re_ = kb.get("apply") or {}, kb.get("verify"), kb.get("release")
+            restarted = ap.get("restarted") or []
+            if restarted:
+                add("error", "karmada_pod_restarted",
+                    f"adoption restarted pods: {restarted[:3]}")
+            if not ap.get("ok"):
+                add("error", "karmada_not_adopted",
+                    f"Karmada did not adopt the Deployments cleanly: {(ap.get('errors') or [])[:3]}")
+            if ve is None:
+                add("error", "karmada_not_verified", "no Karmada verification after the load")
+            else:
+                if ve.get("clusters_dropped"):
+                    add("error", "karmada_cluster_dropped",
+                        "a cluster left a binding during the run (Deployment deleted or unmanaged): "
+                        f"{ve['clusters_dropped'][:5]}")
+                if ve.get("fhpa_inactive"):
+                    add("error", "fhpa_not_active",
+                        f"FederatedHPA not reading its CPU metric (ScalingActive != True): {ve['fhpa_inactive']}")
+                if ve.get("unmanaged"):
+                    add("error", "karmada_lost_management",
+                        f"Deployments no longer managed by Karmada at the end of the load: {ve['unmanaged'][:5]}")
+                if ve.get("clusters_not_ready"):
+                    add("warn", "karmada_cluster_not_ready",
+                        f"member clusters not Ready in Karmada during the run: {ve['clusters_not_ready']}")
+                if ve.get("never_scaled"):
+                    add("warn", "fhpa_never_scaled", "no FederatedHPA changed its replicas during the run")
+            if ap and not ap.get("host_checked", True):
+                add("warn", "karmada_host_unchecked",
+                    "scheduler flags, estimators and versions of Karmada not verified")
+            if ap and ap.get("version_ok") is False:
+                add("warn", "karmada_version_unexpected",
+                    f"Karmada images not at the expected version: {ap.get('versions')}")
+            if re_ is not None and not re_.get("ok"):
+                add("warn", "karmada_not_released",
+                    "the release after the run did not complete (the next cell's prep retries)")
+    else:
+        stray_k = [p for p, s in (("pre", pre), ("post", post)) if s and s.get("any_karmada_managed")]
+        if stray_k:
+            add("error", "karmada_present",
+                f"Deployments managed by Karmada ({'/'.join(stray_k)}) during a non-Karmada arm: "
+                "Karmada reverts the replicas the arm sets")
+
+    is_hpa_arm = str(m.get("run_label", "")).startswith("dmos-hpa-")
+    hb = m.get("hpa_baseline")
+    if is_hpa_arm:
+        if not hb:
+            add("error", "hpa_baseline_missing",
+                "HPA baseline arm without hpa_baseline.json: the HPAs of this run are not recorded")
+        else:
+            if not (hb.get("apply") or {}).get("ok"):
+                add("error", "hpa_not_applied", "the baseline HPAs were not all created (hpa_baseline.json)")
+            if not (hb.get("verify") or {}).get("ok"):
+                add("error", "hpa_not_active",
+                    "a baseline HPA did not read its CPU metric during the run (ScalingActive != True)")
+            if hb.get("delete") is not None and not hb["delete"].get("ok"):
+                add("warn", "hpa_not_removed",
+                    "the baseline HPAs were not all removed after the run (the next cell removes them)")
+        if post is not None and post.get("any_hpa") is False:
+            add("warn", "hpa_not_seen_post", "no HPA in the post-run snapshot of an HPA arm")
+    else:
+        stray = [p for p, s in (("pre", pre), ("post", post)) if s and s.get("any_hpa")]
+        if stray:
+            add("error", "hpa_present",
+                f"HPA in the namespace ({'/'.join(stray)}) during a non-HPA arm: it fights the arm "
+                "for the replicas")
+
     if pre and (pre.get("expectations") or {}).get("violations"):
         add("error", "env_expectation_violated",
             "; ".join(pre["expectations"]["violations"]))
@@ -367,6 +466,21 @@ def compute_checks(m: Dict[str, Any], run_dir: Path) -> List[Dict[str, str]]:
     elif out.get("k6_run_valid") is False:
         add("error", "k6_vu_starved",
             f"k6 dropped iterations ({out.get('k6_dropped_pct')}): offered load not delivered")
+
+    # moving hot spot: the load k6 generated must be the one the regime asked for
+    want = (m.get("config") or {}).get("shift")
+    got = out.get("k6_shift") or {}
+    if out.get("k6_summary"):
+        if want and not got.get("enabled"):
+            add("error", "shift_not_applied",
+                "the regime moves the hot spot but k6 reports no move (old k6 script on the VM?)")
+        elif want and want.get("at_s") is not None and got.get("at_s") is not None \
+                and float(got["at_s"]) != float(want["at_s"]):
+            add("error", "shift_not_applied",
+                f"k6 moved the hot spot at {got['at_s']} s, the regime asked {want['at_s']} s")
+        elif not want and got.get("enabled"):
+            add("error", "shift_unexpected",
+                "k6 moved the hot spot in a regime without a move (stray DMOS_SHIFT_* variables?)")
     return checks
 
 
@@ -406,6 +520,21 @@ def cmd_finish(a: argparse.Namespace) -> int:
         "pre": env_summary(read_json(run_dir / "env_state_pre.json"), "env_state_pre.json"),
         "post": env_summary(read_json(run_dir / "env_state_post.json"), "env_state_post.json"),
     }
+    kbj = read_json(run_dir / "karmada_baseline.json")
+    m["karmada_baseline"] = None if kbj is None else {
+        k: (None if kbj.get(k) is None else
+            {"ok": kbj[k].get("ok"), "errors": kbj[k].get("errors"), "warnings": kbj[k].get("warnings"),
+             **({x: kbj[k].get(x) for x in ("variant", "placement", "restarted", "host_checked",
+                                           "versions", "version_ok")} if k == "apply" else {}),
+             **({x: kbj[k].get(x) for x in ("trace", "clusters_dropped", "clusters_not_ready",
+                                           "fhpa_inactive", "unmanaged", "never_scaled")}
+                if k == "verify" else {})})
+        for k in ("apply", "verify", "release")}
+    hb = read_json(run_dir / "hpa_baseline.json")
+    stamps = {"apply": "applied_at", "verify": "verified_at", "delete": "deleted_at"}
+    m["hpa_baseline"] = None if hb is None else {
+        k: ({"ok": hb[k].get("ok"), "at": hb[k].get(ts)} if hb.get(k) is not None else None)
+        for k, ts in stamps.items()}
     summ = read_json(run_dir / "flash_crowd_summary.json")
     validity = (summ or {}).get("validity", {})
     m["outcome"] = {
@@ -414,6 +543,8 @@ def cmd_finish(a: argparse.Namespace) -> int:
         "k6_run_valid": validity.get("run_valid"),
         "k6_dropped_pct": validity.get("dropped_pct"),
         "raw_events_file": "k6_events.json" if (run_dir / "k6_events.json").is_file() else None,
+        # what k6 reports about the moving hot spot (None = summary without the field)
+        "k6_shift": ((summ or {}).get("config") or {}).get("shift"),
     }
     m.setdefault("timing", {})["finished_at"] = now_iso()
     checks = compute_checks(m, run_dir)
@@ -454,6 +585,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     s.add_argument("--spike-region", default="")
     s.add_argument("--spike-weights", default="")
     s.add_argument("--phase-times", default="")
+    s.add_argument("--shift-weights", default="",
+                   help="weights after the hot spot moves (W1=..,W2=..); empty = no move")
+    s.add_argument("--shift-at", type=num, default=None)
+    s.add_argument("--shift-ramp", type=num, default=None)
+    s.add_argument("--shift-region", default="")
     s.add_argument("--test-duration", type=num)
     s.add_argument("--vu-factor", type=num)
 

@@ -277,7 +277,7 @@ services:
     deployment_name: currencyservice
     resources_per_replica:
       requests: { cpu: "100m", memory: "64Mi" }
-      limits:   { cpu: "200m", memory: "128Mi" }
+      limits:   { cpu: "500m", memory: "128Mi" }   # 200m -> 500m: apply_resource_hardening.sh (2026-10-28)
     capacity_req_per_sec: 250   # STIMA (Node.js); 1 replica saturava a ~1100rps/777ms a con
     calls_per_request: 3.4      # fanout misurato: 1 conversione per prezzo (collo a con)
     sla: { latency_p95_ms: 50, latency_p99_ms: 100, availability_percent: 99.9 }
