@@ -8,8 +8,8 @@ each cluster from the frontend replicas placed there.
 
 This is release `DMOS-2026.2`, the artifact of the article that evaluates
 DMOS on a federation of six clusters with a pre-specified campaign of 90 runs
-(see [Citation](#citation)). The code of an earlier release is available at
-the git tag `nca-2026.1`.
+(see [Citation](#citation)). The version presented at IEEE NCA 2026 is
+available at the git tag `nca-2026.1`.
 
 ---
 
@@ -275,15 +275,37 @@ cluster-side checks are `scripts/validate-setup.sh` and
 
 ## Citation
 
-If you use DMOS or its data, please cite the archived artifacts (the article
-describing this release is under review; its reference will be added here):
+If you use DMOS, please cite the paper that introduced it:
+
+> A. Marchese, M. Santanocito, O. Tomarchio. *DMOS: Demand-Gated Multi-Objective
+> Replica Placement for Geo-Distributed Multi-Cluster Systems.* 2026 24th IEEE
+> International Symposium on Network Computing and Applications (NCA), 2026,
+> pp. 80–87. DOI: [10.1109/NCA71379.2026.00021](https://doi.org/10.1109/NCA71379.2026.00021).
+> Code: release `nca-2026.1`.
+
+```bibtex
+@inproceedings{Marchese2026DMOS,
+  author    = {Marchese, Angelo and Santanocito, Matteo and Tomarchio, Orazio},
+  title     = {{DMOS}: Demand-Gated Multi-Objective Replica Placement for
+               Geo-Distributed Multi-Cluster Systems},
+  booktitle = {2026 24th IEEE International Symposium on Network Computing and Applications (NCA)},
+  year      = {2026},
+  pages     = {80--87},
+  doi       = {10.1109/NCA71379.2026.00021}
+}
+```
+
+This release (`DMOS-2026.2`) extends that version with the predictive Level 2,
+the reachable-demand score and a new evaluation campaign. If you use it or its
+data, please also cite the archived artifacts (the article describing this
+release is under review; its reference will be added here):
 
 > [software] M. Santanocito, A. Marchese, O. Tomarchio. *DMOS* (version
 > `DMOS-2026.2`). Zenodo, 2026.
 
-> [dataset] M. Santanocito, A. Marchese, O. Tomarchio. *DMOS 2026.2
-> evaluation campaign: raw data of 90 runs on a six-cluster federation*. Zenodo, 2026.
-> DOI: 10.5281/zenodo.24282190.
+> [dataset] M. Santanocito, A. Marchese, O. Tomarchio. *DMOS 2026.2 evaluation
+> campaign: raw data of 90 runs on a six-cluster federation*. Zenodo, 2026.
+> DOI: [10.5281/zenodo.24282190](https://doi.org/10.5281/zenodo.24282190).
 
 DMOS originates from the MSc thesis of M. Santanocito, *Distributed
 Multi-Objective Scheduler for Kubernetes Multi-Cluster (DMOS)*, University of
